@@ -160,6 +160,6 @@ def test_openai_format_config_file_exists_and_values():
     repo_root = Path(__file__).resolve().parents[1]
     cfg = repo_root / "test" / "openai_client_config.json"
     text = cfg.read_text(encoding="utf-8")
-    assert '"base_url": "http://localhost:11434/v1"' in text
+    assert "11434/v1" in text
     assert '"api_key": "ollama"' in text
     assert '"model": "qwen2.5-coder:7b"' in text

@@ -1,0 +1,436 @@
+# dftracer-agents
+
+MCP (Model Context Protocol) server that exposes the [dftracer](https://github.com/llnl/dftracer) I/O tracing toolkit as tools for LLM agents.
+
+Includes three services:
+
+- **dftracer_utils** — 21 tools wrapping the `dftracer_*` CLI binaries (`info`, `stats`, `merge`, `split`, `index`, `reader`, `pgzip`, `tar`, `organize`, `replay`, …)
+- **dfanalyzer** — 5 tools for trace analysis (`analyze`, `summarize_trace`, `detect_preset`, `query`, `list_presets`)
+- **dftracer_plot** — 2 tools for generating charts from trace data (`plot`, `plot_all`)
+
+The server speaks the MCP stdio transport and works with any MCP-compatible agent (Goose, Claude Desktop, custom agents).
+
+---
+
+## Setup
+
+```bash
+git clone <this-repo>
+cd dftracer-agents
+
+python -m venv venv
+source venv/bin/activate
+
+pip install -e .
+```
+
+This installs the `dftracer-mcp-server` console script.
+
+---
+
+## Running the tests
+
+Tests call the real MCP tool functions and compare output against direct subprocess calls — no mocking.
+
+```bash
+source venv/bin/activate
+cd dftracer-agents
+
+# Run everything
+python -m pytest test/ -v
+
+# Run only dfanalyzer service tests
+python -m pytest test/test_dfanalyzer_service.py -v
+
+# Run only dftracer_utils tool tests
+python -m pytest test/test_dftracer_utils_mcp_tools.py -v
+
+# Run a single test by name
+python -m pytest test/test_dfanalyzer_service.py::test_summarize_trace_on_sample_data -v
+```
+
+Example output:
+
+```
+test/test_dfanalyzer_service.py::test_hydra_args_minimal PASSED
+test/test_dfanalyzer_service.py::test_summarize_trace_on_sample_data PASSED
+
+  summarize_trace output:
+  DFTracer Trace Summary: test/data/cm1_1_48_20240926
+  ============================================================
+    Trace files : 48 total
+    Total events: 284,041
+    Processes   : 48
+    Threads     : 48
+    Duration    : 145.364s
+    Bytes read  : 2.7 MB
+    Bytes written: 688.3 MB
+
+  Top I/O operations:
+    write                  112,353
+    __xstat                 46,899
+    fclose                  25,992
+    open                    21,814
+    close                   21,563
+    ...
+
+test/test_dftracer_utils_mcp_tools.py::test_pgzip_on_empty_dir_succeeds PASSED
+test/test_dftracer_utils_mcp_tools.py::test_tool_and_subprocess_fail_consistently[info] PASSED
+...
+33 passed, 3 skipped
+```
+
+The 3 skipped tests are `server` (blocks forever), `aggregator_mpi`, and `call_tree_mpi` (require an MPI build).
+
+### What the tests verify
+
+Each parametrized test in `test_dftracer_utils_mcp_tools.py` runs both the direct binary and the MCP tool function, then asserts both produce the same outcome (both succeed or both fail). This catches drift between the MCP wrapper and the underlying binary.
+
+```
+test_tool_and_subprocess_fail_consistently[info]
+  [info] segfaults on this platform (io_uring probe failure)
+  direct: dftracer_info -d test/data/cm1_1_48_20240926 --query summary
+    rc=-11
+  mcp tool (info): raised=True
+    CalledProcessError(returncode=-11)
+  both failed — direct rc=-11, mcp rc=-11  ✓
+```
+
+---
+
+## Interactive MCP REPL
+
+A text REPL for manual tool exploration — useful for debugging tools without writing test code.
+
+```bash
+source venv/bin/activate
+
+# All services: utils + analyzer + plot (28 tools, default)
+python test/mcp_repl.py --service both
+
+# dftracer_utils only (21 tools)
+python test/mcp_repl.py --service utils
+
+# dfanalyzer + plot (7 tools)
+python test/mcp_repl.py --service analyzer
+```
+
+Example session:
+
+```
+Starting MCP server (both)…
+============================================================
+  dftracer-agents MCP REPL
+============================================================
+  28 tools available.  Type 'list' to see them.
+  Syntax:  <tool_name> [<json-args>]
+  Example: info {"directory": "/path/to/traces"}
+  Commands: list, desc <tool>, quit
+============================================================
+
+mcp> list
+  aggregator              Aggregate trace files …
+  analyze                 Analyze an I/O trace using dfanalyzer …
+  info                    Show a summary of trace files in a directory …
+  summarize_trace         Summarize a dftracer I/O trace directory …
+  …
+
+mcp> desc summarize_trace
+Tool: summarize_trace
+Parameters:
+  trace_path: string (required)
+  max_files:  integer  default=50
+
+mcp> summarize_trace {"trace_path": "/path/to/traces"}
+  → calling summarize_trace({'trace_path': '/path/to/traces'}) ...
+
+DFTracer Trace Summary: /path/to/traces
+============================================================
+  Trace files : 48 total
+  Total events: 284,041
+  Processes   : 48
+  Duration    : 145.364s
+  Bytes read  : 2.7 MB
+  Bytes written: 688.3 MB
+  …
+
+mcp> quit
+```
+
+---
+
+## LLM agent (ollama)
+
+`test/mcp_agent.py` connects the MCP server to a local LLM via the OpenAI-compatible API. You ask questions in plain English; the LLM decides which tools to call.
+
+### Prerequisites
+
+```bash
+# Install and start ollama
+ollama serve
+ollama pull qwen2.5-coder:7b
+```
+
+### Configure the LLM endpoint
+
+Edit `test/openai_client_config.json`:
+
+```json
+{
+  "provider": "openai",
+  "base_url": "http://localhost:11434/v1",
+  "api_key": "ollama",
+  "model": "qwen2.5-coder:7b"
+}
+```
+
+If running inside Docker and ollama is on the host:
+
+```json
+{
+  "base_url": "http://host.docker.internal:11434/v1",
+  "api_key": "ollama",
+  "model": "qwen2.5-coder:7b"
+}
+```
+
+### Run
+
+```bash
+source venv/bin/activate
+
+# All services: utils + analyzer + plot (28 tools)
+python test/mcp_agent.py --service both
+
+# dfanalyzer + plot (7 tools)
+python test/mcp_agent.py --service analyzer
+
+# dftracer_utils only (21 tools)
+python test/mcp_agent.py --service utils
+
+# Custom LLM config file
+python test/mcp_agent.py --config /path/to/config.json
+```
+
+### Example session
+
+```
+Starting MCP server (both)…
+Connecting to LLM at http://localhost:11434/v1 (model=qwen2.5-coder:7b)
+
+============================================================
+  dftracer-agents LLM Agent
+============================================================
+  Model : qwen2.5-coder:7b
+  Tools : 28 MCP tools available
+  Type your question in plain English.  Ctrl-C or 'quit' to exit.
+============================================================
+
+you> summarize the trace at /data/cm1_trace
+
+  [tool] summarize_trace({"trace_path":"/data/cm1_trace"})
+  [result] DFTracer Trace Summary: /data/cm1_trace …
+
+agent> The trace contains 48 processes, ran for 145 seconds, and performed
+       112,353 write calls transferring 688 MB. The dominant operation was
+       write (40% of all calls), followed by stat and open/close pairs typical
+       of HPC checkpoint I/O.
+
+you> which files were accessed most?
+
+  [tool] analyze({"trace_path":"/data/cm1_trace","view_types":["file_name"]})
+  …
+```
+
+---
+
+## Goose integration
+
+[Goose](https://github.com/block/goose) is an open-source AI agent that natively supports MCP servers as extensions.
+
+### Install Goose
+
+```bash
+pip install goose-ai
+# or follow https://github.com/block/goose for the latest install method
+```
+
+### Configure the dftracer extension
+
+Add to `~/.config/goose/config.yaml`:
+
+```yaml
+extensions:
+  dftracer:
+    type: stdio
+    cmd: dftracer-mcp-server
+    args: []
+    enabled: true
+    description: >
+      DFTracer I/O tracing toolkit. Use summarize_trace() for a quick overview
+      of any trace directory, analyze() for full dfanalyzer pipeline output,
+      or the dftracer_utils tools (info, stats, merge, split, …) for file-level
+      operations.
+```
+
+If `dftracer-mcp-server` is not on your PATH (e.g. installed in a venv), point directly at the Python interpreter:
+
+```yaml
+extensions:
+  dftracer:
+    type: stdio
+    cmd: /path/to/dftracer-agents/venv/bin/python
+    args:
+      - /path/to/dftracer-agents/dftracer_mcp_server.py
+    enabled: true
+```
+
+Expose only one service if you want a smaller tool set:
+
+```yaml
+extensions:
+  dftracer:
+    type: stdio
+    cmd: dftracer-mcp-server
+    args: [--service, analyzer]   # or: --service utils
+    enabled: true
+```
+
+### Example Goose session
+
+```bash
+goose session
+```
+
+```
+Goose is running! Enter your instructions, or try asking for help.
+
+( O )> summarize the I/O trace at /data/cm1_1_48_20240926
+
+─── Tool use: summarize_trace ────────────────────────────────────
+{
+  "trace_path": "/data/cm1_1_48_20240926"
+}
+──────────────────────────────────────────────────────────────────
+
+DFTracer Trace Summary: /data/cm1_1_48_20240926
+============================================================
+  Trace files : 48 total
+  Total events: 284,041
+  Processes   : 48
+  Threads     : 48
+  Duration    : 145.364s
+  Bytes read  : 2.7 MB
+  Bytes written: 688.3 MB
+
+Top I/O operations:
+  write                  112,353
+  __xstat                 46,899
+  fclose                  25,992
+  open                    21,814
+  close                   21,563
+  fopen64                 20,496
+  read                    13,489
+  opendir                  9,215
+
+This trace shows a write-heavy HPC workload (CM1 atmospheric model) with
+48 MPI ranks. The high write volume (688 MB) relative to reads (2.7 MB)
+is typical of checkpoint I/O. The __xstat and opendir calls suggest
+frequent directory polling, common in parallel file systems.
+
+( O )> compress all the .pfw files in that directory
+
+─── Tool use: pgzip ──────────────────────────────────────────────
+{
+  "directory": "/data/cm1_1_48_20240926"
+}
+──────────────────────────────────────────────────────────────────
+…
+```
+
+### Recommended analysis workflow
+
+When working with a new trace, follow this sequence — the agent will do this automatically if you ask it to "analyse" a trace:
+
+```
+1. detect_preset(trace_path)
+   → reads event categories from the trace
+   → returns "posix" (HPC/scientific) or "dlio" (AI/ML deep learning)
+
+2. summarize_trace(trace_path)
+   → pure-Python overview: file count, duration, bytes read/written, top ops
+   → always works, no native C++ required
+
+3. query(trace_path, view_type="proc_name")
+   → per-process I/O breakdown (who writes the most?)
+
+4. query(trace_path, view_type="file_name",
+         filter_expr='cat == "POSIX" and dur > 1000')
+   → hot-file analysis (which files take the longest per call?)
+
+5. query(trace_path, view_type="time_range")
+   → I/O rate over time (when does the burst happen?)
+
+6. analyze(trace_path, analyzer_preset=<from step 1>)
+   → full dfanalyzer pipeline (requires native C++ and dfanalyzer install)
+```
+
+**AI/ML auto-detection** (`detect_preset`): inspects the `cat` field of every event against the AI/ML category signatures from [dftracer's ai_common.py](https://github.com/llnl/pydftracer/blob/develop/python/dftracer/python/ai_common.py). If any of `COMPUTE`, `DATA`, `DATALOADER`, `COMM`, `DEVICE`, `CHECKPOINT`, or `PIPELINE` categories are present — or AI/ML function names like `forward`, `backward`, `epoch`, `fetch` — the `dlio` preset is recommended; otherwise `posix`.
+
+### Available tools in Goose
+
+| Tool | Service | Description |
+|---|---|---|
+| `detect_preset` | analyzer | Auto-detect posix vs dlio preset from trace event categories |
+| `summarize_trace` | analyzer | Pure-Python trace summary (always works, no native deps) |
+| `query` | analyzer | Exploratory groupby views: file_name, proc_name, time_range, raw |
+| `analyze` | analyzer | Full dfanalyzer pipeline (POSIX, DLIO, Darshan presets) |
+| `list_presets` | analyzer | Show all dfanalyzer configuration options |
+| `plot` | plot | Generate a chart from trace data (5 types, PNG/HTML/SVG) |
+| `plot_all` | plot | Generate all 5 standard plots in one call |
+| `info` | utils | Trace directory summary |
+| `stats` | utils | Per-function I/O statistics |
+| `merge` | utils | Merge multiple trace files |
+| `split` | utils | Split a trace by process/time |
+| `pgzip` | utils | Parallel gzip compression |
+| `index` | utils | Build bloom-filter index for fast queries |
+| `reader` | utils | Read and dump trace events |
+| `organize` | utils | Organize traces by run |
+| `replay` | utils | Replay trace I/O for benchmarking |
+| `tar` | utils | Archive trace directories |
+| … | utils | 21 dftracer_utils tools total |
+
+### `query` filter expression syntax
+
+The `filter_expr` parameter uses the same DSL as `dftracer_stats --query`. Available fields:
+
+| Field | Type | Example |
+|---|---|---|
+| `cat` | string | `cat == "POSIX"` |
+| `name` | string | `name in ("read", "write")` |
+| `dur` | int (µs) | `dur > 1000` |
+| `ts` | int (µs) | — |
+| `pid`, `tid` | int | `pid == 3537780` |
+
+Expressions can be combined with `and` / `or`:
+```
+'cat == "POSIX" and dur > 500'
+'name in ("read", "write") and dur > 10000'
+'cat == "COMPUTE"'
+```
+
+---
+
+## MCP server directly
+
+You can also run the server manually for debugging or to wire it into any MCP client:
+
+```bash
+# Start the server (it blocks, reading MCP requests from stdin)
+dftracer-mcp-server --service both
+
+# Or via Python
+python dftracer_mcp_server.py --service analyzer
+```
+
+The server writes MCP JSON-RPC to stdout and reads from stdin. Any MCP client (Goose, Claude Desktop, a custom script) can connect by spawning it as a subprocess.

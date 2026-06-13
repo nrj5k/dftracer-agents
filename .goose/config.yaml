@@ -95,6 +95,18 @@ extensions:
     display_name: Orchestrator
     bundled: true
     available_tools: []
+  dftracer:
+    enabled: true
+    type: stdio
+    name: dftracer
+    description: mcp tools for using dftracer
+    cmd: dftracer-mcp-server
+    args: []
+    envs: {}
+    env_keys: []
+    timeout: 300
+    bundled: null
+    available_tools: []
 providers:
   ollama:
     enabled: true

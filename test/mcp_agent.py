@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
 """
-LLM-powered agent for dftracer-agents MCP services.
+LLM-powered agent for dftracer-agents MCP services — with chain-of-thought.
 
-Connects to the local LLM defined in openai_client_config.json (default:
-ollama / qwen2.5-coder:7b) and uses it as the brain for deciding which MCP
-tools to call.  You talk to it in plain English; the LLM translates your
-intent into tool calls, runs them via the MCP server, and reports back.
+Chain-of-thought works at two levels:
+
+  Within a single command (within one you> prompt):
+    The model reasons before each tool call.  Reasoning is displayed in a
+    bordered block above the [tool] line.  Supports <think>…</think> native
+    tags (Qwen3, DeepSeek-R1) and prose-before-JSON (any ollama model).
+
+  Across commands (between you> prompts):
+    Key findings from tool calls are accumulated in a session working-memory
+    and injected into every subsequent LLM call.  This lets the model say
+    "Based on our earlier detect_preset result, the preset is posix, so I
+    should …" without repeating tool calls.
 
 Usage:
     python test/mcp_agent.py
-    python test/mcp_agent.py --service utils       # dftracer_utils (default)
-    python test/mcp_agent.py --service analyzer    # dfanalyzer
-    python test/mcp_agent.py --service both        # all tools
+    python test/mcp_agent.py --service utils       # dftracer_utils (21 tools)
+    python test/mcp_agent.py --service analyzer    # dfanalyzer + plot (7 tools)
+    python test/mcp_agent.py --service both        # all three services (28 tools)
     python test/mcp_agent.py --config path/to/other_config.json
-
-Requires ollama running with the configured model:
-    ollama serve
-    ollama pull qwen2.5-coder:7b
 """
 from __future__ import annotations
 
@@ -24,8 +28,10 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 import tempfile
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -43,41 +49,27 @@ DEFAULT_CONFIG = THIS_DIR / "openai_client_config.json"
 
 # ── MCP server params ──────────────────────────────────────────────────────
 
-def _server_params(service: str) -> StdioServerParameters:
-    # Reuse the throw-away server scripts written by mcp_repl.py if they exist,
-    # otherwise write them now via the same helpers.
-    import importlib.util as _ilu
-    _spec = _ilu.spec_from_file_location("mcp_repl", THIS_DIR / "mcp_repl.py")
-    _repl = _ilu.module_from_spec(_spec)
-    _spec.loader.exec_module(_repl)
+MCP_SERVER = REPO_ROOT / "dftracer_mcp_server.py"
 
+
+def _server_params(service: str) -> StdioServerParameters:
     env = {
         **os.environ,
         "PYTHONUNBUFFERED": "1",
         "PATH": f"{VENV_BIN}:{os.environ.get('PATH', '')}",
     }
-    if service == "utils":
-        script = str(THIS_DIR / "mcp_integration_server.py")
-    elif service == "analyzer":
-        script = str(THIS_DIR / "_mcp_repl_analyzer_server.py")
-        _repl._write_analyzer_server(script)
-    else:
-        script = str(THIS_DIR / "_mcp_repl_both_server.py")
-        _repl._write_both_server(script)
     return StdioServerParameters(
         command=str(VENV_PYTHON),
-        args=[script],
+        args=[str(MCP_SERVER), "--service", service],
         cwd=str(REPO_ROOT),
         env=env,
     )
 
 
-# ── MCP → OpenAI function schema conversion ─────────────────────────────────
+# ── MCP → OpenAI function schema conversion ────────────────────────────────
 
 def _mcp_tool_to_openai(tool) -> dict[str, Any]:
-    """Convert an MCP FunctionTool to an OpenAI tools-array entry."""
     schema = tool.inputSchema or {}
-    # Remove keys OpenAI doesn't accept at the top level of parameters
     params = {
         "type": "object",
         "properties": schema.get("properties", {}),
@@ -104,51 +96,97 @@ def _format_result(result) -> str:
     return text or "(empty output)"
 
 
-# ── agent loop ──────────────────────────────────────────────────────────────
+# ── display helpers ─────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """\
-You are a helpful assistant for the DFTracer I/O tracing toolkit.
+_THINK_OPEN  = re.compile(r"<think(?:ing)?>", re.IGNORECASE)
+_THINK_CLOSE = re.compile(r"</think(?:ing)?>", re.IGNORECASE)
 
-You have access to MCP tools that wrap the dftracer_* command-line utilities
-and dfanalyzer.  Use them to answer the user's questions.
+WIDTH = 72
 
-When the user asks you to do something (run a tool, inspect a file, analyse
-a trace), call the appropriate tool rather than guessing the answer.
 
-If a tool call fails, report the error to the user and suggest how to fix it
-(e.g. wrong path, missing arguments).
+def _strip_think_tags(text: str) -> tuple[str, str]:
+    """Return (thinking_text, remainder) by extracting <think>…</think> blocks."""
+    thinking_parts: list[str] = []
+    remainder = text
+    while True:
+        m_open = _THINK_OPEN.search(remainder)
+        if not m_open:
+            break
+        m_close = _THINK_CLOSE.search(remainder, m_open.end())
+        if not m_close:
+            thinking_parts.append(remainder[m_open.end():].strip())
+            remainder = remainder[: m_open.start()].strip()
+            break
+        thinking_parts.append(remainder[m_open.end(): m_close.start()].strip())
+        remainder = (remainder[: m_open.start()] + remainder[m_close.end():]).strip()
+    return "\n\n".join(thinking_parts), remainder
 
-Be concise.  For large tool outputs, summarise the key findings instead of
-echoing everything verbatim.
-"""
 
-# ── ollama JSON-in-content fallback ─────────────────────────────────────────
-# Some ollama models return tool calls as JSON text in content rather than
-# using the structured tool_calls field.  This function extracts them.
+def _split_prose_from_json(text: str, known_tool_names: list[str]) -> tuple[str, str]:
+    """Separate leading prose reasoning from the JSON tool-call payload.
 
-import re as _re
+    Returns (thinking_prose, json_payload).
+    """
+    for i, ch in enumerate(text):
+        if ch not in ("{", "["):
+            continue
+        # Try bracket-balanced extraction
+        depth, j = 0, i
+        while j < len(text):
+            if text[j] in ("{", "["):
+                depth += 1
+            elif text[j] in ("}", "]"):
+                depth -= 1
+                if depth == 0:
+                    try:
+                        json.loads(text[i: j + 1])
+                        return text[:i].strip(), text[i: j + 1]
+                    except json.JSONDecodeError:
+                        pass
+            j += 1
+    return text.strip(), ""
+
+
+def _print_thinking(text: str, label: str = "thinking") -> None:
+    """Print a reasoning block with a bordered box."""
+    if not text.strip():
+        return
+    inner = WIDTH - 4
+    header = f"  ┌─ {label} " + "─" * (WIDTH - 4 - len(label)) + "┐"
+    footer = "  └" + "─" * (WIDTH - 2) + "┘"
+    print()
+    print(header)
+    for line in text.splitlines():
+        wrapped = textwrap.wrap(line, inner) or [""]
+        for wl in wrapped:
+            print(f"  │ {wl:<{inner}} │")
+    print(footer)
+
+
+def _print_memory(notes: list[str]) -> None:
+    """Print the current working memory at the start of each turn."""
+    if not notes:
+        return
+    inner = WIDTH - 4
+    print()
+    print("  ┌─ session memory " + "─" * (WIDTH - 18) + "┐")
+    for note in notes:
+        wrapped = textwrap.wrap(f"• {note}", inner) or [""]
+        for i, wl in enumerate(wrapped):
+            prefix = "  " if i > 0 else ""
+            print(f"  │ {prefix + wl:<{inner}} │")
+    print("  └" + "─" * (WIDTH - 2) + "┘")
+
+
+# ── JSON tool-call parser ───────────────────────────────────────────────────
 
 def _parse_json_tool_calls(content: str, known_tool_names: list[str]) -> list[dict] | None:
-    """
-    Extract tool call(s) from plain-text content produced by ollama models.
-
-    Handles multiple formats:
-      {"name": "tool", "arguments": {...}}          — standard JSON object
-      [{"name": "tool", "arguments": {...}}, ...]   — JSON array
-      tool_name {"key": "value", ...}               — bare name then JSON args
-      tool_name\n{"key": "value"}                   — name then newline then JSON
-
-    Returns a list of {"name": str, "arguments": dict}, or None if nothing found.
-    """
     if not content:
         return None
     text = content.strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text).strip()
 
-    # Strip markdown fences
-    text = _re.sub(r"^```(?:json)?\s*", "", text)
-    text = _re.sub(r"\s*```$", "", text).strip()
-
-    # ── format 1: pure JSON {"name": ..., "arguments": ...} ──
     def _extract_from_parsed(parsed) -> list[dict] | None:
         if isinstance(parsed, dict):
             parsed = [parsed]
@@ -176,14 +214,8 @@ def _parse_json_tool_calls(content: str, known_tool_names: list[str]) -> list[di
     except json.JSONDecodeError:
         pass
 
-    # ── format 2: tool_name {...} or tool_name\n{...} ──
-    # e.g.  "info {\n  \"directory\": \"/tmp\"\n}"
     for tool_name in known_tool_names:
-        pattern = _re.compile(
-            rf"^{_re.escape(tool_name)}\s*(\{{.*\}})",
-            _re.DOTALL,
-        )
-        m = pattern.match(text)
+        m = re.compile(rf"^{re.escape(tool_name)}\s*(\{{.*\}})", re.DOTALL).match(text)
         if m:
             try:
                 args = json.loads(m.group(1))
@@ -192,11 +224,10 @@ def _parse_json_tool_calls(content: str, known_tool_names: list[str]) -> list[di
             except json.JSONDecodeError:
                 pass
 
-    # ── format 3: any JSON object/array buried in prose ──
-    match = _re.search(r'(\{[^{}]*(?:\{[^{}]*\}[^{}]*)?\})', text, _re.DOTALL)
-    if match:
+    m = re.search(r'(\{[^{}]*(?:\{[^{}]*\}[^{}]*)?\})', text, re.DOTALL)
+    if m:
         try:
-            calls = _extract_from_parsed(json.loads(match.group(0)))
+            calls = _extract_from_parsed(json.loads(m.group(0)))
             if calls:
                 return calls
         except json.JSONDecodeError:
@@ -205,26 +236,88 @@ def _parse_json_tool_calls(content: str, known_tool_names: list[str]) -> list[di
     return None
 
 
-async def _execute_tool(
-    session: ClientSession,
-    tool_names: list[str],
-    tool_name: str,
-    args: dict,
-) -> str:
-    """Run a single MCP tool call and return the result as a string."""
-    print(f"  [tool] {tool_name}({json.dumps(args, separators=(',', ':'))})")
-    if tool_name not in tool_names:
-        return f"Error: unknown tool '{tool_name}'"
-    try:
-        mcp_result = await session.call_tool(tool_name, args)
-        text = _format_result(mcp_result)
-    except Exception as e:
-        text = f"Error calling tool: {e}"
-    if len(text) > 8000:
-        text = text[:8000] + "\n…(truncated)"
-    print(f"  [result] {text[:300].replace(chr(10), ' ')}")
-    return text
+# ── working-memory extractor ────────────────────────────────────────────────
 
+def _extract_memory_note(tool_name: str, result_text: str) -> str | None:
+    """Distil a one-liner fact from a tool result to store in working memory.
+
+    Called after every successful tool call.  Returns a short string like
+    "detect_preset → posix (no AI/ML signals)" or None to skip.
+    """
+    # Grab first meaningful line of the result
+    lines = [l.strip() for l in result_text.splitlines() if l.strip()]
+    if not lines:
+        return None
+
+    if tool_name == "detect_preset":
+        for line in lines:
+            if "Recommended preset" in line:
+                preset = line.split(":")[-1].strip()
+                aiml = "AI/ML detected" if "dlio" in preset else "no AI/ML signals"
+                return f"detect_preset → preset={preset} ({aiml})"
+
+    if tool_name == "summarize_trace":
+        facts: list[str] = []
+        for line in lines:
+            for key in ("Trace files", "Processes", "Duration", "Bytes read", "Bytes written"):
+                if key in line:
+                    facts.append(line.lstrip(" ").lstrip("•"))
+        if facts:
+            return f"summarize_trace → " + "; ".join(facts[:4])
+
+    if tool_name == "query":
+        # Grab header info + first data row
+        header = next((l for l in lines if "view_type" in l), "")
+        first_row = next((l for l in lines if l[0].isdigit() or (l and l[0] in "0123456789")), "")
+        if header:
+            vt = header.split(":")[-1].strip()
+            summary = f"query view_type={vt}"
+            if first_row:
+                summary += f" → top row: {first_row[:60]}"
+            return summary
+
+    if tool_name in ("analyze",):
+        # Just note that it was called
+        return f"{tool_name} → {lines[0][:80]}"
+
+    return None
+
+
+# ── system prompt ───────────────────────────────────────────────────────────
+
+SYSTEM_PROMPT = """\
+You are a helpful assistant for the DFTracer I/O tracing toolkit.
+
+You have access to MCP tools that wrap dftracer_* command-line utilities and
+dfanalyzer.
+
+CHAIN-OF-THOUGHT INSTRUCTIONS
+Before calling any tool, reason out loud in 2–4 sentences:
+  1. What the user is asking and what you already know from this session.
+  2. What is still unknown and needs a tool call to discover.
+  3. Which tool you will call next and exactly why.
+  4. What you expect the tool to return.
+
+Write your reasoning as plain prose, then follow it immediately with the tool
+call in JSON format on a new line.  Call only one tool per response.
+
+When a "Session memory" block appears in the conversation, use those facts to
+skip redundant tool calls and explain your choices in terms of prior findings.
+For example: "We already know the preset is posix from detect_preset, so I
+will skip that step and go straight to summarize_trace."
+
+RECOMMENDED ANALYSIS WORKFLOW (unless the user specifies otherwise):
+  1. detect_preset   — determine posix vs dlio from event categories.
+  2. summarize_trace — quick overview (events, duration, bytes, top ops).
+  3. query           — drill in with proc_name / file_name / time_range views.
+  4. analyze         — full dfanalyzer pipeline (requires native C++ support).
+
+If a tool fails, report the error, explain the likely cause, and suggest a fix.
+Summarise large outputs rather than echoing them verbatim.
+"""
+
+
+# ── agent loop ──────────────────────────────────────────────────────────────
 
 async def _agent_loop(session: ClientSession, llm: OpenAI, model: str) -> None:
     tools_response = await session.list_tools()
@@ -232,16 +325,23 @@ async def _agent_loop(session: ClientSession, llm: OpenAI, model: str) -> None:
     tool_names = [t.name for t in tools_response.tools]
 
     print()
-    print("=" * 60)
-    print("  dftracer-agents LLM Agent")
-    print("=" * 60)
+    print("=" * WIDTH)
+    print("  dftracer-agents LLM Agent  (chain-of-thought + session memory)")
+    print("=" * WIDTH)
     print(f"  Model : {model}")
     print(f"  Tools : {len(openai_tools)} MCP tools available")
     print("  Type your question in plain English.  Ctrl-C or 'quit' to exit.")
-    print("=" * 60)
+    print("=" * WIDTH)
     print()
 
-    conversation: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # Base conversation — never mutated directly; rebuilt each user turn
+    base_conversation: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    # Working memory: accumulates one-liner facts across ALL user turns
+    session_memory: list[str] = []
+
+    # Full transcript: grows across all user turns (for LLM context)
+    transcript: list[dict] = list(base_conversation)
 
     while True:
         try:
@@ -255,15 +355,29 @@ async def _agent_loop(session: ClientSession, llm: OpenAI, model: str) -> None:
             print("Bye.")
             break
 
-        conversation.append({"role": "user", "content": user_input})
+        # Show working memory so user can see what the agent remembers
+        if session_memory:
+            _print_memory(session_memory)
 
-        # ── agentic loop: keep calling LLM until no more tool calls ──
+        # Inject memory as a system note at the start of the new user turn
+        if session_memory:
+            memory_block = (
+                "Session memory (facts gathered so far — use these to avoid "
+                "repeating tool calls and to reason about next steps):\n"
+                + "\n".join(f"  • {n}" for n in session_memory)
+            )
+            # Prepend memory note just before the new user message
+            transcript.append({"role": "system", "content": memory_block})
+
+        transcript.append({"role": "user", "content": user_input})
+
+        # ── inner agentic loop for this user turn ─────────────────────────────
         while True:
             print("  [thinking…]", end="\r", flush=True)
             try:
                 response = llm.chat.completions.create(
                     model=model,
-                    messages=conversation,
+                    messages=transcript,
                     tools=openai_tools,
                     tool_choice="auto",
                 )
@@ -273,55 +387,103 @@ async def _agent_loop(session: ClientSession, llm: OpenAI, model: str) -> None:
                 break
 
             msg = response.choices[0].message
-            print(" " * 20, end="\r")  # clear "thinking…"
+            print(" " * 20, end="\r")
 
-            # ── case 1: structured tool_calls (OpenAI-native models) ──
+            # ── case 1: structured tool_calls ─────────────────────────────────
             if msg.tool_calls:
-                conversation.append(msg.model_dump(exclude_unset=True))
+                if msg.content and msg.content.strip():
+                    _print_thinking(msg.content.strip())
+                transcript.append(msg.model_dump(exclude_unset=True))
                 for tc in msg.tool_calls:
                     try:
                         args = json.loads(tc.function.arguments or "{}")
                     except json.JSONDecodeError:
                         args = {}
-                    result_text = await _execute_tool(
-                        session, tool_names, tc.function.name, args
-                    )
-                    conversation.append({
+                    print(f"  [tool] {tc.function.name}({json.dumps(args, separators=(',', ':'))})")
+                    try:
+                        mcp_result = await session.call_tool(tc.function.name, args)
+                        result_text = _format_result(mcp_result)
+                    except Exception as exc:
+                        result_text = f"Error: {exc}"
+                    if len(result_text) > 8000:
+                        result_text = result_text[:8000] + "\n…(truncated)"
+                    print(f"  [result] {result_text[:300].replace(chr(10), ' ')}")
+
+                    note = _extract_memory_note(tc.function.name, result_text)
+                    if note:
+                        session_memory.append(note)
+
+                    transcript.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
                         "content": result_text,
                     })
-                continue  # feed results back to LLM
+                continue
 
-            # ── case 2: JSON-in-content (ollama fallback) ──
-            parsed_calls = _parse_json_tool_calls(msg.content or "", tool_names)
+            raw_content = msg.content or ""
+
+            # ── extract native <think>…</think> tags ──────────────────────────
+            native_thinking, raw_content = _strip_think_tags(raw_content)
+            if native_thinking:
+                _print_thinking(native_thinking, label="thinking")
+
+            # ── case 2: JSON-in-content (ollama) ──────────────────────────────
+            prose_reasoning, json_payload = _split_prose_from_json(raw_content, tool_names)
+            parsed_calls = _parse_json_tool_calls(json_payload, tool_names) if json_payload else None
+
             if parsed_calls:
-                # Treat as if the assistant made the call(s)
-                conversation.append({"role": "assistant", "content": msg.content})
+                if prose_reasoning:
+                    _print_thinking(prose_reasoning, label="thinking")
+
+                # Store the assistant's reasoning in the transcript so future
+                # turns can see how the model was thinking at each step.
+                transcript.append({
+                    "role": "assistant",
+                    "content": prose_reasoning or raw_content,
+                })
+
                 for call in parsed_calls:
-                    result_text = await _execute_tool(
-                        session, tool_names, call["name"], call["arguments"]
-                    )
-                    # Inject result as a user message (ollama doesn't have a tool role)
-                    conversation.append({
+                    tool_name = call["name"]
+                    args = call["arguments"]
+                    print(f"  [tool] {tool_name}({json.dumps(args, separators=(',', ':'))})")
+                    if tool_name not in tool_names:
+                        result_text = f"Error: unknown tool '{tool_name}'"
+                    else:
+                        try:
+                            mcp_result = await session.call_tool(tool_name, args)
+                            result_text = _format_result(mcp_result)
+                        except Exception as exc:
+                            result_text = f"Error: {exc}"
+                    if len(result_text) > 8000:
+                        result_text = result_text[:8000] + "\n…(truncated)"
+                    print(f"  [result] {result_text[:300].replace(chr(10), ' ')}")
+
+                    note = _extract_memory_note(tool_name, result_text)
+                    if note:
+                        session_memory.append(note)
+
+                    # Inject result so the LLM can continue its reasoning chain
+                    transcript.append({
                         "role": "user",
                         "content": (
-                            f"Tool '{call['name']}' returned:\n{result_text}\n\n"
-                            "Please summarise the result for the user."
+                            f"Tool '{tool_name}' returned:\n{result_text}\n\n"
+                            "Continue your chain of thought: what did this tell you, "
+                            "and what is your next step?"
                         ),
                     })
-                continue  # feed results back to LLM
+                continue
 
-            # ── case 3: plain text answer ──
-            reply = msg.content or "(no response)"
+            # ── case 3: plain text answer ─────────────────────────────────────
+            reply = raw_content.strip()
             print(f"\nagent> {reply}\n")
+            # Store final answer so future turns can reference it
+            transcript.append({"role": "assistant", "content": reply})
             break
 
 
 # ── entry point ─────────────────────────────────────────────────────────────
 
 async def _main(service: str, config_path: Path) -> None:
-    # Load LLM config
     try:
         cfg = json.loads(config_path.read_text())
     except FileNotFoundError:
@@ -333,7 +495,6 @@ async def _main(service: str, config_path: Path) -> None:
         api_key=cfg.get("api_key", "ollama"),
     )
     model = cfg["model"]
-
     params = _server_params(service)
 
     print(f"Starting MCP server ({service})…")
@@ -355,16 +516,12 @@ def main() -> None:
         description="LLM-powered agent for dftracer-agents MCP services"
     )
     parser.add_argument(
-        "--service",
-        choices=["utils", "analyzer", "both"],
-        default="utils",
-        help="Which MCP service to connect to (default: utils)",
+        "--service", choices=["utils", "analyzer", "both"], default="utils",
+        help="Which MCP service to connect to: utils (21 tools), analyzer (5 tools + 2 plot), both = all (default: utils)",
     )
     parser.add_argument(
-        "--config",
-        type=Path,
-        default=DEFAULT_CONFIG,
-        help="Path to openai_client_config.json (default: test/openai_client_config.json)",
+        "--config", type=Path, default=DEFAULT_CONFIG,
+        help="Path to openai_client_config.json",
     )
     args = parser.parse_args()
     asyncio.run(_main(args.service, args.config))

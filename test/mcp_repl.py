@@ -9,8 +9,8 @@ them with JSON arguments.
 Usage:
     python test/mcp_repl.py
     python test/mcp_repl.py --service utils       # dftracer_utils only (default)
-    python test/mcp_repl.py --service analyzer    # dfanalyzer only
-    python test/mcp_repl.py --service both        # dftracer_utils + dfanalyzer
+    python test/mcp_repl.py --service analyzer    # dfanalyzer + plot
+    python test/mcp_repl.py --service both        # dftracer_utils + dfanalyzer + plot (28 tools)
 
 REPL commands:
     list                  — list all available tools
@@ -25,8 +25,6 @@ import asyncio
 import json
 import os
 import sys
-import textwrap
-import types
 import tempfile
 from pathlib import Path
 
@@ -42,144 +40,9 @@ VENV_BIN    = REPO_ROOT / "venv" / "bin"
 THIS_DIR    = Path(__file__).resolve().parent
 
 
-# ── server launcher scripts (one per service choice) ───────────────────────
+# ── MCP server entry point ─────────────────────────────────────────────────
 
-_UTILS_SERVER_SCRIPT = str(THIS_DIR / "mcp_integration_server.py")
-
-_ANALYZER_SERVER_SCRIPT = str(THIS_DIR / "_mcp_repl_analyzer_server.py")
-
-_BOTH_SERVER_SCRIPT = str(THIS_DIR / "_mcp_repl_both_server.py")
-
-
-def _write_analyzer_server(path: str) -> None:
-    """Write a throw-away server script for dfanalyzer."""
-    Path(path).write_text(
-        textwrap.dedent("""\
-        #!/usr/bin/env python3
-        import asyncio, sys, types
-        from pathlib import Path
-        from fastmcp import FastMCP
-
-        REPO_ROOT = Path(__file__).resolve().parents[1]
-
-        def _load():
-            sp = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dfanalyzer_service.py"
-            pkg = types.ModuleType("dftracer_agents")
-            pkg.__path__ = [str(REPO_ROOT / "dftracer-agents")]
-            mcp = types.ModuleType("dftracer_agents.mcp_tools")
-            mcp.__path__ = [str(REPO_ROOT / "dftracer-agents" / "mcp-tools")]
-            tools = types.ModuleType("dftracer_agents.mcp_tools.tools")
-            tools.__path__ = [str(sp.parent)]
-            fmod = types.ModuleType("dftracer_agents.mcp_service_factory")
-            class MCPService: pass
-            class MCPServiceFactory:
-                _s = {}
-                @classmethod
-                def register(cls, n, s): cls._s[n] = s
-                @classmethod
-                def get_service(cls, n): return cls._s.get(n)
-            fmod.MCPService = MCPService
-            fmod.MCPServiceFactory = MCPServiceFactory
-            sys.modules["dftracer_agents"] = pkg
-            sys.modules["dftracer_agents.mcp_tools"] = mcp
-            sys.modules["dftracer_agents.mcp_tools.tools"] = tools
-            sys.modules["dftracer_agents.mcp_service_factory"] = fmod
-            mn = "dftracer_agents.mcp_tools.tools.dfanalyzer_service"
-            import importlib.util
-            spec = importlib.util.spec_from_file_location(mn, sp)
-            mod = importlib.util.module_from_spec(spec)
-            sys.modules[mn] = mod
-            spec.loader.exec_module(mod)
-            return mod
-
-        def main():
-            mod = _load()
-            svc = mod.DFAnalyzerService()
-            server = FastMCP("DFAnalyzerREPLServer")
-            for t in asyncio.run(svc.analyzer_subservice.list_tools()):
-                server.add_tool(t)
-            asyncio.run(server.run_stdio_async(show_banner=False))
-
-        if __name__ == "__main__":
-            main()
-        """),
-        encoding="utf-8",
-    )
-
-
-def _write_both_server(path: str) -> None:
-    """Write a throw-away server script combining both services."""
-    Path(path).write_text(
-        textwrap.dedent(f"""\
-        #!/usr/bin/env python3
-        import asyncio, sys, types, importlib.util
-        from pathlib import Path
-        from fastmcp import FastMCP
-
-        REPO_ROOT = Path(__file__).resolve().parents[1]
-        UTILS_SERVER = str(Path(__file__).resolve().parent / "mcp_integration_server.py")
-
-        def _load_utils():
-            import runpy
-            # reuse the build_server from mcp_integration_server
-            import importlib.util as ilu
-            spec = ilu.spec_from_file_location("_utils_srv", UTILS_SERVER)
-            mod = ilu.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            return mod.build_server()
-
-        def _load_analyzer():
-            sp = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dfanalyzer_service.py"
-            for k, v in {{
-                "dftracer_agents": None,
-                "dftracer_agents.mcp_tools": None,
-                "dftracer_agents.mcp_tools.tools": None,
-                "dftracer_agents.mcp_service_factory": None,
-            }}.items():
-                sys.modules.pop(k, None)
-            pkg = types.ModuleType("dftracer_agents")
-            pkg.__path__ = [str(REPO_ROOT / "dftracer-agents")]
-            mcp = types.ModuleType("dftracer_agents.mcp_tools")
-            mcp.__path__ = [str(REPO_ROOT / "dftracer-agents" / "mcp-tools")]
-            tools = types.ModuleType("dftracer_agents.mcp_tools.tools")
-            tools.__path__ = [str(sp.parent)]
-            fmod = types.ModuleType("dftracer_agents.mcp_service_factory")
-            class MCPService: pass
-            class MCPServiceFactory:
-                _s = {{}}
-                @classmethod
-                def register(cls, n, s): cls._s[n] = s
-                @classmethod
-                def get_service(cls, n): return cls._s.get(n)
-            fmod.MCPService = MCPService
-            fmod.MCPServiceFactory = MCPServiceFactory
-            sys.modules["dftracer_agents"] = pkg
-            sys.modules["dftracer_agents.mcp_tools"] = mcp
-            sys.modules["dftracer_agents.mcp_tools.tools"] = tools
-            sys.modules["dftracer_agents.mcp_service_factory"] = fmod
-            mn = "dftracer_agents.mcp_tools.tools.dfanalyzer_service"
-            sys.modules.pop(mn, None)
-            spec = importlib.util.spec_from_file_location(mn, sp)
-            mod = importlib.util.module_from_spec(spec)
-            sys.modules[mn] = mod
-            spec.loader.exec_module(mod)
-            svc = mod.DFAnalyzerService()
-            return asyncio.run(svc.analyzer_subservice.list_tools())
-
-        def main():
-            combined = FastMCP("DFTracerAllServicesREPLServer")
-            utils_srv = _load_utils()
-            for t in asyncio.run(utils_srv.list_tools()):
-                combined.add_tool(t)
-            for t in _load_analyzer():
-                combined.add_tool(t)
-            asyncio.run(combined.run_stdio_async(show_banner=False))
-
-        if __name__ == "__main__":
-            main()
-        """),
-        encoding="utf-8",
-    )
+MCP_SERVER = REPO_ROOT / "dftracer_mcp_server.py"
 
 
 # ── result formatter ────────────────────────────────────────────────────────
@@ -302,19 +165,9 @@ def _server_params(service: str) -> StdioServerParameters:
         "PYTHONUNBUFFERED": "1",
         "PATH": f"{VENV_BIN}:{os.environ.get('PATH', '')}",
     }
-
-    if service == "utils":
-        script = _UTILS_SERVER_SCRIPT
-    elif service == "analyzer":
-        script = _ANALYZER_SERVER_SCRIPT
-        _write_analyzer_server(script)
-    else:  # both
-        script = _BOTH_SERVER_SCRIPT
-        _write_both_server(script)
-
     return StdioServerParameters(
         command=str(VENV_PYTHON),
-        args=[script],
+        args=[str(MCP_SERVER), "--service", service],
         cwd=str(REPO_ROOT),
         env=env,
     )
@@ -340,7 +193,7 @@ def main() -> None:
         "--service",
         choices=["utils", "analyzer", "both"],
         default="utils",
-        help="Which MCP service to connect to (default: utils)",
+        help="Which MCP service to connect to: utils (21 tools), analyzer (5+2 plot), both = all 28 (default: utils)",
     )
     args = parser.parse_args()
     asyncio.run(_main(args.service))
