@@ -10,6 +10,7 @@ requires-python = ">=3.9"
 dependencies = [
     "fastmcp>=0.1.0",
     "dftracer-utils @ git+https://github.com/llnl/dftracer-utils.git@develop",
+    "dftracer-analyzer @ git+https://github.com/llnl/dfanalyzer.git@develop",
 ]
 
 [project.optional-dependencies]

@@ -53,8 +53,6 @@ def _load_service_module():
     sys.modules[mod_name] = module
 
     source = service_path.read_text(encoding="utf-8")
-    source = source.replace("self._register_index_tools()", "pass")
-    source = source.replace("self._register_comparator_tools()", "pass")
     code = compile(source, str(service_path), "exec")
     exec(code, module.__dict__)
     return module

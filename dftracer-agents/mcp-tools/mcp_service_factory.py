@@ -1,65 +1,57 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from fastmcp import FastMCP
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Type, Union
 
 
 class MCPService(ABC):
-     """Abstract base class for all MCP services."""
+    """Abstract base class for all MCP services."""
 
-     @abstractmethod
+    @abstractmethod
     def execute(self, data: dict) -> Optional[str]:
-          """Execute the service with the provided data.
-        
-        Args:
-            data: The input data for the service.
-            
-        Returns:
-            Optional result from the execution.
-         """
-        pass
+        """Execute the service with the provided data."""
 
-     @property
-     @abstractmethod
+    @property
+    @abstractmethod
     def name(self) -> str:
-          """Return the name of the service."""
-        pass
+        """Return the service name."""
 
 
 class MCPServiceFactory:
-     """Factory class to manage MCP services."""
-     
-     _services: Dict[str, "MCPService"] = {}
+    """Factory class to register and retrieve MCP services."""
 
-     @staticmethod
-    def register(name: str, service_class: type) -> None:
-          """Register an MCP service."""
-        MCPServiceFactory._services[name] = service_class()
+    _services: Dict[str, MCPService] = {}
 
-     @staticmethod
-    def get_service(name: str) -> Optional["MCPService"]:
-          """Get a registered service by name."""
-        return MCPServiceFactory._services.get(name)
+    @classmethod
+    def register(
+        cls,
+        name: str,
+        service: Union[MCPService, Type[MCPService]],
+    ) -> MCPService:
+        """Register a service instance or service class under ``name``."""
+        instance = service() if isinstance(service, type) else service
+        cls._services[name] = instance
+        return instance
 
-     @staticmethod
-    def list_services() -> List[str]:
-          """List all registered service names."""
-        return list(MCPServiceFactory._services.keys())
+    @classmethod
+    def get_service(cls, name: str) -> Optional[MCPService]:
+        """Get a registered service by name."""
+        return cls._services.get(name)
 
-     @staticmethod
-    def get_all_services() -> Dict[str, "MCPService"]:
-          """Get all registered services."""
-        return MCPServiceFactory._services.copy()
+    @classmethod
+    def list_services(cls) -> List[str]:
+        """List all registered service names."""
+        return list(cls._services.keys())
+
+    @classmethod
+    def get_all_services(cls) -> Dict[str, MCPService]:
+        """Get a copy of all registered services."""
+        return cls._services.copy()
 
 
-def main():
-     """Main entry point for running all registered services."""
+def main() -> None:
+    """Small debug entrypoint to inspect registered services."""
     print("Loaded services:", MCPServiceFactory.list_services())
-    
-    for service_name in MCPServiceFactory.list_services():
-        service = MCPServiceFactory.get_service(service_name)
-        print(f"Executing {service_name}...")
-        result = service.execute({})
-        print(f"Result from {service_name}: {result}")
 
 
 if __name__ == "__main__":

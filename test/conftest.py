@@ -76,10 +76,6 @@ def service_module():
     sys.modules[mod_name] = module
 
     source = service_path.read_text(encoding="utf-8")
-    # The service constructor currently references two missing methods.
-    # Patch these calls in-memory so tests can validate the real tool wrappers.
-    source = source.replace("self._register_index_tools()", "pass")
-    source = source.replace("self._register_comparator_tools()", "pass")
     code = compile(source, str(service_path), "exec")
     exec(code, module.__dict__)
     return module
@@ -88,6 +84,11 @@ def service_module():
 @pytest.fixture()
 def service_instance(service_module):
     return service_module.DftracerUtilsService()
+
+
+@pytest.fixture()
+def tool_map_fixture(service_instance):
+    return get_tool_map(service_instance)
 
 
 def get_tool_map(service_instance):
