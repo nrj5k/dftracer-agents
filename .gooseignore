@@ -1,0 +1,29 @@
+.git/
+node_modules/
+dist/
+.env*
+secrets.*
+*.key
+venv
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Large local files
+fetched_cli.html
+docs_utils_raw.txt
+docs_utils.txt
+
+# DFTracer trace/binary artifacts
+*.npz
+*.npy
+*.gz
+*.zst
+*.trace
+*.bin

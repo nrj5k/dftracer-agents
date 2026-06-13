@@ -1,0 +1,33 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "build-devcontainer-dockerfile",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"build",
+				"-f",
+				".devcontainer/Dockerfile",
+				".devcontainer"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "build-devcontainer-dockerfile",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"build",
+				"-f",
+				".devcontainer/Dockerfile",
+				".devcontainer"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		}
+	]
+}

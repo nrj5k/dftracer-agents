@@ -1,0 +1,15 @@
+# DFTracer Goose Hints
+
+Use these links when implementing DFTracer behavior:
+- https://dftracer.readthedocs.io/
+- https://dftracer.readthedocs.io/en/latest/api.html
+- https://dftracer.readthedocs.io/projects/python/en/latest/
+- https://dftracer.readthedocs.io/projects/utils/
+- https://dftracer.readthedocs.io/projects/analyzer/en/latest/
+- https://github.com/llnl/dftracer
+
+Repository rules:
+1. Do not scan or edit large trace/binary artifacts unless explicitly requested.
+2. Prefer source files under dftracer-agents/ and mcp-tools/ for implementation work.
+3. Keep tool calls namespaced when invoking Goose tools.
+4. Write fetched/scratch artifacts outside this repo (for example under /tmp/goose), not in the project root.
