@@ -363,6 +363,29 @@ class TestDetectInfo:
         info = session_module._detect_info(tmp_path)
         assert info["build_tool"] == "autotools"
 
+    def test_autotools_excludes_python_language(self, session_module, tmp_path):
+        """Autotools is C/C++ only — .py helper scripts must not pollute languages."""
+        (tmp_path / "configure.ac").write_text(_CONFIGURE_AC)
+        (tmp_path / "main.c").write_text(_IOR_MAIN_C)
+        (tmp_path / "gen_config.py").write_text("# build helper\nprint('hello')\n")
+
+        info = session_module._detect_info(tmp_path)
+        assert info["build_tool"] == "autotools"
+        assert "python" not in info["languages"]
+        assert info["features"]["python"] is False
+
+    def test_python_project_can_have_c_extensions(self, session_module, tmp_path):
+        """Python projects (setup.py/pyproject.toml) may contain C/C++ extension code."""
+        (tmp_path / "setup.py").write_text(_SETUP_PY)
+        (tmp_path / "module.py").write_text(_SAMPLE_PYTHON_LIB)
+        (tmp_path / "src" / "ext.c").parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "src" / "ext.c").write_text('#include <Python.h>\nint add(int a,int b){return a+b;}\n')
+
+        info = session_module._detect_info(tmp_path)
+        assert info["build_tool"] == "python"
+        assert "python" in info["languages"]
+        assert "c" in info["languages"]
+
     def test_detects_python_project(self, session_module, tmp_path):
         (tmp_path / "setup.py").write_text(_SETUP_PY)
         (tmp_path / "main.py").write_text(_SAMPLE_PYTHON_LIB)
@@ -1023,9 +1046,11 @@ class TestServiceRegistration:
             "session_create", "session_detect", "session_list_files",
             "session_read_file", "session_write_file", "session_configure",
             "session_build_install", "session_run_smoke_test", "session_copy_annotated",
-            "session_patch_build", "session_annotate_source", "session_build_annotated",
-            "session_run_with_dftracer", "session_split_traces", "session_analyze_traces",
-            "session_status", "session_run_pipeline",
+            "session_patch_build", "session_annotate_source",
+            "session_autobuild_dftracer", "session_install_dftracer",
+            "session_install_dftracer_utils",
+            "session_build_annotated", "session_run_with_dftracer", "session_split_traces",
+            "session_analyze_traces", "session_status", "session_run_pipeline",
         }
         assert tools.keys() == expected
 

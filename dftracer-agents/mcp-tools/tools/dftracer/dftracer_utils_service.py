@@ -1023,7 +1023,8 @@ class DftracerUtilsService(MCPService):
             cmd += ["--validation-every", str(validation_every)]
             cmd += ["--num-train-files", str(num_train_files)]
             cmd += ["--num-val-files", str(num_val_files)]
-            cmd += ["--step-duration-ms", str(step_duration_ms)]
+            # Binary parser only accepts integers for this flag.
+            cmd += ["--step-duration-ms", str(int(step_duration_ms))]
             cmd += ["--seed", str(seed)]
             if verify:
                 cmd.append("--verify")

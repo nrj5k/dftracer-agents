@@ -1,5 +1,532 @@
 # DFTracer Goose Hints
 
+## C / C++ Annotation Rules (dftracer)
+
+These rules apply whenever you manually annotate C or C++ source files.
+They also describe what the automated `session_annotate_source` tool produces.
+Violating any rule will cause build failures or missing trace data.
+
+### Rule 0 — Only annotate functions worth tracing (skip trivial ones)
+
+dftracer macros add a small but real overhead per call. Annotating every function
+indiscriminately defeats the purpose and pollutes traces with noise.
+
+**Annotate a function if it:**
+- Performs file or network I/O (`open`, `read`, `write`, `close`, `fread`, `fwrite`,
+  `mmap`, `send`, `recv`, `MPI_File_*`, `MPI_Send`, `MPI_Recv`, …)
+- Moves or transforms significant data (memcpy, checksums, compression, serialize)
+- Allocates or frees large buffers (`malloc`/`free` of buffers > a few KB)
+- Contains a loop that iterates over data (segments, blocks, ranks)
+- Is a top-level driver or orchestration function (`main`, `run_test`, `benchmark_*`)
+- Takes measurable wall time (anything you would profile with perf or gprof)
+
+**Skip a function if it:**
+- Is a simple getter or setter (returns a field, sets one value, ≤ 5 lines)
+- Only does arithmetic or string formatting with no I/O
+- Is a small utility called in a tight inner loop (would add overhead per iteration)
+- Is a constructor/destructor with no I/O side effects
+- Is already wrapped by a larger annotated function that covers the same work
+
+**Examples:**
+
+```c
+// ✅ Annotate — does file I/O, has filename and size params
+ssize_t POSIX_read(int fd, void *buf, size_t count, off_t offset) { ... }
+
+// ✅ Annotate — top-level benchmark driver, takes real time
+void IOR_TestIO(IOR_param_t *params) { ... }
+
+// ❌ Skip — trivial getter, no I/O, called millions of times
+static inline int get_rank() { return rank; }
+
+// ❌ Skip — 3-line string helper, no data movement
+static const char *mode_to_str(int mode) { return mode == 0 ? "r" : "w"; }
+```
+
+### Rule 1 — One DFTRACER_C_FUNCTION_START per function, at the very top
+
+```c
+return_type function_name(params) {
+  DFTRACER_C_FUNCTION_START();   // ← FIRST statement, nothing before it
+  ...
+}
+```
+
+- **One and only one** START per function.
+- It must be the **first executable statement** in the function body.
+- **Never** place START inside a control-flow block (`if`, `else`, `for`, `while`,
+  `switch`, `do`). Control-flow blocks are NOT functions.
+- **Never** annotate: struct/union/enum definitions, typedefs, macro bodies,
+  `#ifdef` guard blocks, or function pointer declarations.
+
+### Rule 2 — DFTRACER_C_FUNCTION_END before every exit point
+
+```c
+return_type function_name(params) {
+  DFTRACER_C_FUNCTION_START();
+  ...
+  if (error) {
+    DFTRACER_C_FUNCTION_END();   // ← before early return
+    return -1;
+  }
+  ...
+  DFTRACER_C_FUNCTION_END();     // ← before normal return
+  return 0;
+}
+```
+
+- Place END **immediately before every `return` statement** (on its own line, same indent).
+- For **void functions** that fall off the end (no explicit `return`), place END
+  as the **last statement before the closing `}`**:
+  ```c
+  void helper(int x) {
+    DFTRACER_C_FUNCTION_START();
+    do_work(x);
+    DFTRACER_C_FUNCTION_END();   // ← last statement, void function
+  }
+  ```
+- Every function with a START **must** have a corresponding END at every exit path.
+- Never place END after a `return` (it would be unreachable).
+
+### Rule 3 — DFTRACER_C_FINI in main before every exit; order around MPI
+
+**Without MPI** — INIT goes right after the opening `{` of main:
+
+```c
+int main(int argc, char **argv) {
+  DFTRACER_C_INIT(NULL, NULL, NULL);   // ← first, before anything else
+  DFTRACER_C_FUNCTION_START();
+  ...
+  DFTRACER_C_FUNCTION_END();
+  DFTRACER_C_FINI();
+  return 0;
+}
+```
+
+**With MPI** — INIT must come AFTER `MPI_Init`/`MPI_Init_thread`, and FINI must
+come BEFORE `MPI_Finalize`. dftracer uses MPI internals; initialising before MPI
+is ready causes crashes, and finalising after MPI shuts down loses trace data:
+
+```c
+int main(int argc, char **argv) {
+  MPI_Init(&argc, &argv);              // ← MPI first
+  DFTRACER_C_INIT(NULL, NULL, NULL);   // ← dftracer after MPI_Init
+  DFTRACER_C_FUNCTION_START();
+  ...
+  if (bad) {
+    DFTRACER_C_FUNCTION_END();         // ← END first
+    DFTRACER_C_FINI();                 // ← dftracer FINI before MPI_Finalize
+    MPI_Finalize();                    // ← MPI last
+    return 1;
+  }
+  ...
+  DFTRACER_C_FUNCTION_END();
+  DFTRACER_C_FINI();                   // ← dftracer FINI before MPI_Finalize
+  MPI_Finalize();
+  return 0;
+}
+```
+
+- Scan main for `MPI_Init` or `MPI_Init_thread` before placing `DFTRACER_C_INIT`.
+  If found, place INIT on the line immediately after the `MPI_Init(...)` call.
+- Scan every `return` path and every `MPI_Finalize()` call in main. Place
+  `DFTRACER_C_FUNCTION_END()` then `DFTRACER_C_FINI()` immediately **before**
+  each `MPI_Finalize()`.
+- The full order at every exit from an MPI main:
+  `FUNCTION_END → DFTRACER_C_FINI → MPI_Finalize → return`
+- Also place FINI before any **process-exit call** (`exit()`, `_exit()`, `abort()`,
+  `quick_exit()`) that bypasses `MPI_Finalize`:
+  ```c
+  if (fatal) {
+    DFTRACER_C_FINI();
+    MPI_Abort(MPI_COMM_WORLD, 1);   // or exit(1) — FINI must precede both
+  }
+  ```
+- `DFTRACER_C_FINI()` must appear **in the same function as DFTRACER_C_INIT()` (i.e., main).
+- INIT/FINI summary: `MPI_Init → DFTRACER_C_INIT → ... → DFTRACER_C_FINI → MPI_Finalize`
+
+### Rule 4 — Track important I/O metadata with FUNCTION_UPDATE
+
+After FUNCTION_START, add UPDATE calls for parameters that carry meaningful I/O context:
+
+```c
+ssize_t my_read(const char *filename, void *buf, size_t count, off_t offset) {
+  DFTRACER_C_FUNCTION_START();
+  DFTRACER_C_FUNCTION_UPDATE_STR("filename", filename);   // string params
+  DFTRACER_C_FUNCTION_UPDATE_INT("count",    (int)count); // numeric params
+  DFTRACER_C_FUNCTION_UPDATE_INT("offset",   (int)offset);
+  ...
+  DFTRACER_C_FUNCTION_END();
+  return result;
+}
+```
+
+- **String params** (`const char *`): use `DFTRACER_C_FUNCTION_UPDATE_STR("name", ptr)`
+  — good targets: `filename`, `path`, `name`, `dir`, `mode`, `cmd`
+- **Numeric params** (`size_t`, `off_t`, `int`, `long`): use `DFTRACER_C_FUNCTION_UPDATE_INT("name", (int)val)`
+  — good targets: `size`, `count`, `len`, `offset`, `fd`, `flags`, `bytes`
+- Only add UPDATE for parameters that are **meaningful for I/O analysis**; skip generic
+  loop counters or Boolean flags.
+- For C++: use `DFTRACER_CPP_FUNCTION_UPDATE("name", value)` for string params.
+
+### Rule 5 — C++ RAII for regular functions; REGION for main
+
+**Regular C++ functions** — use the RAII scope guard (no manual END needed):
+
+```cpp
+void my_function(const char *path) {
+  DFTRACER_CPP_FUNCTION();                      // RAII — END called automatically when scope exits
+  DFTRACER_CPP_FUNCTION_UPDATE("path", path);
+  ...
+  // No explicit END needed
+}
+```
+
+**C++ main** — use `DFTRACER_CPP_REGION_START/END` instead of `DFTRACER_CPP_FUNCTION()`,
+because the region must be explicitly closed before `DFTRACER_CPP_FINI()`:
+
+```cpp
+int main(int argc, char **argv) {
+  DFTRACER_CPP_INIT(nullptr, nullptr, nullptr);
+  DFTRACER_CPP_REGION_START(main_region);       // ← REGION, not FUNCTION
+  ...
+  if (error) {
+    DFTRACER_CPP_REGION_END(main_region);        // ← close region first
+    DFTRACER_CPP_FINI();                         // ← then shut down tracer
+    return 1;
+  }
+  ...
+  DFTRACER_CPP_REGION_END(main_region);          // ← close region before normal return
+  DFTRACER_CPP_FINI();
+  return 0;
+}
+```
+
+- `DFTRACER_CPP_FUNCTION()` is RAII — its destructor fires when the function scope
+  exits, which may be **after** `DFTRACER_CPP_FINI()` is called. That ordering is wrong
+  for main. Using `DFTRACER_CPP_REGION_START/END` gives explicit control so REGION_END
+  always precedes FINI.
+- The region name (`main_region`) can be any valid C identifier.
+- Order at every exit point in main: **REGION_END → FINI → return/exit**.
+- For process-exit calls (`exit()`, `abort()`, etc.) in main or called functions, place
+  `DFTRACER_CPP_REGION_END` + `DFTRACER_CPP_FINI` before the call if reachable from main
+  context; otherwise place just `DFTRACER_CPP_FINI` before the exit call.
+- Never mix C and C++ macros in the same file.
+
+### Rule 6 — REGION macros only in C++ main; not elsewhere
+
+- **C source**: never use `DFTRACER_C_REGION_START` / `DFTRACER_C_REGION_END`. Use
+  `DFTRACER_C_FUNCTION_START/END` only.
+- **C++ regular functions**: never use `DFTRACER_CPP_REGION_*`. Use `DFTRACER_CPP_FUNCTION()`.
+- **C++ main only**: use `DFTRACER_CPP_REGION_START/END` (see Rule 5) so the region can
+  be closed explicitly before `DFTRACER_CPP_FINI()`.
+
+### Quick checklist before writing annotated code
+
+- [ ] `#include <dftracer/dftracer.h>` added after all existing `#include` lines
+- [ ] Only functions with I/O, data movement, or measurable runtime are annotated (Rule 0)
+- [ ] Every **selected** C function has exactly **one** `DFTRACER_C_FUNCTION_START` as its first statement
+- [ ] Every C START has a matching END at **every** exit path (return + void close)
+- [ ] C `main`: INIT → FUNCTION_START → ... → FUNCTION_END → FINI → return (at every exit)
+- [ ] Every non-trivial **C++** function (except main) has `DFTRACER_CPP_FUNCTION()` as first statement
+- [ ] C++ `main`: INIT → REGION_START → ... → REGION_END → FINI → return (at every exit)
+- [ ] UPDATE calls placed right after START/FUNCTION/REGION_START for meaningful I/O params
+- [ ] No C FUNCTION_START inside `if`/`else`/`for`/`while`/`switch`/`do` blocks
+- [ ] No REGION macros in C source or in C++ non-main functions
+
+### Annotation Pitfalls (lessons learned)
+
+These are real mistakes that caused build failures. Check each one before writing any annotated file.
+
+---
+context: Annotating C source with fprintf multi-line strings
+error: |
+  aiori-MPIIO.c:241: error: missing terminating " character
+  fprintf(stdout, "\nhints passed to MPI_File_open() {
+    DFTRACER_C_FUNCTION_START();\n");
+root_cause: A `{` character inside a string literal matched a function-header
+  pattern. The macro was injected into the string content, breaking the string
+  and producing unterminated-string errors and stray-backslash errors.
+fix: |
+  Before placing any macro after a `{`, verify the `{` is a REAL function body
+  opener, not a character inside a string or format specifier.
+  A real function body `{` must:
+    1. Follow a closing `)` that ends a parameter list (possibly on previous line)
+    2. Be the last non-whitespace/non-comment character on its line (or on its own line)
+    3. NOT be preceded by `"` (i.e., not inside a string literal)
+  If the line containing `{` also contains `"..."` or is part of a fprintf/printf
+  argument, it is NOT a function body — skip it.
+tags: [c, annotation, string-literal, fprintf, brace]
+
+---
+context: Macro placed inside a `#define` body or macro expansion
+error: |
+  error: 'data_fn' undeclared — DFTRACER_C_FUNCTION_END expanded inside a macro
+  that has no surrounding DFTRACER_C_FUNCTION_START scope
+root_cause: DFTRACER_C_FUNCTION_END uses `data_fn` which is defined by
+  DFTRACER_C_FUNCTION_START. Placing END in a macro body or standalone helper
+  without a matching START causes "undeclared" errors for `data_fn`.
+fix: |
+  Never annotate:
+    - `#define` macro bodies (lines starting with `#define ...`)
+    - Inline lambdas or function-like macros
+    - Functions whose entire body is a single macro expansion
+  Only annotate real C function definitions (have a return type, a name,
+  `(params)`, and a `{...}` body visible in the source).
+tags: [c, annotation, define, macro, data_fn]
+
+---
+context: Macro inserted inside a block comment `/* ... */`
+error: |
+  Compiler sees DFTRACER_C_FUNCTION_START() as part of a comment — no error
+  but the function is never actually traced (silent miss).
+root_cause: The annotation pattern matched text inside a `/* */` block comment.
+fix: |
+  Skip any line where the `{` appears after `/*` with no intervening `*/`.
+  Track comment depth as you scan: if you are inside a block comment, do not
+  annotate.
+tags: [c, annotation, block-comment, silent-miss]
+
+---
+context: DFTRACER_C_FUNCTION_START placed inside a control-flow block
+error: |
+  Multiple START macros per function when the function contains `if(...) {`
+  or `for(...) {` — the inner `{` matched as another function opener.
+root_cause: Pattern matched `if (condition) {` or `for (init; cond; step) {`
+  as a function header, inserting a second START inside the already-annotated
+  function body.
+fix: |
+  A function-header `{` is ONLY valid when the token immediately before `(`
+  is a plain identifier that is NOT a C/C++ keyword. Reject any match where
+  the "function name" is: if, else, for, while, do, switch, case, return,
+  sizeof, typeof, namespace, class, struct, union, enum, template, catch, try.
+  Also reject when the line contains `else {` or `} else {`.
+tags: [c, annotation, control-flow, double-start]
+
+---
+context: Forward declaration annotated as if it were a function body
+error: |
+  DFTRACER_C_FUNCTION_START injected after a semicolon-terminated prototype:
+    int foo(int x);
+    DFTRACER_C_FUNCTION_START();   ← wrong: foo is declared, not defined here
+root_cause: Pattern matched `int foo(int x)` before the trailing `;` was checked.
+fix: |
+  A function DEFINITION must have `{` (not `;`) after the parameter list.
+  Never annotate a line that ends with `;` — that is a declaration/prototype.
+tags: [c, annotation, forward-declaration, prototype]
+
+---
+context: struct/union/enum definition annotated as function
+error: |
+  DFTRACER_C_FUNCTION_START() inserted after `struct IOR_param_t {`
+root_cause: `struct Foo {` has the same surface syntax as `type name {`.
+fix: |
+  Reject any match where the return-type token is `struct`, `union`, `enum`,
+  `typedef`, `class`, or `namespace`. These are type definitions, not functions.
+tags: [c, annotation, struct, typedef, false-positive]
+
+---
+context: File was truncated when writing annotated version
+error: |
+  ior.c went from 1869 lines to 960 lines after session_write_file.
+  Compiler reported "expected declaration or statement at end of input".
+root_cause: session_write_file was called with a partial file content — only
+  the first half of the annotated text was provided to the tool.
+fix: |
+  Always write the COMPLETE file. Read the original, build the full annotated
+  content in memory, verify the line count is >= original line count, then
+  write. Never split a file write across multiple tool calls. If the file is
+  large, read it in sections but write the full content in one call.
+tags: [c, annotation, truncation, write, session_write_file]
+
+---
+context: Annotating header files (.h / .hpp)
+error: |
+  DFTRACER_C_FUNCTION_START injected into inline function in a header included
+  by many translation units — START/END mismatch when header included multiple
+  times, or data_fn redeclared.
+root_cause: Header files often contain inline functions or static inline
+  functions. Annotating these causes the macro to expand in every TU that
+  includes the header, leading to redeclaration or scope errors.
+fix: |
+  Do NOT annotate header files (.h, .hpp). Only annotate .c / .cpp / .cxx
+  source files. Add `#include <dftracer/dftracer.h>` to the .c/.cpp file
+  that includes the header, not to the header itself.
+tags: [c, annotation, header, inline, redeclaration]
+
+---
+
+### Manual Annotation Process (gradual, iterative)
+
+`session_annotate_source` returns a **plan** — it does NOT write files.
+Annotate manually using `session_read_file` + `session_write_file`.
+
+Work in three passes. After each pass, run `session_build_annotated` to catch
+errors before proceeding. Fix errors before moving to the next pass.
+
+**Pass 1 — INIT and FINI in main (entry files only)**
+
+For each file where `is_entry: true`:
+1. Read the file with `session_read_file`
+2. Add `#include <dftracer/dftracer.h>` after the last existing `#include`
+3. Check whether `main()` calls `MPI_Init` or `MPI_Init_thread`:
+   - **No MPI**: place `DFTRACER_C_INIT(NULL, NULL, NULL);` as the first statement
+     after the opening `{` of main
+   - **Has MPI**: place `DFTRACER_C_INIT(NULL, NULL, NULL);` on the line immediately
+     **after** the `MPI_Init(...)` or `MPI_Init_thread(...)` call
+   - C++: same logic but use `DFTRACER_CPP_INIT(nullptr, nullptr, nullptr);` then
+     `DFTRACER_CPP_REGION_START(main_region);`
+4. Before every `return` in main AND before any `exit()`/`abort()`/`MPI_Abort()` call:
+   - C (no MPI): `DFTRACER_C_FINI();` (FUNCTION_END comes in Pass 2)
+   - C (with MPI): `DFTRACER_C_FINI();` then `MPI_Finalize();` (if not already there),
+     then `return` — order is FINI → MPI_Finalize → return
+   - C++: `DFTRACER_CPP_REGION_END(main_region); DFTRACER_CPP_FINI();` before
+     `MPI_Finalize()` if present
+5. Write the file, build, fix errors.
+
+**Pass 2 — FUNCTION_START and FUNCTION_END for selected C functions**
+
+For each C file (start with small files, then larger ones):
+1. Read the file.
+2. For each function definition, apply **Rule 0** first — skip trivial functions
+   (getters, setters, ≤5-line helpers, tight-loop utilities). Only annotate
+   functions that do I/O, data movement, or take measurable time.
+3. For each selected function:
+   a. Insert `DFTRACER_C_FUNCTION_START();` as the FIRST statement after `{`
+   b. Insert `DFTRACER_C_FUNCTION_END();` before EVERY `return` statement
+   c. For void functions (no return): insert `DFTRACER_C_FUNCTION_END();` as the
+      last statement before the closing `}`
+   d. For main (already has FINI from Pass 1): insert `DFTRACER_C_FUNCTION_END();`
+      immediately BEFORE each `DFTRACER_C_FINI();` call
+4. Write the file, build, fix errors before moving to the next file.
+
+**Pass 3 — FUNCTION_UPDATE for I/O metadata (non-blocking)**
+
+For functions that have meaningful I/O parameters (filenames, sizes, offsets, fds):
+1. After `DFTRACER_C_FUNCTION_START();`, add:
+   - `DFTRACER_C_FUNCTION_UPDATE_STR("name", param)` for `const char *` params
+     with names containing: file, path, name, dir, mode, cmd
+   - `DFTRACER_C_FUNCTION_UPDATE_INT("name", (int)param)` for numeric params
+     with names containing: size, count, len, offset, fd, flags, bytes
+2. Skip functions where no parameters carry I/O meaning.
+3. Build and fix any errors.
+
+**Key safety rules for every pass:**
+
+- Verify line count: annotated file must have MORE lines than original (never fewer)
+- Work one file at a time — do not batch multiple files in one write
+- After each file write, run `session_build_annotated` and resolve errors before continuing
+- If a file keeps failing after two attempts, reset it to the unannotated original
+  (`cp source/src/foo.c annotated/src/foo.c`) and move on — partial coverage is
+  better than a broken build
+
+**When uncertain, ask the user — then record the answer:**
+
+If you encounter a pattern not covered by the rules above (ambiguous brace,
+unusual function signature, preprocessor gymnastics, C11 generics, etc.) and
+you are not confident your annotation will be correct:
+
+1. **Stop and ask the user.** Describe the specific code pattern and your uncertainty.
+   Example:
+   ```
+   I'm unsure how to annotate this K&R-style function in ior.c:
+     void old_style(x, y)
+     int x; int y;
+     {
+   Should I treat the `{` on its own line as the function body opener? (y/n)
+   ```
+2. **Apply the user's answer** to the current file.
+3. **Immediately add a new entry to the Annotation Pitfalls section** in this file
+   (`.goosehints`) using the same lessons-learned format:
+   ```
+   ---
+   context: <one-line description of the pattern>
+   error: |
+     <what would go wrong without this rule>
+   root_cause: <why it was ambiguous>
+   fix: |
+     <the rule the user gave, phrased so future Goose can apply it without asking>
+   tags: [c, annotation, <relevant keywords>]
+   ```
+4. Continue annotation.
+
+Never silently guess on an ambiguous pattern and move on — a wrong guess causes
+a build error that is harder to diagnose than a one-line clarifying question.
+
+---
+
+## Planning and Progress
+
+For any task that involves more than two steps or uses multiple MCP tools in sequence:
+
+1. **Start with a plan.** Before taking action, write out the numbered steps you intend to follow.
+   Example:
+   ```
+   Plan:
+   1. Clone the repository into a new session workspace
+   2. Detect the build system
+   3. Configure and build (original)
+   4. Run smoke test to confirm baseline
+   5. Copy source and annotate with dftracer
+   6. Build the annotated version
+   7. Run smoke test with dftracer (traces collected)
+   8. Split and analyze traces
+   ```
+
+2. **Report progress after each step.** After completing a step, state:
+   - ✅ What was just done and its outcome
+   - ⏳ What comes next
+
+   Example after step 3:
+   ```
+   ✅ Step 3 done — cmake configured and built successfully (install_dir: /workspaces/.../install)
+   ⏳ Next: Step 4 — run smoke test against the installed binary
+   ```
+
+3. **Surface blockers immediately.** If a step fails, report the error and the remaining steps before asking how to proceed.
+
+## Live Progress for Expensive Steps
+
+For any step that is expected to take more than ~10 seconds, announce it **before** calling
+the tool, then immediately show key output lines **after** it completes.  Never silently
+wait for a long operation — the user needs to know work is in progress.
+
+**Steps that require a before-and-after report:**
+
+| Step | Expected duration | What to report after |
+|------|-------------------|----------------------|
+| `session_create` (git clone) | 10–60 s | repo size, ref cloned |
+| `session_configure` (cmake/autotools) | 10–60 s | build tool, any configure warnings |
+| `session_build_install` (make) | 30 s – 10 min | exit code, last 5 lines of stdout, any warnings/errors |
+| `session_run_smoke_test` | 5–120 s | exit code, full stdout if short, tail if long |
+| `session_autobuild_dftracer` | 5–30 min | clone status, build exit code, install prefix |
+| `session_install_dftracer` / `session_install_dftracer_utils` | 1–10 min | pip/cmake exit code |
+| `session_build_annotated` (each attempt) | 30 s – 10 min | attempt number, exit code, first compiler error if any |
+| `session_run_with_dftracer` (each attempt) | 5–120 s | attempt number, exit code, trace files created |
+| `session_split_traces` | 5–60 s | output directory, file count |
+| `session_analyze_traces` | 10–120 s | summary output |
+
+**Format for the before-announce:**
+```
+⏳ Starting <step name> — this may take <estimated time>…
+```
+
+**Format for the after-report (always include exit code and key output):**
+```
+✅ <step name> succeeded (exit 0)
+   stdout: <last 5 non-empty lines, or full output if under 10 lines>
+
+❌ <step name> FAILED (exit <N>)
+   stderr: <first compiler error or last 10 lines>
+   → artifact log: <workspace>/artifacts/<NN>_<step>.log
+```
+
+For build steps, always show the **first** compiler error (the root cause), not the flood
+of cascading errors that follow it.  Extract it from the artifact log with:
+  `grep -m1 "error:" <workspace>/artifacts/10_session_build_annotated*.log`
+
+## DFTracer References
+
 Use these links when implementing DFTracer behavior:
 - https://dftracer.readthedocs.io/
 - https://dftracer.readthedocs.io/en/latest/api.html
@@ -8,7 +535,173 @@ Use these links when implementing DFTracer behavior:
 - https://dftracer.readthedocs.io/projects/analyzer/en/latest/
 - https://github.com/llnl/dftracer
 
-Repository rules:
+## Smoke Test Rules
+
+**Always run smoke tests as a single process — never with MPI or any parallelism.**
+
+- `session_run_smoke_test` automatically strips MPI launchers (`mpirun`, `mpiexec`,
+  `srun`, `jsrun`, `aprun`, `flux run`) and their flags (`-np`, `-n`, `--ntasks`, etc.)
+  from the command before running. You do not need to clean the command yourself, but
+  **do not intentionally pass multi-process flags** — the goal is a clean, reproducible
+  single-process baseline.
+- Never use `-j N` (parallel make) inside a smoke test command.
+- Never use `OMP_NUM_THREADS > 1` or `GOMP_SPINCOUNT` in smoke test env vars.
+- If the application requires at least one MPI rank to start (e.g., calls
+  `MPI_Init` unconditionally), run it with `mpirun -np 1 <binary> <args>` so the
+  tool strips it to a single rank — NOT with multiple ranks.
+- The smoke test command should exercise the minimal happy path: one input file,
+  one iteration, smallest possible data size, no checksum or verification flags that
+  require multiple processes.
+
+**Example for IOR:**
+```
+# Good — single process, minimal run
+./src/ior -a POSIX -b 1m -t 1m -s 1 -F -C -o /tmp/ior_smoke_test
+
+# Bad — MPI multi-process
+mpirun -np 4 ./src/ior -a POSIX -b 1m -t 1m -s 1 -F -C -o /tmp/ior_smoke_test
+```
+
+## Key DFTracer Environment Variables (for smoke tests / session_run_with_dftracer)
+
+Always set all of these when running an application with dftracer enabled:
+- `DFTRACER_ENABLE=1`        — activate tracing (required)
+- `DFTRACER_INC_METADATA=1`  — include process/thread metadata in trace output
+- `DFTRACER_LOG_FILE=<path>` — prefix path for .pfw trace files
+- `DFTRACER_DATA_DIR=<path>` — directory to monitor for I/O events
+- `DFTRACER_INIT=1`          — auto-initialise without an explicit API call in source
+
+## Lessons-Learned Cache
+
+A structured log of past failures and their fixes lives at `.goose/lessons-learned.md`.
+
+**Before attempting any build, install, configure, or annotation step:**
+1. Read `.goose/lessons-learned.md`.
+2. Search for entries whose `tags` or `error` match the current task (package name, build tool, error text).
+3. Apply the recorded fix proactively — do not repeat a known failure.
+
+**After resolving any non-trivial error (not a simple typo):**
+Append a new entry to `.goose/lessons-learned.md` using this format:
+
+```markdown
+---
+date: YYYY-MM-DD
+context: <one-line description of what was being attempted>
+error: |
+  <exact error message or key excerpt>
+root_cause: <why it happened>
+fix: |
+  <exact steps or code change that resolved it>
+tags: [<package>, <build-tool>, <error-keyword>, ...]
+---
+```
+
+Keep entries cumulative — never delete old ones. They are the institutional memory for this project.
+
+## Install and Privilege Rules
+
+**Never use `sudo` or install into system paths.** All installs must be userspace only:
+
+- Python packages: `pip install --user` or into a venv (`venv/bin/pip install`)
+- npm/node: use `npm install --prefix ~/.local` or a project-local `node_modules/`
+- CMake/make: always pass `-DCMAKE_INSTALL_PREFIX=<userspace path>` (e.g. `~/.local` or the session's `install/` dir)
+- Autotools: always pass `--prefix=<userspace path>` to `./configure`
+- Conda: use `conda install` into the active user env, never `sudo conda`
+- Binaries: copy to `~/.local/bin/` or the session workspace, not `/usr/local/bin/`
+
+If a build system defaults to `/usr/local` or requires root, override the prefix — do not run with elevated privileges.
+
+## Artifact Logging
+
+Every `session_*` tool call automatically writes a stage log to:
+  `<workspace>/artifacts/<NN>_<stage_name>.log`
+
+The step numbering is fixed:
+
+| NN | Log file                            | Session tool                  |
+|----|-------------------------------------|-------------------------------|
+| 01 | `01_session_create.log`             | session_create                |
+| 02 | `02_session_detect.log`             | session_detect                |
+| 03 | `03_session_configure.log`          | session_configure             |
+| 04 | `04_session_build_install.log`      | session_build_install         |
+| 05 | `05_session_run_smoke_test.log`     | session_run_smoke_test        |
+| 06 | `06_session_copy_annotated.log`     | session_copy_annotated        |
+| 07 | `07_session_patch_build.log`        | session_patch_build           |
+| 08 | `08_session_annotate_source.log`    | session_annotate_source       |
+| 09 | `09_session_install_dftracer.log`   | session_install_dftracer      |
+| 10 | `10_session_build_annotated.log`    | session_build_annotated       |
+| 11 | `11_session_run_with_dftracer.log`  | session_run_with_dftracer     |
+| 12 | `12_session_split_traces.log`       | session_split_traces          |
+| 13 | `13_session_analyze_traces.log`     | session_analyze_traces        |
+
+**Each log contains:** timestamp, run_id, step number, stdout, stderr, exit code, and
+any stage-specific fields (commands, file counts, patch paths, etc.).
+
+**After each step (manual or pipeline), review the corresponding log to verify:**
+- Exit code is 0 (success)
+- stdout contains the expected output for that stage
+- No unexpected errors appear in stderr
+
+**Annotation correctness check:** after `session_annotate_source`, inspect
+`<workspace>/annotation.patch` — it is a unified diff of every file modified.
+Use `patch --dry-run -p1 < annotation.patch` from source/ to confirm it applies cleanly.
+
+**On failure:** read the log for the failing step, diagnose from stderr, then call the
+individual `session_*` tool directly (not the full pipeline) to retry that step.
+
+## Annotation-Build-Run Iteration (manual mode)
+
+The pipeline automatically retries build + run up to 3 times and fixes dftracer macro
+errors in the affected files. When the pipeline exhausts its retries or you are working
+interactively, follow this manual loop:
+
+**Goal:** maximize dftracer coverage — `DFTRACER_C_FUNCTION_START/END` on every function,
+`DFTRACER_C_FUNCTION_UPDATE_STR/INT` for important I/O parameters (filenames, sizes,
+offsets, fds). Do NOT add `DFTRACER_C_REGION_START/END` — function-level macros are enough.
+
+**Iteration loop:**
+
+```
+repeat until both build and run succeed:
+
+  1. Read <workspace>/artifacts/10_session_build_annotated*.log
+     → find which files have compile errors
+
+  2. For each failing file:
+     a. session_read_file(run_id, "annotated/src/foo.c")
+     b. Identify the bad macro insertion (wrong scope, inside struct, missing START, etc.)
+     c. session_write_file(run_id, "annotated/src/foo.c", corrected_content)
+        Rules:
+        - Every non-trivial C function needs DFTRACER_C_FUNCTION_START() as first statement
+        - DFTRACER_C_FUNCTION_END() before every return (not before closing brace of void fns)
+        - DFTRACER_C_FUNCTION_UPDATE_STR("name", value) for const char* params (filename, path…)
+        - DFTRACER_C_FUNCTION_UPDATE_INT("name", value) for size_t/off_t/int params (size, fd…)
+        - Do NOT annotate: struct definitions, typedefs, macro bodies, #ifdef guards
+        - C++ uses DFTRACER_CPP_FUNCTION() (RAII, no END needed) + DFTRACER_CPP_FUNCTION_UPDATE
+
+  3. session_build_annotated(run_id)
+     → check artifacts/10_session_build_annotated.log
+
+  4. If build succeeds: session_run_with_dftracer(run_id, command="<smoke_test_command>")
+     → check artifacts/11_session_run_with_dftracer.log
+
+  5. If run fails due to a runtime crash in annotated code:
+     → read the failing file, remove the offending macro, rebuild, rerun
+
+  6. Once run succeeds: session_split_traces → session_analyze_traces
+```
+
+**Prefer manual edits over tool calls when failing:** if `session_annotate_source`
+produces errors on the same file across two attempts, use `session_read_file` +
+`session_write_file` to hand-annotate that file rather than re-running the tool.
+
+**Coverage check:** after a successful run, check how many functions in the annotated
+source contain `DFTRACER_C_FUNCTION_START`. A file with zero START calls was either
+skipped (header-only) or had its macros stripped during error recovery — re-annotate it
+manually.
+
+## Repository Rules
+
 1. Do not scan or edit large trace/binary artifacts unless explicitly requested.
 2. Prefer source files under dftracer-agents/ and mcp-tools/ for implementation work.
 3. Keep tool calls namespaced when invoking Goose tools.

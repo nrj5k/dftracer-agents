@@ -13,12 +13,20 @@ dependencies = [
     "dftracer-analyzer @ git+https://github.com/llnl/dfanalyzer.git@develop",
 ]
 
+[project.scripts]
+dftracer-mcp-server = "dftracer_mcp_server:main"
+
 [project.optional-dependencies]
+# dftracer has C extensions that require cmake + custom zlib; install separately
+# via system package or spack before using the session annotation service.
 dev = [
     "pytest>=7.0.0",
     "black>=24.0.0",
     "flake8>=7.0.0",
 ]
+
+[tool.setuptools]
+py-modules = ["dftracer_mcp_server"]
 
 [tool.pytest.ini_options]
 testpaths = ["test"]

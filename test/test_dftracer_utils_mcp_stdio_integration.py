@@ -141,10 +141,14 @@ def test_mcp_server_tool_behavior_matches_subprocess_for_info(tmp_path):
         env=common_env,
     )
 
-    # If the native binary succeeds, outputs must match exactly.
+    def _strip_timing(s: str) -> str:
+        import re
+        return re.sub(r"Time:\s+[\d.]+ ms", "Time: <T> ms", s)
+
+    # If the native binary succeeds, outputs must match (ignoring wall-clock time lines).
     if info_proc.returncode == 0:
         assert mcp_info.isError is False
-        assert mcp_info_text == info_proc.stdout
+        assert _strip_timing(mcp_info_text) == _strip_timing(info_proc.stdout)
     else:
         # On platforms where dftracer_info fails (e.g., segfault), MCP should surface an error too.
         assert mcp_info.isError is True

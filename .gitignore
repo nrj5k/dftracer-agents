@@ -2,8 +2,8 @@
 venv/
 
 # Workspace directories
-workspace/*
-!workspace/.gitkeep
+workspaces/*
+!workspaces/.gitkeep
 dftracer-agents.egg-info
 dftracer_agents.egg-info/dependency_links.txt
 dftracer_agents.egg-info/PKG-INFO
