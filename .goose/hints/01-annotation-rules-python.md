@@ -71,7 +71,46 @@ with tracer.get_time("IO", "read_loop"):
   decorator — prefer decorators for most cases.
 - Name the region descriptively: `"category"`, `"name"` pair appears in the trace.
 
-### Python Rule 5 — Skip trivial functions (Rule 0 applies)
+### Python Rule 5 — Classify every annotated function with comp=TYPE
+
+Every annotated function MUST include a `comp` classification so traces can be
+filtered and grouped by operation type. Pass `comp` as a keyword argument to the decorator:
+
+```python
+from dftracer.logger import dftracer_fn
+
+# File I/O
+@dftracer_fn(cat="IO", comp="io")
+def read_checkpoint(path: str) -> dict: ...
+
+# Communication (MPI, network RPC)
+@dftracer_fn(cat="COMM", comp="comm")
+def broadcast_weights(tensor, comm): ...
+
+# Compute (checksums, compression, encoding)
+@dftracer_fn(cat="CPU", comp="cpu")
+def compute_checksum(data: bytes) -> str: ...
+
+# Memory (large copies, buffer management)
+@dftracer_fn(cat="MEM", comp="mem")
+def copy_batch(src: np.ndarray, dst: np.ndarray) -> None: ...
+```
+
+**Types:** `"io"`, `"mem"`, `"cpu"`, `"comm"` — same taxonomy as C (see General Rule E).
+
+If `dftracer_fn` does not accept `comp` as a keyword argument in the installed version,
+add it as a metadata update inside the function body:
+
+```python
+from dftracer.logger import dftracer_fn, DFTracer
+
+@dftracer_fn(cat="IO")
+def read_checkpoint(path: str) -> dict:
+    DFTracer.get_instance().update("comp", "io")   # fallback if decorator doesn't support it
+    ...
+```
+
+### Python Rule 6 — Skip trivial functions (Rule 0 applies)
 
 ```python
 # ✅ Annotate — does real file I/O
@@ -95,7 +134,7 @@ def _fmt_path(self, p: str) -> str:
     return str(Path(p).resolve())
 ```
 
-### Python Rule 6 — Class methods
+### Python Rule 7 — Class methods
 
 Apply the decorator directly to instance and class methods:
 
@@ -121,7 +160,8 @@ class DataLoader:
 - [ ] `from dftracer.logger import dftracer_fn` imported at top of file
 - [ ] `DFTracer.initialize_log(...)` called at program entry (after MPI.Init if applicable)
 - [ ] `DFTracer.finalize_log()` called at program exit (before MPI.Finalize if applicable)
-- [ ] `@dftracer_fn(cat="<category>")` applied to all Rule-0-qualifying functions
-- [ ] No decorator on trivial getters, setters, or one-liners
-- [ ] Category names are meaningful and consistent across the codebase
+- [ ] ALL non-trivial functions decorated — skip only pure getters/one-liners (Rule D)
+- [ ] `@dftracer_fn(cat="<CATEGORY>", comp="<type>")` on every annotated function
+- [ ] `comp` is one of `"io"`, `"mem"`, `"cpu"`, `"comm"` — consistent with C taxonomy
+- [ ] Category names are consistent across the codebase (`"IO"`, `"CPU"`, `"MEM"`, `"COMM"`)
 - [ ] For mpi4py: initialize AFTER MPI.Init(), finalize BEFORE MPI.Finalize()

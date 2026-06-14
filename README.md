@@ -296,7 +296,62 @@ extensions:
     enabled: true
 ```
 
-### Example Goose session
+### Using Goose to annotate an application and run the full pipeline
+
+The session tools expose a complete annotation + build + run pipeline.
+Start a session and describe the full task in one prompt — Goose will plan
+each step, confirm with you before executing, and report results as it goes.
+
+```bash
+goose session
+```
+
+Paste a prompt like this (adapt the app, version, and repo as needed):
+
+```
+I want to annotate the IOR app (get from GitHub, tag 4.0.0) and integrate it
+with dftracer. This includes:
+  - cloning and building IOR from source
+  - annotating the source files with dftracer macros
+  - compiling the annotated version
+  - running a simple smoke test with dftracer enabled
+  - splitting and analyzing the resulting traces
+
+Run the full pipeline under workspaces/<RUN_ID> where RUN_ID is a unique ID
+you generate (e.g. the current date/time).
+
+I have MCP tools for each step. First show me a numbered plan, then execute
+one step at a time — after each step tell me what was done and what is next,
+and wait for my confirmation before continuing.
+```
+
+Goose will respond with a numbered plan, then drive the pipeline step by step,
+pausing after each one:
+
+```
+Plan:
+  1. session_create       — clone IOR 4.0.0 into workspaces/<RUN_ID>/source
+  2. session_detect       — detect build system and language
+  3. session_configure    — run ./configure with dftracer prefix
+  4. session_build_install — build and install original IOR
+  5. session_run_smoke_test — baseline smoke test (single process, no MPI)
+  6. session_copy_annotated — copy source → annotated/
+  7. session_annotate_source — scan for annotation candidates, produce plan
+  8. [manual] annotate files — Pass 1 (INIT/FINI), Pass 2 (START/END), Pass 3 (UPDATE)
+  9. session_build_annotated — build annotated version
+  10. session_run_with_dftracer — run with tracing enabled
+  11. session_split_traces — split raw .pfw.gz files
+  12. session_analyze_traces — summarize trace data
+
+✅ Step 1 done — cloned IOR 4.0.0 (tag v4.0.0), workspace: workspaces/20260614_120000
+⏳ Next: Step 2 — detect build system
+
+Shall I proceed? (yes/no)
+```
+
+Type `yes` (or just press Enter) after each step to continue.
+
+### Example Goose session — trace analysis
 
 ```bash
 goose session
@@ -347,6 +402,10 @@ frequent directory polling, common in parallel file systems.
 ──────────────────────────────────────────────────────────────────
 …
 ```
+
+The annotation pipeline prompt and the analysis workflow below can be combined —
+after the pipeline completes, ask Goose to continue with `analyze` and `query`
+on the trace directory it just produced.
 
 ### Recommended analysis workflow
 

@@ -1761,13 +1761,13 @@ class DFTracerSessionService(MCPService):
             Run a command with dftracer environment variables set so traces are
             captured in the dedicated <workspace>/traces/ directory.
 
-            Trace files land at <workspace>/traces/trace.<pid>.pfw and are
+            Trace files land at <workspace>/traces/<run_id>.<pid>.pfw and are
             consumed by session_split_traces.
 
             Sets (per https://dftracer.readthedocs.io/en/latest/api.html):
               DFTRACER_ENABLE=1        — activate tracing
               DFTRACER_INC_METADATA=1  — include process/thread metadata in traces
-              DFTRACER_LOG_FILE=<workspace>/traces/trace
+              DFTRACER_LOG_FILE=<workspace>/traces/<run_id>  (prefix; dftracer appends .<pid>.pfw)
               DFTRACER_DATA_DIR=<data_dir or source/>
               DFTRACER_INIT=1          — auto-initialise without explicit API call
 
@@ -1789,10 +1789,15 @@ class DFTracerSessionService(MCPService):
             if not cwd.exists():
                 cwd = ws / "source"
 
+            # DFTRACER_LOG_FILE is a prefix; dftracer appends .<pid>.pfw to it.
+            # Using run_id as the prefix keeps trace files clearly associated with
+            # this specific run: <workspace>/traces/<run_id>.<pid>.pfw
+            log_file_prefix = str(traces_dir / run_id)
+
             env: Dict[str, str] = {
                 "DFTRACER_ENABLE": "1",
                 "DFTRACER_INC_METADATA": "1",
-                "DFTRACER_LOG_FILE": str(traces_dir / "trace"),
+                "DFTRACER_LOG_FILE": log_file_prefix,
                 "DFTRACER_DATA_DIR": data_dir or str(ws / "source"),
                 "DFTRACER_INIT": "1",
             }

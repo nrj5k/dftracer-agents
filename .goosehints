@@ -16,6 +16,35 @@
 3. **Check lessons-learned before building.** Before any build, configure, or install
    step, read `.goose/lessons-learned.md` and apply any recorded fixes proactively.
 
+4. **Produce patch and annotation report after annotation.** Once all passes complete
+   and the build passes, you MUST write:
+   - `workspaces/<run_id>/annotation.patch` — `diff -urN source/ annotated/`
+   - `workspaces/<run_id>/annotation_logs/annotation_report.md` — full report with
+     annotated table, skipped table, include-only table, errors, and pending work
+   Maintain `annotation_logs/annotation_process.log` and `annotation_logs/annotation_status.md`
+   throughout the session (append/update after every function). Do not report the
+   pipeline as complete until patch and final report exist.
+
+5. **Trace files must stay in the workspace.** `DFTRACER_LOG_FILE` is set automatically
+   by `session_run_with_dftracer` to `workspaces/<run_id>/traces/<run_id>`. Do not
+   override it to `/tmp/` or any path outside the workspace — `session_split_traces`
+   only reads from `workspaces/<run_id>/traces/`.
+
+6. **Never set DFTRACER_INIT=1 when source has explicit DFTRACER_C_INIT().** If Pass 1
+   added `DFTRACER_C_INIT(NULL, NULL, NULL)` to the code, pass `env_extra='{"DFTRACER_INIT":"0"}'`
+   to `session_run_with_dftracer`. Both active simultaneously produces an empty trace file.
+
+7. **No function may remain skipped due to failure.** The default is to annotate
+   (Rule D). Skip only pure getters/setters/formatters ≤5 lines. Complexity is not
+   a skip reason — use happy-path-only annotation (Rule E) for complex error handling.
+   PENDING/INCLUDE-ONLY functions MUST be retried in Pass 4.
+
+8. **Every annotated function must have `comp=TYPE` as the first UPDATE.** Use
+   `DFTRACER_C_FUNCTION_UPDATE_STR("comp", "<type>")` immediately after START.
+   Types: `"io"` (file ops), `"mem"` (memory/mmap), `"cpu"` (compute), `"comm"`
+   (MPI/network/RPC). Same taxonomy for Python: `comp="<type>"` in the decorator.
+   This is not optional — it is required for trace analysis to work correctly..
+
 ---
 
 Topic files are maintained separately under `.goose/hints/` for easy editing.

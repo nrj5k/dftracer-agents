@@ -25,11 +25,38 @@
 mpirun -np 4 ./src/ior -a POSIX -b 1m -t 1m -s 1 -F -C -o /tmp/ior_smoke_test
 ```
 
-## Key DFTracer Environment Variables (for smoke tests / session_run_with_dftracer)
+## Key DFTracer Environment Variables (for session_run_with_dftracer)
 
-Always set all of these when running an application with dftracer enabled:
-- `DFTRACER_ENABLE=1`        — activate tracing (required)
-- `DFTRACER_INC_METADATA=1`  — include process/thread metadata in trace output
-- `DFTRACER_LOG_FILE=<path>` — prefix path for .pfw trace files
-- `DFTRACER_DATA_DIR=<path>` — directory to monitor for I/O events
-- `DFTRACER_INIT=1`          — auto-initialise without an explicit API call in source
+`session_run_with_dftracer` sets all of these automatically — **do not pass them
+in `env_extra` unless you have a specific override reason**:
+
+| Variable | Value set by the tool | Purpose |
+|---|---|---|
+| `DFTRACER_ENABLE` | `1` | Activate tracing (required) |
+| `DFTRACER_INC_METADATA` | `1` | Include process/thread metadata |
+| `DFTRACER_LOG_FILE` | `workspaces/<run_id>/traces/<run_id>` | Trace file prefix — dftracer appends `.<pid>.pfw` |
+| `DFTRACER_DATA_DIR` | `workspaces/<run_id>/source` (or caller-supplied path) | Directory to monitor for I/O events |
+| `DFTRACER_INIT` | `1` *(see note below)* | Auto-initialise without an explicit API call in source |
+
+**DFTRACER_INIT conflict warning:** If the annotated source already contains explicit
+`DFTRACER_C_INIT()` / `DFTRACER_CPP_INIT()` calls (added during Pass 1), do NOT set
+`DFTRACER_INIT=1`. Both active simultaneously causes double-init, producing an empty
+or corrupted trace file. Pass `env_extra='{"DFTRACER_INIT":"0"}'` in that case.
+Heuristic: `grep -r "DFTRACER_C_INIT\|DFTRACER_CPP_INIT" annotated/` — if any matches,
+set `DFTRACER_INIT=0`.
+
+**`DFTRACER_LOG_FILE` must always be an absolute path inside the workspace run directory.**
+Trace files land at `workspaces/<run_id>/traces/<run_id>.<pid>.pfw` and are picked
+up by `session_split_traces`, which reads all `*.pfw` / `*.pfw.gz` from that folder.
+
+**Never set `DFTRACER_LOG_FILE` to `/tmp/` or any path outside the workspace.**
+Traces written outside the workspace will not be found by `session_split_traces`.
+
+If you run the application manually (outside the MCP tool), replicate the same env:
+```bash
+export DFTRACER_ENABLE=1
+export DFTRACER_INC_METADATA=1
+export DFTRACER_LOG_FILE=/absolute/path/to/workspaces/<run_id>/traces/<run_id>
+export DFTRACER_DATA_DIR=/absolute/path/to/workspaces/<run_id>/source
+export DFTRACER_INIT=1
+```
