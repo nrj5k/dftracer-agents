@@ -92,7 +92,7 @@ def _load_module(name: str, path: Path):
 # ---------------------------------------------------------------------------
 
 def _build_utils_server() -> FastMCP:
-    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer_utils_service.py"
+    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "dftracer_utils_service.py"
     mod = _load_module("dftracer_utils_service", path)
     service = mod.DftracerUtilsService()
 
@@ -115,7 +115,7 @@ def _build_utils_server() -> FastMCP:
 
 
 def _build_analyzer_server() -> FastMCP:
-    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dfanalyzer_service.py"
+    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "dfanalyzer_service.py"
     mod = _load_module("dfanalyzer_service", path)
     service = mod.DFAnalyzerService()
 
@@ -126,13 +126,28 @@ def _build_analyzer_server() -> FastMCP:
 
 
 def _build_plot_server() -> FastMCP:
-    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer_plot_service.py"
+    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "dftracer_plot_service.py"
     mod = _load_module("dftracer_plot_service", path)
     service = mod.DFTracerPlotService()
 
     server = FastMCP("DFTracerPlot")
     for tool in asyncio.run(service.plot_subservice.list_tools()):
         server.add_tool(tool)
+    return server
+
+
+def _build_session_server() -> FastMCP:
+    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer_session_service.py"
+    mod = _load_module("dftracer_session_service", path)
+    service = mod.DFTracerSessionService()
+
+    server = FastMCP("DFTracerSession")
+    for sub_name in ("session_subservice", "pipeline_subservice"):
+        sub = getattr(service, sub_name, None)
+        if sub is None:
+            continue
+        for tool in asyncio.run(sub.list_tools()):
+            server.add_tool(tool)
     return server
 
 
@@ -150,9 +165,17 @@ def build_server(service: str) -> FastMCP:
                 combined.add_tool(tool)
         return combined
 
-    # both — all three services
+    if service == "session":
+        return _build_session_server()
+
+    # both — all services
     combined = FastMCP("DFTracer")
-    for srv in (_build_utils_server(), _build_analyzer_server(), _build_plot_server()):
+    for srv in (
+        _build_utils_server(),
+        _build_analyzer_server(),
+        _build_plot_server(),
+        _build_session_server(),
+    ):
         for tool in asyncio.run(srv.list_tools()):
             combined.add_tool(tool)
     return combined
@@ -168,7 +191,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--service",
-        choices=["utils", "analyzer", "both"],
+        choices=["utils", "analyzer", "session", "both"],
         default="both",
         help="Which service(s) to expose (default: both)",
     )

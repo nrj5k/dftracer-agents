@@ -6,7 +6,7 @@ from fastmcp import FastMCP
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def _load():
-    sp = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dfanalyzer_service.py"
+    sp = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "dfanalyzer_service.py"
     pkg = types.ModuleType("dftracer_agents")
     pkg.__path__ = [str(REPO_ROOT / "dftracer-agents")]
     mcp = types.ModuleType("dftracer_agents.mcp_tools")

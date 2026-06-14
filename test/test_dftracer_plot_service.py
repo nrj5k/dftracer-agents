@@ -48,7 +48,7 @@ def _load_plot_module():
     mn = "dftracer_agents.mcp_tools.tools.dftracer_plot_service"
     sys.modules.pop(mn, None)
     mod = importlib.util.module_from_spec(
-        s2 := importlib.util.spec_from_file_location(mn, tools_dir / "dftracer_plot_service.py")
+        s2 := importlib.util.spec_from_file_location(mn, tools_dir / "dftracer" / "dftracer_plot_service.py")
     )
     sys.modules[mn] = mod
     s2.loader.exec_module(mod)

@@ -9,14 +9,9 @@ description = "DFTracer MCP Services for Dataflow Analysis"
 requires-python = ">=3.9"
 dependencies = [
     "fastmcp>=0.1.0",
-    "matplotlib>=3.7.0",
-    "bokeh>=3.0.0",
     "dftracer-utils @ git+https://github.com/llnl/dftracer-utils.git@develop",
     "dftracer-analyzer @ git+https://github.com/llnl/dfanalyzer.git@develop",
 ]
-
-[project.scripts]
-dftracer-mcp-server = "dftracer_mcp_server:main"
 
 [project.optional-dependencies]
 dev = [
@@ -25,5 +20,8 @@ dev = [
     "flake8>=7.0.0",
 ]
 
-[tool.setuptools]
-py-modules = ["dftracer_mcp_server"]
+[tool.pytest.ini_options]
+testpaths = ["test"]
+markers = [
+    "slow: marks tests that require network access or long build times (deselect with -m 'not slow', enable with --run-slow)",
+]

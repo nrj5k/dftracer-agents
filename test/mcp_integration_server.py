@@ -16,6 +16,7 @@ def _load_service_module():
         / "dftracer-agents"
         / "mcp-tools"
         / "tools"
+        / "dftracer"
         / "dftracer_utils_service.py"
     )
 

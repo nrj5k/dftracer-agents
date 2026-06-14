@@ -9,6 +9,30 @@ from pathlib import Path
 import pytest
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-slow",
+        action="store_true",
+        default=False,
+        help="Run slow integration tests that require network access or long builds",
+    )
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "slow: marks tests that require network or long builds (enable with --run-slow)",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if not config.getoption("--run-slow", default=False):
+        skip_slow = pytest.mark.skip(reason="Pass --run-slow to run network integration tests")
+        for item in items:
+            if item.get_closest_marker("slow"):
+                item.add_marker(skip_slow)
+
+
 SUBSERVICE_ATTRS = [
     "core_subservice",
     "analysis_subservice",
@@ -29,6 +53,7 @@ def service_module():
         / "dftracer-agents"
         / "mcp-tools"
         / "tools"
+        / "dftracer"
         / "dftracer_utils_service.py"
     )
 

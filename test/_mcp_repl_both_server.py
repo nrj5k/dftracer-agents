@@ -16,7 +16,7 @@ def _load_utils():
     return mod.build_server()
 
 def _load_analyzer():
-    sp = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dfanalyzer_service.py"
+    sp = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "dfanalyzer_service.py"
     for k, v in {
         "dftracer_agents": None,
         "dftracer_agents.mcp_tools": None,
