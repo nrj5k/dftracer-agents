@@ -334,21 +334,30 @@ regardless of body size.
 
 ### C Rule 9 — Coverage verification: scan all definitions after each file
 
-After annotating a file, count definitions vs STARTs to catch missed functions:
-```bash
-# Definitions (rough count)
-grep -c "^[a-zA-Z_].*(" annotated/src/foo.c
+After annotating a file, run TWO checks before marking it DONE:
 
-# START macros
-grep -c "DFTRACER_C_FUNCTION_START" annotated/src/foo.c
-```
-If counts differ significantly, run:
+**Check 1 — list every annotated function** (the `awk` command from the report):
 ```bash
-# List all definitions without a START in the same function
-grep -n "^[a-zA-Z_].*(" annotated/src/foo.c | grep -v ";"
+awk '/^[a-zA-Z].*\(/ {func=$0} /DFTRACER_C_FUNCTION_START/ {print NR": "func}' \
+    annotated/src/foo.c
 ```
-Then check each hit for a nearby `DFTRACER_C_FUNCTION_START`. Any definition
-without one is a candidate for annotation (unless Rule 0 applies).
+This prints one line per START with the function signature. Review it against the
+full function list — any function missing from the output is unannotated.
+
+**Check 2 — verify comp=TYPE is present in every annotated function:**
+```bash
+grep -c "DFTRACER_C_FUNCTION_START"          annotated/src/foo.c
+grep -c 'DFTRACER_C_FUNCTION_UPDATE_STR.*comp' annotated/src/foo.c
+```
+Both counts **must be equal**. If START count > comp count, some functions were
+annotated without the mandatory classification. Fix them before proceeding.
+
+**Check 3 — quick definition vs START sanity count:**
+```bash
+grep -c "^[a-zA-Z_].*(" annotated/src/foo.c   # rough definition count
+grep -c "DFTRACER_C_FUNCTION_START" annotated/src/foo.c  # START count
+```
+If counts differ significantly, use Check 1 to find the gap.
 
 ### C Quick checklist
 

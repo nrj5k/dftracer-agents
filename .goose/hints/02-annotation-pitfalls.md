@@ -541,6 +541,29 @@ fix: |
 tags: [c, annotation, posix, mknod, deprecated, rule0]
 
 ---
+context: Completing annotation pass without adding comp=TYPE to any function
+error: |
+  After a full annotation session, grep for comp= updates finds zero results:
+    grep -c 'DFTRACER_C_FUNCTION_UPDATE_STR.*comp' annotated/src/aiori-POSIX.c
+    → 0
+  But grep for START finds 21. Every function was traced but none is classified.
+root_cause: |
+  The comp=TYPE rule (C Rule 4) was added AFTER the annotation session started,
+  or was missed during Pass 2. When working function-by-function under time pressure
+  it is easy to add START+END without the mandatory UPDATE_STR("comp", ...).
+fix: |
+  After annotating a file, always run the two-count check BEFORE moving to the next file:
+    grep -c "DFTRACER_C_FUNCTION_START" file.c
+    grep -c 'DFTRACER_C_FUNCTION_UPDATE_STR.*comp' file.c
+  If the numbers differ, find each START without a matching comp= by looking at the
+  lines immediately following every DFTRACER_C_FUNCTION_START occurrence:
+    grep -A2 "DFTRACER_C_FUNCTION_START" file.c | grep -v "comp"
+  Add the missing UPDATE_STR("comp", "<type>") immediately after each bare START.
+  This must be done before Pass 3 — retrofitting it after UPDATE metadata calls are
+  in place is harder because you need to reorder lines.
+tags: [c, annotation, comp, classification, missing-comp, rule4]
+
+---
 context: Vendor-specific functions (gpfs_*, beegfs_*, lustre_*) not appearing in trace
 error: |
   After annotating gpfs_access_start, beegfs_getStriping, lustre_disable_file_locks

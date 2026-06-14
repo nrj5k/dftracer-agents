@@ -85,12 +85,14 @@ workspaces/<run_id>/annotation_logs/
 
 ## Storage Backends (mandatory coverage)
 
-| File | Function | Status | Attempts | Notes |
-|------|----------|--------|----------|-------|
-| aiori-POSIX.c | POSIX_Create | ✅ DONE | 1 | START+END×2+UPDATE(filename,flags) |
-| aiori-POSIX.c | POSIX_Xfer | ✅ DONE | 2 | 5 returns — fixed END order attempt 2 |
-| aiori-MPIIO.c | MPIIO_Open | ⚠️ PENDING | 2 | include-only; complex control flow |
-| aiori-MPIIO.c | MPIIO_Xfer | ⚠️ PENDING | 1 | multi-line sig; needs retry |
+| File | Function | Status | comp | Traced in Test | Attempts | Notes |
+|------|----------|--------|------|----------------|----------|-------|
+| aiori-POSIX.c | POSIX_Create | ✅ DONE | io | ✅ 2 events | 1 | START+END×2+UPDATE(filename,flags) |
+| aiori-POSIX.c | POSIX_Xfer | ✅ DONE | io | ✅ 5 events | 2 | 5 returns — fixed END order attempt 2 |
+| aiori-POSIX.c | POSIX_Sync | ✅ DONE | io | ⚠️ not called | 1 | Requires --sync flag |
+| aiori-POSIX.c | gpfs_access_start | ✅ DONE | io | ⚠️ no GPFS | 1 | #ifdef guarded; traced on GPFS only |
+| aiori-MPIIO.c | MPIIO_Open | ⚠️ PENDING | — | — | 2 | include-only; complex control flow |
+| aiori-MPIIO.c | MPIIO_Xfer | ⚠️ PENDING | — | — | 1 | multi-line sig; needs retry |
 
 ## Entry Points
 
@@ -105,7 +107,25 @@ workspaces/<run_id>/annotation_logs/
 |------|----------|--------|
 | aiori-POSIX.c | POSIX_options | Trivial option registration helper, no I/O |
 | utilities.c | get_time_string | ≤5-line string formatter, no data movement |
+
+## Coverage Summary
+
+| Category | Total | Annotated | Annotated % | Traced in Test | Notes |
+|----------|-------|-----------|-------------|----------------|-------|
+| Core I/O | 9 | 9 | 100% | 6 | Fsync/Sync/Rename not in basic test |
+| Lifecycle | 2 | 2 | 100% | 2 | Init/Finalize always traced |
+| GPFS | 5 | 5 | 100% | 0 | #ifdef; GPFS filesystem not available |
+| BeeGFS | 4 | 4 | 100% | 0 | #ifdef; BeeGFS not available |
+| Lustre | 1 | 1 | 100% | 0 | #ifdef; Lustre not available |
 ```
+
+**The `comp` column must be filled for every ✅ DONE row** — a function with no comp
+is incomplete annotation. If you find DONE rows with `—` in comp, add the
+`DFTRACER_C_FUNCTION_UPDATE_STR("comp", "<type>")` line before moving on.
+
+"Traced in Test" tracks whether the function appeared in the smoke test output.
+`⚠️ not called` and `⚠️ no GPFS` are acceptable — the annotation is still correct
+and will produce traces when those code paths are exercised.
 
 Status values:
 - `✅ DONE` — annotated and build passes
@@ -187,16 +207,26 @@ For each backend file, work through ALL I/O functions — start with the simples
    e. Insert `DFTRACER_C_FUNCTION_END();` before every VISIBLE `return` (Rule E: not before error macros)
    f. For goto-based error handling: single END at the goto label
    g. For void functions: END as last statement before `}`
-4. Write the file, run `rm -rf .deps src/.deps` first if the Makefile was touched,
+5. Write the file, run `rm -rf .deps src/.deps` first if the Makefile was touched,
    then build. Fix errors before the next function.
-5. **On failure**: do NOT reset and skip. Instead:
+6. **On failure**: do NOT reset and skip. Instead:
    - Read the exact error (line number + message)
    - Identify which END or START caused the problem
    - Fix the specific macro and rebuild
    - Only after 3 separate fix attempts on the same function should you reset that
      function to include-only and mark it `❌ INCLUDE-ONLY` (PENDING retry)
-6. Log every attempt to `annotation_process.log`.
-7. Update `annotation_status.md` after every function.
+7. Log every attempt to `annotation_process.log`.
+8. Update `annotation_status.md` (including `comp` column) after every function.
+9. **After every file** — run the two-count verification before moving to the next file:
+   ```bash
+   # Counts must be equal — mismatch means some functions are missing comp=TYPE
+   grep -c "DFTRACER_C_FUNCTION_START"               annotated/src/foo.c
+   grep -c 'DFTRACER_C_FUNCTION_UPDATE_STR.*"comp"'  annotated/src/foo.c
+
+   # List all annotated functions — review for coverage gaps
+   awk '/^[a-zA-Z].*\(/ {func=$0} /DFTRACER_C_FUNCTION_START/ {print NR": "func}' \
+       annotated/src/foo.c
+   ```
 
 ---
 
