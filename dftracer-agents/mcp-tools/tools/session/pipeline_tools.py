@@ -21,6 +21,7 @@ from .annotation import (
     _annotate_c_source, _annotate_python_source,
     _fix_dftracer_annotation_errors,
     _strip_mpi_launcher,
+    _generate_annotation_report,
 )
 from .build import (
     _patch_cmake, _patch_setup_py, _patch_pyproject,
@@ -43,13 +44,18 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         jobs: int = 4,
         run_id: Optional[str] = None,
         skip_annotation: bool = False,
+        annotation_confirmed: bool = False,
         dftracer_ref: str = "v2.0.3",
     ) -> str:
         """
         Full dftracer annotation + smoke-test pipeline.
 
-        Executes all steps in sequence and returns a detailed report:
-          1.   Create session and clone source
+        Executes all steps in sequence and pauses after step 8 to show the
+        user an annotation coverage report.  The user must confirm before the
+        pipeline continues to build, run, and analyse.
+
+        Normal flow:
+          1.   Create session and clone source (run_id derived from url)
           2.   Detect language, build tool, and dftracer features
           3.   Configure build
           4.   Build and install
@@ -57,213 +63,263 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
           6.   Copy source to annotated/
           7.   Patch build system for dftracer
           8.   Auto-annotate C/C++ and Python source
+          >>>  PAUSE — show annotation report, ask user to confirm <<<
           8.5. Install dftracer into install_ann/ (C/C++) or venv (Python)
           9.   Build annotated source with dftracer (CMAKE_PREFIX_PATH set)
           10.  Run smoke test with dftracer (traces collected)
           11.  dftracer_split — compact traces
           12.  dftracer_info  — summarise traces
 
-        If a step fails the pipeline stops and reports which step failed
-        along with stdout/stderr so the LLM can diagnose and retry using
-        individual session_* tools.
+        To resume after confirming the annotation report:
+          Call this tool again with the same run_id and annotation_confirmed=True.
+          Steps 1–8 are skipped; the pipeline resumes from step 8.5.
+
+        If a step fails the pipeline stops and reports which step failed.
 
         Args:
-            url:                Git URL to clone.
-            ref:                Branch, tag, or commit (default: main).
-            smoke_test_command: Shell command to verify the build.  Auto-
-                                detected from build tool if omitted.
-            extra_cmake_flags:  Extra cmake -D flags for both builds.
-            jobs:               Parallel make jobs.
-            run_id:             Optional fixed RUN-ID; UUID generated if omitted.
-            skip_annotation:    If True, stop after step 5 (original smoke test).
-            dftracer_ref:       dftracer git tag/branch to install (default: v2.0.3).
+            url:                  Git URL to clone (also used to derive app name
+                                  and run_id when annotation_confirmed=True).
+            ref:                  Branch, tag, or commit (default: main).
+            smoke_test_command:   Shell command to verify the build.
+            extra_cmake_flags:    Extra cmake -D flags for both builds.
+            jobs:                 Parallel make jobs.
+            run_id:               Fixed RUN-ID.  Required when
+                                  annotation_confirmed=True to identify the run.
+            skip_annotation:      If True, stop after step 5 (original smoke test).
+            annotation_confirmed: If True and run_id is set, skip steps 1–8 and
+                                  resume from step 8.5 (dftracer install + build).
+            dftracer_ref:         dftracer git tag/branch to install (default: v2.0.3).
         """
         report: Dict[str, Any] = {}
 
-        # --- Step 1: create session + clone ---
-        # Use _create_run so the run ID is structured as <app_name>/<timestamp>
-        # and pipeline_get_run_id can recall it by app name.
-        rid, ws = _create_run(url, run_id)
-        src = ws / "source"
-        src.mkdir(exist_ok=True)
-
-        clone_r = _run(
-            ["git", "clone", "--depth", "1", "--branch", ref, url, str(src)],
-            timeout=300,
-        )
-        if not clone_r["success"]:
-            shutil.rmtree(src, ignore_errors=True)
+        # ── Normal path (steps 1–8): clone, build, annotate, then PAUSE ───────
+        if not (annotation_confirmed and run_id):
+            rid, ws = _create_run(url, run_id)
+            src = ws / "source"
             src.mkdir(exist_ok=True)
-            clone_r = _run(["git", "clone", "--depth", "1", url, str(src)], timeout=300)
-            if not clone_r["success"]:
-                return _err("Step 1 failed: git clone", step=1, **clone_r)
-            _run(["git", "checkout", ref], cwd=src)
-        report["step_1_clone"] = {"status": "ok", "run_id": rid}
-        _write_artifact_log(ws, 1, "session_create", {"clone": clone_r, "run_id": rid, "url": url, "ref": ref}, rid)
 
-        # --- Step 2: detect ---
-        info = _detect_info(src)
-        bt = info["build_tool"]
-        _save_state(rid, {"run_id": rid, "url": url, "ref": ref,
-                           "workspace": str(ws), "detection": info})
-        report["step_2_detect"] = {
-            "status": "ok",
-            "languages": info["languages"],
-            "build_tool": bt,
-            "features": info["features"],
-            "dftracer_cmake_flags": info["dftracer_cmake_flags"],
-        }
-        _write_artifact_log(ws, 2, "session_detect", report["step_2_detect"], rid)
-
-        # --- Step 3: configure ---
-        build = ws / "build"
-        install = ws / "install"
-        build.mkdir(exist_ok=True)
-        install.mkdir(exist_ok=True)
-
-        cmake_flags = [
-            f"-DCMAKE_INSTALL_PREFIX={install}",
-            "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
-        ] + (extra_cmake_flags.split() if extra_cmake_flags else [])
-
-        if bt == "cmake":
-            cfg_r = _run(["cmake", "-S", str(src), "-B", str(build)] + cmake_flags, timeout=300)
-        elif bt == "autotools":
-            if (src / "configure.ac").exists() and not (src / "configure").exists():
-                _run(["autoreconf", "-fi"], cwd=src, timeout=120)
-            cfg_r = _run([str(src / "configure"), f"--prefix={install}"], cwd=build, timeout=300)
-        elif bt == "python":
-            cfg_r = _run(["python3", "-m", "venv", str(install)], timeout=60)
-            if cfg_r["success"]:
-                pip = install / "bin" / "pip"
-                cfg_r = _run([str(pip), "install", "-e", str(src)], timeout=300)
-        else:
-            cfg_r = {"success": False, "returncode": -1,
-                      "stdout": "", "stderr": f"Unknown build tool: {bt}"}
-
-        report["step_3_configure"] = cfg_r
-        _write_artifact_log(ws, 3, "session_configure", {"configure": cfg_r, "build_tool": bt}, rid)
-        if not cfg_r["success"]:
-            return _err("Step 3 failed: configure", step=3, report=report)
-
-        # --- Step 4: build + install ---
-        if bt in {"cmake", "autotools", "make"}:
-            bld_r = _run(["make", f"-j{jobs}"], cwd=build, timeout=600)
-            report["step_4_build"] = bld_r
-            if not bld_r["success"]:
-                return _err("Step 4 failed: make", step=4, report=report)
-            ins_r = _run(["make", "install"], cwd=build, timeout=300)
-            report["step_4_install"] = ins_r
-            if not ins_r["success"]:
-                return _err("Step 4 failed: make install", step=4, report=report)
-        else:
-            report["step_4_build"] = {"status": "skipped (python)"}
-
-        _write_artifact_log(ws, 4, "session_build_install", {
-            k: v for k, v in report.items() if k.startswith("step_4")
-        }, rid)
-
-        # --- Step 5: original smoke test ---
-        smoke_cmd = smoke_test_command or _guess_smoke_test(src, bt, install)
-        if smoke_cmd:
-            sm_r = _run(["/bin/sh", "-c", smoke_cmd], cwd=build, timeout=300)
-            report["step_5_smoke_test"] = {**sm_r, "command": smoke_cmd}
-            if not sm_r["success"]:
-                report["step_5_smoke_test"]["warning"] = (
-                    "Original smoke test failed — continuing to annotation phase"
-                )
-        else:
-            report["step_5_smoke_test"] = {"status": "no smoke test detected"}
-
-        _write_artifact_log(ws, 5, "session_run_smoke_test", report["step_5_smoke_test"], rid)
-        _save_state(rid, {"step": "original_build_done", "detection": info})
-
-        if skip_annotation:
-            return _ok(
-                "Pipeline complete (annotation skipped)",
-                run_id=rid,
-                workspace=str(ws),
-                report=report,
+            # Step 1: clone
+            clone_r = _run(
+                ["git", "clone", "--depth", "1", "--branch", ref, url, str(src)],
+                timeout=300,
             )
+            if not clone_r["success"]:
+                shutil.rmtree(src, ignore_errors=True)
+                src.mkdir(exist_ok=True)
+                clone_r = _run(["git", "clone", "--depth", "1", url, str(src)], timeout=300)
+                if not clone_r["success"]:
+                    return _err("Step 1 failed: git clone", step=1, **clone_r)
+                _run(["git", "checkout", ref], cwd=src)
+            report["step_1_clone"] = {"status": "ok", "run_id": rid}
+            _write_artifact_log(ws, 1, "session_create",
+                                {"clone": clone_r, "run_id": rid, "url": url, "ref": ref}, rid)
 
-        # --- Step 6: copy to annotated/ ---
-        ann = ws / "annotated"
-        if ann.exists():
-            shutil.rmtree(ann)
-        shutil.copytree(src, ann)
-        report["step_6_copy_annotated"] = {"status": "ok", "path": str(ann)}
-        _write_artifact_log(ws, 6, "session_copy_annotated", report["step_6_copy_annotated"], rid)
+            # Step 2: detect
+            info = _detect_info(src)
+            bt = info["build_tool"]
+            _save_state(rid, {"run_id": rid, "url": url, "ref": ref,
+                               "workspace": str(ws), "detection": info})
+            report["step_2_detect"] = {
+                "status": "ok",
+                "languages": info["languages"],
+                "build_tool": bt,
+                "features": info["features"],
+                "dftracer_cmake_flags": info["dftracer_cmake_flags"],
+            }
+            _write_artifact_log(ws, 2, "session_detect", report["step_2_detect"], rid)
 
-        # --- Step 7: patch build system ---
-        patched: List[str] = []
-        if bt == "cmake":
-            cml = ann / "CMakeLists.txt"
-            if cml.exists():
-                cml.write_text(_patch_cmake(cml))
-                patched.append("CMakeLists.txt")
-        elif bt == "autotools":
-            for mf in ann.glob("Makefile*"):
-                mf.write_text(_patch_autotools_makefile(mf))
-                patched.append(mf.name)
-        elif bt == "python":
-            for pname, pfn in (("setup.py", _patch_setup_py), ("pyproject.toml", _patch_pyproject)):
-                pp = ann / pname
-                if pp.exists():
-                    pp.write_text(pfn(pp))
-                    patched.append(pname)
-        report["step_7_patch_build"] = {"status": "ok", "patched": patched}
-        _write_artifact_log(ws, 7, "session_patch_build", report["step_7_patch_build"], rid)
+            # Step 3: configure
+            build = ws / "build"
+            install = ws / "install"
+            build.mkdir(exist_ok=True)
+            install.mkdir(exist_ok=True)
 
-        # --- Step 8: annotate source ---
-        c_entries = {str(p) for p in _find_c_entry_points(ann)}
-        py_entries = {str(p) for p in _find_python_entry_points(ann)}
-        annotated: List[str] = []
-        langs = info.get("languages", [])
+            cmake_flags = [
+                f"-DCMAKE_INSTALL_PREFIX={install}",
+                "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+            ] + (extra_cmake_flags.split() if extra_cmake_flags else [])
 
-        if "c" in langs or "cpp" in langs:
-            for ext in ("*.c", "*.h", "*.cpp", "*.cxx", "*.cc", "*.hpp"):
-                for f in ann.rglob(ext):
+            if bt == "cmake":
+                cfg_r = _run(["cmake", "-S", str(src), "-B", str(build)] + cmake_flags, timeout=300)
+            elif bt == "autotools":
+                if (src / "configure.ac").exists() and not (src / "configure").exists():
+                    _run(["autoreconf", "-fi"], cwd=src, timeout=120)
+                cfg_r = _run([str(src / "configure"), f"--prefix={install}"], cwd=build, timeout=300)
+            elif bt == "python":
+                cfg_r = _run(["python3", "-m", "venv", str(install)], timeout=60)
+                if cfg_r["success"]:
+                    pip = install / "bin" / "pip"
+                    cfg_r = _run([str(pip), "install", "-e", str(src)], timeout=300)
+            else:
+                cfg_r = {"success": False, "returncode": -1,
+                          "stdout": "", "stderr": f"Unknown build tool: {bt}"}
+
+            report["step_3_configure"] = cfg_r
+            _write_artifact_log(ws, 3, "session_configure",
+                                {"configure": cfg_r, "build_tool": bt}, rid)
+            if not cfg_r["success"]:
+                return _err("Step 3 failed: configure", step=3, report=report)
+
+            # Step 4: build + install
+            if bt in {"cmake", "autotools", "make"}:
+                bld_r = _run(["make", f"-j{jobs}"], cwd=build, timeout=600)
+                report["step_4_build"] = bld_r
+                if not bld_r["success"]:
+                    return _err("Step 4 failed: make", step=4, report=report)
+                ins_r = _run(["make", "install"], cwd=build, timeout=300)
+                report["step_4_install"] = ins_r
+                if not ins_r["success"]:
+                    return _err("Step 4 failed: make install", step=4, report=report)
+            else:
+                report["step_4_build"] = {"status": "skipped (python)"}
+            _write_artifact_log(ws, 4, "session_build_install", {
+                k: v for k, v in report.items() if k.startswith("step_4")
+            }, rid)
+
+            # Step 5: original smoke test
+            smoke_cmd = smoke_test_command or _guess_smoke_test(src, bt, install)
+            if smoke_cmd:
+                sm_r = _run(["/bin/sh", "-c", smoke_cmd], cwd=build, timeout=300)
+                report["step_5_smoke_test"] = {**sm_r, "command": smoke_cmd}
+                if not sm_r["success"]:
+                    report["step_5_smoke_test"]["warning"] = (
+                        "Original smoke test failed — continuing to annotation phase"
+                    )
+            else:
+                report["step_5_smoke_test"] = {"status": "no smoke test detected"}
+            _write_artifact_log(ws, 5, "session_run_smoke_test",
+                                report["step_5_smoke_test"], rid)
+            _save_state(rid, {"step": "original_build_done", "detection": info})
+
+            if skip_annotation:
+                return _ok(
+                    "Pipeline complete (annotation skipped)",
+                    run_id=rid, workspace=str(ws), report=report,
+                )
+
+            # Step 6: copy to annotated/
+            ann = ws / "annotated"
+            if ann.exists():
+                shutil.rmtree(ann)
+            shutil.copytree(src, ann)
+            report["step_6_copy_annotated"] = {"status": "ok", "path": str(ann)}
+            _write_artifact_log(ws, 6, "session_copy_annotated",
+                                report["step_6_copy_annotated"], rid)
+
+            # Step 7: patch build system
+            patched: List[str] = []
+            if bt == "cmake":
+                cml = ann / "CMakeLists.txt"
+                if cml.exists():
+                    cml.write_text(_patch_cmake(cml))
+                    patched.append("CMakeLists.txt")
+            elif bt == "autotools":
+                for mf in ann.glob("Makefile*"):
+                    mf.write_text(_patch_autotools_makefile(mf))
+                    patched.append(mf.name)
+            elif bt == "python":
+                for pname, pfn in (("setup.py", _patch_setup_py),
+                                   ("pyproject.toml", _patch_pyproject)):
+                    pp = ann / pname
+                    if pp.exists():
+                        pp.write_text(pfn(pp))
+                        patched.append(pname)
+            report["step_7_patch_build"] = {"status": "ok", "patched": patched}
+            _write_artifact_log(ws, 7, "session_patch_build",
+                                report["step_7_patch_build"], rid)
+
+            # Step 8: auto-annotate source
+            c_entries = {str(p) for p in _find_c_entry_points(ann)}
+            py_entries = {str(p) for p in _find_python_entry_points(ann)}
+            annotated: List[str] = []
+            langs = info.get("languages", [])
+
+            if "c" in langs or "cpp" in langs:
+                for ext in ("*.c", "*.h", "*.cpp", "*.cxx", "*.cc", "*.hpp"):
+                    for f in ann.rglob(ext):
+                        try:
+                            old = f.read_text(errors="ignore")
+                            new = _annotate_c_source(old, f, is_entry=str(f) in c_entries)
+                            if new != old:
+                                f.write_text(new)
+                                annotated.append(str(f.relative_to(ann)))
+                        except OSError:
+                            pass
+
+            if "python" in langs:
+                for f in ann.rglob("*.py"):
                     try:
                         old = f.read_text(errors="ignore")
-                        new = _annotate_c_source(old, f, is_entry=str(f) in c_entries)
+                        new = _annotate_python_source(old, is_entry=str(f) in py_entries)
                         if new != old:
                             f.write_text(new)
                             annotated.append(str(f.relative_to(ann)))
                     except OSError:
                         pass
 
-        if "python" in langs:
-            for f in ann.rglob("*.py"):
-                try:
-                    old = f.read_text(errors="ignore")
-                    new = _annotate_python_source(old, is_entry=str(f) in py_entries)
-                    if new != old:
-                        f.write_text(new)
-                        annotated.append(str(f.relative_to(ann)))
-                except OSError:
-                    pass
+            ann_patch = ws / "annotation.patch"
+            ann_patch_chunks: List[str] = []
+            for f_rel in annotated:
+                src_f = ws / "source" / f_rel
+                ann_f = ann / f_rel
+                if src_f.exists() and ann_f.exists():
+                    ann_patch_chunks.append("".join(difflib.unified_diff(
+                        src_f.read_text(errors="ignore").splitlines(keepends=True),
+                        ann_f.read_text(errors="ignore").splitlines(keepends=True),
+                        fromfile=f"a/{f_rel}", tofile=f"b/{f_rel}",
+                    )))
+            ann_patch.write_text("".join(ann_patch_chunks))
 
-        ann_patch = ws / "annotation.patch"
-        ann_patch_chunks: List[str] = []
-        # collect diffs already written to annotated files
-        for f_rel in annotated:
-            src_f = ws / "source" / f_rel
-            ann_f = ann / f_rel
-            if src_f.exists() and ann_f.exists():
-                ann_patch_chunks.append("".join(difflib.unified_diff(
-                    src_f.read_text(errors="ignore").splitlines(keepends=True),
-                    ann_f.read_text(errors="ignore").splitlines(keepends=True),
-                    fromfile=f"a/{f_rel}", tofile=f"b/{f_rel}",
-                )))
-        ann_patch.write_text("".join(ann_patch_chunks))
+            report["step_8_annotate"] = {
+                "status": "ok",
+                "files_annotated": len(annotated),
+                "annotated": annotated,
+                "patch_file": str(ann_patch),
+            }
+            _write_artifact_log(ws, 8, "session_annotate_source",
+                                report["step_8_annotate"], rid)
+            _save_state(rid, {"step": "annotation_done"})
 
-        report["step_8_annotate"] = {
-            "status": "ok",
-            "files_annotated": len(annotated),
-            "annotated": annotated,
-            "patch_file": str(ann_patch),
-        }
-        _write_artifact_log(ws, 8, "session_annotate_source", report["step_8_annotate"], rid)
+            # ── PAUSE: show coverage report and ask user to confirm ────────────
+            ann_report = _generate_annotation_report(ws, rid)
+            s = ann_report.get("summary", {})
+            annotatable = s.get("total_functions", 0) - s.get("skipped", 0)
+            return _ok(
+                f"Step 8 complete — annotation done. "
+                f"{s.get('annotated', '?')}/{annotatable} functions annotated "
+                f"({s.get('coverage_pct', '?')}% coverage, "
+                f"{s.get('relevant_files', '?')} file(s) modified). "
+                f"Review the annotation_report below. "
+                f"If satisfied, call session_run_pipeline again with "
+                f"annotation_confirmed=True and run_id='{rid}' to continue "
+                f"to steps 8.5–12 (dftracer install, build, trace, analyse). "
+                f"To add missing annotations first, use session_read_file / "
+                f"session_write_file on the run_id='{rid}' workspace, then confirm.",
+                awaiting_confirmation=True,
+                annotation_report=ann_report,
+                run_id=rid,
+                workspace=str(ws),
+                step_reports=report,
+            )
+        # ── end of normal path (always returns above) ─────────────────────────
+
+        # ── Resume path: annotation_confirmed=True — load state, run 8.5–12 ───
+        ws = _ws(run_id)
+        if not ws.exists():
+            return _err(f"Workspace not found for run_id: {run_id}")
+        state = _load_state(run_id)
+        rid = run_id
+        info = state.get("detection", {})
+        bt = info.get("build_tool", "unknown")
+        ann = ws / "annotated"
+        install = ws / "install"
+        if not ann.exists():
+            return _err(
+                "annotated/ directory not found — complete steps 1–8 first "
+                "(call session_run_pipeline without annotation_confirmed=True)",
+                run_id=rid,
+            )
+        report["resumed_from"] = "step_8_5"
 
         # --- Step 8.5: install dftracer into install_ann/ (C/C++) or venv (Python) ---
         build_ann = ws / "build_ann"

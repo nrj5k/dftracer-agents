@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import difflib
 import re
+import subprocess
 import textwrap
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -368,3 +369,330 @@ def _annotate_python_source(content: str, is_entry: bool) -> str:
     if is_entry:
         result += "\n# TODO: call DFTRACER_FINI() before process exit\n"
     return result
+
+
+# ---------------------------------------------------------------------------
+# Annotation coverage report
+# ---------------------------------------------------------------------------
+
+_DFTRACER_C_START = "DFTRACER_C_FUNCTION_START"
+_DFTRACER_PY_DEC = "@dft_fn"
+
+# Identifiers that look like function calls but are not function definitions
+_NOT_FUNC = frozenset({
+    "if", "else", "for", "while", "do", "switch", "return", "case",
+    "break", "continue", "goto", "default", "sizeof", "typeof",
+    "typedef", "struct", "union", "enum", "namespace", "class",
+    "template", "new", "delete", "throw", "try", "catch",
+})
+
+
+def _c_func_at_line(line: str) -> Optional[str]:
+    """Return the function name if `line` looks like a C/C++ function definition,
+    or None if it is a declaration, preprocessor directive, comment, or keyword call."""
+    stripped = line.rstrip()
+    # Must start at column 0 and not be a preprocessor directive or comment
+    if not stripped or stripped[0] in (' ', '\t', '#', '/', '*'):
+        return None
+    # Must contain '(' and must NOT end with ';' (declarations end with ';')
+    if '(' not in stripped or stripped.endswith(';'):
+        return None
+    # Extract the last identifier before '('
+    m = re.match(r'^[^(]*?(\w+)\s*\(', stripped)
+    if not m:
+        return None
+    name = m.group(1)
+    if name in _NOT_FUNC:
+        return None
+    return name
+
+
+def _find_all_c_functions(path: Path) -> List[str]:
+    """Return ordered list of C function definition names in a source file."""
+    try:
+        lines = path.read_text(errors="ignore").splitlines()
+    except OSError:
+        return []
+
+    funcs: List[str] = []
+    seen: Set[str] = set()
+    n = len(lines)
+    for i, line in enumerate(lines):
+        name = _c_func_at_line(line)
+        if not name:
+            continue
+        # Confirm a `{` appears within the next 8 lines before any `;`
+        for j in range(i, min(i + 8, n)):
+            jl = lines[j]
+            if '{' in jl:
+                if name not in seen:
+                    funcs.append(name)
+                    seen.add(name)
+                break
+            if j > i and ';' in jl:
+                break
+    return funcs
+
+
+def _find_annotated_c_functions(path: Path) -> Set[str]:
+    """Return names of C functions in `path` that contain DFTRACER_C_FUNCTION_START."""
+    try:
+        lines = path.read_text(errors="ignore").splitlines()
+    except OSError:
+        return set()
+
+    annotated: Set[str] = set()
+    current_func: Optional[str] = None
+    for line in lines:
+        name = _c_func_at_line(line)
+        if name:
+            current_func = name
+        if _DFTRACER_C_START in line and current_func:
+            annotated.add(current_func)
+    return annotated
+
+
+def _find_all_py_functions(path: Path) -> List[str]:
+    """Return top-level function names defined in a Python source file."""
+    try:
+        lines = path.read_text(errors="ignore").splitlines()
+    except OSError:
+        return []
+    return [
+        re.match(r'^def\s+(\w+)', ln).group(1)
+        for ln in lines
+        if re.match(r'^def\s+(\w+)', ln)
+    ]
+
+
+def _find_annotated_py_functions(path: Path) -> Set[str]:
+    """Return names of top-level Python functions decorated with @dft_fn."""
+    try:
+        lines = path.read_text(errors="ignore").splitlines()
+    except OSError:
+        return set()
+    annotated: Set[str] = set()
+    prev_dft = False
+    for ln in lines:
+        if ln.strip() == _DFTRACER_PY_DEC:
+            prev_dft = True
+            continue
+        if prev_dft:
+            m = re.match(r'^def\s+(\w+)', ln)
+            if m:
+                annotated.add(m.group(1))
+        prev_dft = False
+    return annotated
+
+
+def _parse_annotation_status(ws: Path) -> Dict[str, Dict[str, Dict[str, str]]]:
+    """Parse annotation_logs/annotation_status.md.
+
+    Returns nested dict: filename → funcname → {status, comp, reason}.
+    Status values: 'annotated', 'skipped', 'pending', 'failed'.
+
+    Handles two table formats:
+      Main table  (≥5 cols): | File | Function | Status | comp | ... | Notes |
+      Skipped table (3 cols): | File | Function | Reason |
+    The current section heading determines which format to expect.
+    """
+    status_file = ws / "annotation_logs" / "annotation_status.md"
+    if not status_file.exists():
+        return {}
+
+    result: Dict[str, Dict[str, Dict[str, str]]] = {}
+    in_skipped_section = False
+
+    for line in status_file.read_text(errors="ignore").splitlines():
+        # Track which section we're in
+        if line.startswith('#'):
+            in_skipped_section = 'skip' in line.lower() or 'rule 0' in line.lower()
+            continue
+
+        if not line.startswith('|') or '---' in line:
+            continue
+
+        parts = [p.strip() for p in line.split('|')]
+        # Remove empty first/last entries from leading/trailing '|'
+        parts = [p for p in parts if p != '']
+        if len(parts) < 2:
+            continue
+
+        fname, func = parts[0], parts[1]
+        if not fname or not func or fname.lower() in ('file', 'function'):
+            continue
+
+        if in_skipped_section or len(parts) < 4:
+            # 3-column skipped table: File | Function | Reason
+            reason = parts[2] if len(parts) > 2 else "Rule 0"
+            result.setdefault(fname, {})[func] = {
+                "status": "skipped",
+                "comp": "",
+                "reason": reason,
+            }
+        else:
+            # Main table: File | Function | Status | comp | ... | Notes
+            status_raw = parts[2]
+            comp = parts[3] if len(parts) > 3 else ""
+            notes = parts[-1] if len(parts) > 6 else (parts[4] if len(parts) > 4 else "")
+
+            if '✅' in status_raw and 'DONE' in status_raw:
+                status = 'annotated'
+            elif '⏭️' in status_raw or 'SKIP' in status_raw.upper():
+                status = 'skipped'
+            elif '❌' in status_raw or 'INCLUDE' in status_raw.upper():
+                status = 'failed'
+            elif '⚠️' in status_raw or 'PENDING' in status_raw.upper():
+                status = 'pending'
+            else:
+                continue
+
+            result.setdefault(fname, {})[func] = {
+                "status": status,
+                "comp": comp if comp not in ('—', '-') else "",
+                "reason": notes,
+            }
+    return result
+
+
+def _diff_modified_files(source_dir: Path, annotated_dir: Path) -> List[str]:
+    """Return list of file paths (relative to annotated_dir) that differ between
+    source_dir and annotated_dir, scanning only C/C++/Python source files."""
+    changed: List[str] = []
+    for ann_file in sorted(annotated_dir.rglob("*")):
+        if not ann_file.is_file():
+            continue
+        if ann_file.suffix.lower() not in {'.c', '.h', '.cpp', '.cxx', '.cc',
+                                             '.hpp', '.hxx', '.py'}:
+            continue
+        rel = ann_file.relative_to(annotated_dir)
+        src_file = source_dir / rel
+        if not src_file.exists():
+            continue
+        if ann_file.read_text(errors="ignore") != src_file.read_text(errors="ignore"):
+            changed.append(str(rel))
+    return changed
+
+
+def _generate_annotation_report(ws: Path, run_id: str) -> Dict[str, Any]:
+    """Generate a structured annotation coverage report for the given workspace.
+
+    Compares source/ against annotated/, detects C and Python function definitions,
+    checks which functions carry DFTRACER macros, and cross-references
+    annotation_logs/annotation_status.md for skip/fail reasons.
+
+    Returns a dict suitable for JSON serialisation with keys:
+      run_id, summary, files, annotation_log_present.
+    """
+    source_dir = ws / "source"
+    ann_dir = ws / "annotated"
+    if not source_dir.exists() or not ann_dir.exists():
+        return {
+            "error": "source/ or annotated/ directory missing",
+            "run_id": run_id,
+        }
+
+    status_map = _parse_annotation_status(ws)
+    changed_files = _diff_modified_files(source_dir, ann_dir)
+
+    total_funcs = 0
+    total_annotated = 0
+    total_skipped = 0
+    total_failed = 0
+    total_pending = 0
+
+    file_reports: List[Dict[str, Any]] = []
+
+    # Process changed (relevant) files
+    for rel in changed_files:
+        rel_path = Path(rel)
+        src_file = source_dir / rel_path
+        ann_file = ann_dir / rel_path
+        ext = rel_path.suffix.lower()
+
+        if ext in {'.c', '.h', '.cpp', '.cxx', '.cc', '.hpp', '.hxx'}:
+            all_funcs = _find_all_c_functions(src_file)
+            ann_funcs = _find_annotated_c_functions(ann_file)
+        elif ext == '.py':
+            all_funcs = _find_all_py_functions(src_file)
+            ann_funcs = _find_annotated_py_functions(ann_file)
+        else:
+            continue
+
+        if not all_funcs:
+            continue
+
+        file_status = status_map.get(rel_path.name, {})
+        func_entries: List[Dict[str, Any]] = []
+
+        for func in all_funcs:
+            log = file_status.get(func, {})
+
+            if func in ann_funcs:
+                fstatus = 'annotated'
+                comp = log.get('comp', '')
+                reason = None
+            elif log.get('status') == 'skipped':
+                fstatus = 'skipped'
+                comp = ''
+                reason = log.get('reason') or 'Rule 0 — trivial function'
+            elif log.get('status') == 'failed':
+                fstatus = 'failed'
+                comp = ''
+                reason = log.get('reason') or 'Annotation failed — see annotation_logs'
+            elif log.get('status') == 'pending':
+                fstatus = 'pending'
+                comp = ''
+                reason = log.get('reason') or 'Not yet annotated'
+            else:
+                # Not in log and not annotated — treat as not started
+                fstatus = 'not_annotated'
+                comp = ''
+                reason = 'No annotation found and not in annotation_status.md'
+
+            func_entries.append({
+                "function": func,
+                "status": fstatus,
+                "comp": comp,
+                "reason": reason,
+            })
+
+        n_ann = sum(1 for f in func_entries if f['status'] == 'annotated')
+        n_skip = sum(1 for f in func_entries if f['status'] == 'skipped')
+        n_fail = sum(1 for f in func_entries if f['status'] in ('failed', 'not_annotated'))
+        n_pend = sum(1 for f in func_entries if f['status'] == 'pending')
+
+        total_funcs += len(func_entries)
+        total_annotated += n_ann
+        total_skipped += n_skip
+        total_failed += n_fail
+        total_pending += n_pend
+
+        file_reports.append({
+            "file": rel,
+            "total_functions": len(func_entries),
+            "annotated": n_ann,
+            "skipped": n_skip,
+            "failed": n_fail,
+            "pending": n_pend,
+            "coverage_pct": round(100 * n_ann / len(func_entries), 1) if func_entries else 0.0,
+            "functions": func_entries,
+        })
+
+    annotatable = total_funcs - total_skipped
+    coverage_pct = round(100 * total_annotated / annotatable, 1) if annotatable else 0.0
+
+    return {
+        "run_id": run_id,
+        "annotation_log_present": (ws / "annotation_logs" / "annotation_status.md").exists(),
+        "summary": {
+            "relevant_files": len(file_reports),
+            "total_functions": total_funcs,
+            "annotated": total_annotated,
+            "skipped": total_skipped,
+            "failed_or_missing": total_failed,
+            "pending": total_pending,
+            "coverage_pct": coverage_pct,
+        },
+        "files": file_reports,
+    }
