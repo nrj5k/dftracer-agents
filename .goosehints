@@ -2,54 +2,59 @@
 
 ## Standing Orders (read first, apply always)
 
-1. **Update pitfalls on every fix.** Whenever you encounter an error — build failure,
-   runtime crash, wrong annotation, or unexpected tool behavior — and you fix it,
-   immediately append a new entry to `.goose/hints/02-annotation-pitfalls.md` using
-   the lessons-learned format defined at the top of that file. Do this before moving
-   on to the next step. No rebuild of `.goosehints` is needed — the `@` reference
-   picks up the new entry automatically.
+1. **Read the cheatsheet first.** Before any annotation session, read
+   `00-critical-cheatsheet.md` for the five critical rules (C1–C5), seven corner
+   cases (CC1–CC7), and ten known mistakes (M1–M10). These are drawn from real
+   failures and will save debugging time.
 
-2. **Check pitfalls before annotating.** Before touching any source file, read
-   `.goose/hints/02-annotation-pitfalls.md` and scan for entries whose tags or error
-   text match the file type or operation you are about to perform.
+2. **Check pitfalls before touching source.** Before annotating any file, scan
+   `02-annotation-pitfalls.md` for entries tagged with the file type or backend
+   you are annotating.
 
-3. **Check lessons-learned before building.** Before any build, configure, or install
-   step, read `.goose/lessons-learned.md` and apply any recorded fixes proactively.
+3. **Update pitfalls immediately after every fix.** Whenever you encounter an
+   error and fix it, append a new entry to `02-annotation-pitfalls.md` using the
+   format defined there. Do this before moving to the next step.
 
-4. **Produce patch and annotation report after annotation.** Once all passes complete
-   and the build passes, you MUST write:
+4. **Check lessons-learned before building.** Before any build, configure, or
+   install step, read `.goose/lessons-learned.md` and apply recorded fixes proactively.
+
+5. **Produce patch and annotation report after annotation.** Once all passes complete
+   and the build passes, write:
    - `workspaces/<run_id>/annotation.patch` — `diff -urN source/ annotated/`
-   - `workspaces/<run_id>/annotation_logs/annotation_report.md` — full report with
-     annotated table, skipped table, include-only table, errors, and pending work
+   - `workspaces/<run_id>/annotation_logs/annotation_report.md` — full report
    Maintain `annotation_logs/annotation_process.log` and `annotation_logs/annotation_status.md`
-   throughout the session (append/update after every function). Do not report the
-   pipeline as complete until patch and final report exist.
+   throughout (update after every function). Do not report complete until both exist.
 
-5. **Trace files must stay in the workspace.** `DFTRACER_LOG_FILE` is set automatically
-   by `session_run_with_dftracer` to `workspaces/<run_id>/traces/<run_id>`. Do not
-   override it to `/tmp/` or any path outside the workspace — `session_split_traces`
-   only reads from `workspaces/<run_id>/traces/`.
+6. **Trace files must stay in the workspace.** `DFTRACER_LOG_FILE` is set by
+   `session_run_with_dftracer` to `workspaces/<run_id>/traces/<run_id>`. Never
+   override it to `/tmp/` — `session_split_traces` only reads from the workspace.
 
-6. **Never set DFTRACER_INIT=1 when source has explicit DFTRACER_C_INIT().** If Pass 1
-   added `DFTRACER_C_INIT(NULL, NULL, NULL)` to the code, pass `env_extra='{"DFTRACER_INIT":"0"}'`
-   to `session_run_with_dftracer`. Both active simultaneously produces an empty trace file.
+7. **Critical rule C5 — DFTRACER_INIT conflict.** If Pass 1 added `DFTRACER_C_INIT()`
+   to source, pass `env_extra='{"DFTRACER_INIT":"0"}'` when running. Both active
+   simultaneously produces an empty trace file (no error, just empty output).
 
-7. **No function may remain skipped due to failure.** The default is to annotate
-   (Rule D). Skip only pure getters/setters/formatters ≤5 lines. Complexity is not
-   a skip reason — use happy-path-only annotation (Rule E) for complex error handling.
-   PENDING/INCLUDE-ONLY functions MUST be retried in Pass 4.
+8. **No function may remain skipped due to difficulty** (Rule D). Skip only pure
+   getters/setters ≤5 lines with no filesystem call. Use happy-path-only annotation
+   (Rule E) for complex error paths. PENDING/INCLUDE-ONLY functions MUST be retried.
 
-8. **Every annotated function must have `comp=TYPE` as the first UPDATE.** Use
-   `DFTRACER_C_FUNCTION_UPDATE_STR("comp", "<type>")` immediately after START.
-   Types: `"io"` (file ops), `"mem"` (memory/mmap), `"cpu"` (compute), `"comm"`
-   (MPI/network/RPC). Same taxonomy for Python: `comp="<type>"` in the decorator.
-   This is not optional — it is required for trace analysis to work correctly..
+9. **Every annotated function requires `comp=TYPE` as the first UPDATE** (Critical rule C3).
+   Types: `"io"` (file ops), `"mem"` (mmap/buffers), `"cpu"` (compute), `"comm"`
+   (MPI/network). After each file: `grep -c FUNCTION_START` must equal `grep -c '"comp"'`.
+
+10. **Scan the whole file for internal helpers** (Rule F). After named API functions,
+    run the awk coverage scan and check every unannotated definition for syscall
+    triggers (open, mknod, mkstemp, ioctl, gpfs_fcntl, cuFileHandleRegister, etc.).
+
+---
 
 ---
 
 Topic files are maintained separately under `.goose/hints/` for easy editing.
 This file stitches them together via `@` references — Goose loads each file's
 full content automatically.
+
+## Critical Rules, Corner Cases, Known Mistakes — READ THIS FIRST
+@.goose/hints/00-critical-cheatsheet.md
 
 ## Annotation Rules — General (Rule 0, applies to all languages)
 @.goose/hints/01-annotation-rules-general.md

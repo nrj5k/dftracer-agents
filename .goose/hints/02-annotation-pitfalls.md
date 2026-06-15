@@ -1,6 +1,11 @@
 ### Annotation Pitfalls (lessons learned)
 
-These are real mistakes that caused build failures. Check each one before writing any annotated file.
+> **Quick navigation:** For the top-10 most common mistakes and critical rules,
+> see `00-critical-cheatsheet.md` first. This file contains the full detail for
+> every pitfall, organized in the order they were discovered.
+
+These are real mistakes that caused build failures or missing trace data in actual
+annotation sessions. Check pitfalls matching your current file type before writing.
 
 **Standing instruction — update this file whenever something fails and gets fixed:**
 

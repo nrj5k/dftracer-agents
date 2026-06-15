@@ -52,6 +52,42 @@ static inline int get_rank() { return rank; }
 static const char *mode_to_str(int mode) { return mode == 0 ? "r" : "w"; }
 ```
 
+### Rule F — Scan the entire file for internal helpers, not just the named API
+
+After annotating the public/named backend functions (e.g., `POSIX_Create`, `POSIX_Xfer`),
+always scan the **whole file** for unannotated helper functions. Internal helpers with
+non-obvious names are often the most interesting functions to trace.
+
+**Syscall triggers — if a function body contains any of these, it is an I/O function:**
+
+| Trigger call | Category | Example function |
+|-------------|----------|-----------------|
+| `open()`, `read()`, `write()`, `close()`, `stat()` | POSIX syscall | Any internal read/write helper |
+| `mknod()`, `mkstemp()`, `unlink()`, `rename()` | File lifecycle | `POSIX_Mknod`, `mkTempInDir` |
+| `ioctl()`, `fcntl()` | Kernel I/O control | Any hint/lock setter |
+| `gpfs_fcntl()` | GPFS control | `gpfs_access_start`, `gpfs_free_all_locks` |
+| `beegfs_getStripeInfo()`, `beegfs_createFile()` | BeeGFS | `beegfs_createFilePath` |
+| `llapi_*()` | Lustre | Any lustre helper |
+| `cuFileHandleRegister()`, `cuFileRead()`, `cuFileWrite()` | GPU Direct | `init_cufile` |
+| `MPI_File_*()` | MPI-IO | Any MPI file wrapper |
+
+**Functions that call only these are Rule 0 safe to skip:**
+- Pure setters: `hints = param;`
+- Parameter validation: `if (x != valid) ERR(...)` with no filesystem call
+- Error string formatters: `return strerror(err);`
+
+**Workflow:**
+```bash
+# Step 1 — list definitions
+grep -n "^[a-zA-Z_].*(.*)$" src/foo.c | grep -v ";"
+
+# Step 2 — cross-reference against annotated list
+awk '/^[a-zA-Z_].*\(/ {func=NR": "$0} /DFTRACER_C_FUNCTION_START/ {print func}' annotated/src/foo.c
+
+# Step 3 — for any definition not in Step 2, check body for syscall triggers
+# If trigger found → annotate; if no trigger → Rule 0 skip
+```
+
 ### Rule D — Complete coverage: annotate everything, skip only trivial functions
 
 **The default is to annotate. Skip requires justification.**

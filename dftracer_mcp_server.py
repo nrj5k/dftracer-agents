@@ -62,6 +62,12 @@ def _bootstrap_package_context() -> None:
     tools_pkg = types.ModuleType("dftracer_agents.mcp_tools.tools")
     tools_pkg.__path__ = [str(tools_dir)]
 
+    dftracer_pkg = types.ModuleType("dftracer_agents.mcp_tools.tools.dftracer")
+    dftracer_pkg.__path__ = [str(tools_dir / "dftracer")]
+
+    session_pkg = types.ModuleType("dftracer_agents.mcp_tools.tools.session")
+    session_pkg.__path__ = [str(tools_dir / "session")]
+
     # Real MCPServiceFactory from disk
     factory_path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "mcp_service_factory.py"
     factory_mod = types.ModuleType("dftracer_agents.mcp_service_factory")
@@ -75,6 +81,8 @@ def _bootstrap_package_context() -> None:
     sys.modules["dftracer_agents"] = pkg
     sys.modules["dftracer_agents.mcp_tools"] = mcp_pkg
     sys.modules["dftracer_agents.mcp_tools.tools"] = tools_pkg
+    sys.modules["dftracer_agents.mcp_tools.tools.dftracer"] = dftracer_pkg
+    sys.modules["dftracer_agents.mcp_tools.tools.session"] = session_pkg
 
 
 def _load_module(name: str, path: Path):
@@ -137,8 +145,14 @@ def _build_plot_server() -> FastMCP:
 
 
 def _build_session_server() -> FastMCP:
-    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer_session_service.py"
-    mod = _load_module("dftracer_session_service", path)
+    session_dir = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "session"
+    # Load session submodules in dependency order so relative imports resolve
+    for submod in ("workspace", "detection", "annotation", "build", "install",
+                   "session_tools", "pipeline_tools"):
+        _load_module(f"session.{submod}", session_dir / f"{submod}.py")
+
+    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "dftracer_service.py"
+    mod = _load_module("dftracer.dftracer_service", path)
     service = mod.DFTracerSessionService()
 
     server = FastMCP("DFTracerSession")

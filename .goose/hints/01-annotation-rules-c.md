@@ -1,5 +1,9 @@
 ## C Annotation Rules (dftracer)
 
+> **Before reading the detail rules below, check `00-critical-cheatsheet.md`** for
+> the five critical rules (C1–C5), seven corner cases (CC1–CC7), and the top-10
+> known mistakes (M1–M10). The rules below provide the full explanation and examples.
+
 ### C Rule 1 — Include and one START per function, at the very top
 
 Add the include after all existing `#include` lines in the .c file (never in a header):
