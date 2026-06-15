@@ -15,7 +15,7 @@ from fastmcp import FastMCP
 
 from .workspace import (
     _ws, _load_state, _save_state, _write_artifact_log,
-    _ok, _err, _new_run_id, _run, _workspaces_root,
+    _ok, _err, _new_run_id, _create_run, _run, _workspaces_root,
 )
 from .detection import _detect_info
 from .annotation import (
@@ -51,9 +51,9 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
 
         Returns JSON with run_id and workspace path.
         """
-        rid = _new_run_id(run_id)
-        ws = _ws(rid)
-        ws.mkdir(parents=True, exist_ok=True)
+        # _create_run derives app name from the URL, creates workspaces/<app>/<ts>/,
+        # and writes .current_run so pipeline_get_run_id can recall this session.
+        rid, ws = _create_run(url, run_id)
 
         src = ws / "source"
         src.mkdir(exist_ok=True)
@@ -72,10 +72,8 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             _run(["git", "checkout", ref], cwd=src)
 
         _save_state(rid, {
-            "run_id": rid,
             "url": url,
             "ref": ref,
-            "workspace": str(ws),
             "step": "cloned",
         })
         return _ok(

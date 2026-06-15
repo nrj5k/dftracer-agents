@@ -7,7 +7,6 @@ import difflib
 import json
 import shutil
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -15,7 +14,7 @@ from fastmcp import FastMCP
 
 from .workspace import (
     _ws, _load_state, _save_state, _write_artifact_log,
-    _ok, _err, _new_run_id, _run, _workspaces_root, _derive_app_name,
+    _ok, _err, _new_run_id, _create_run, _run, _workspaces_root, _derive_app_name,
 )
 from .detection import _detect_info
 from .annotation import (
@@ -82,9 +81,9 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         report: Dict[str, Any] = {}
 
         # --- Step 1: create session + clone ---
-        rid = _new_run_id(run_id)
-        ws = _ws(rid)
-        ws.mkdir(parents=True, exist_ok=True)
+        # Use _create_run so the run ID is structured as <app_name>/<timestamp>
+        # and pipeline_get_run_id can recall it by app name.
+        rid, ws = _create_run(url, run_id)
         src = ws / "source"
         src.mkdir(exist_ok=True)
 
@@ -564,34 +563,15 @@ def register_run_tools(mcp: FastMCP) -> None:
         Returns:
             JSON with ``run_id``, ``app_name``, ``workspace``, ``created_at``.
         """
-        app_name = _derive_app_name(app)
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        run_id = f"{app_name}/{timestamp}"
-
-        ws = _ws(run_id)
-        ws.mkdir(parents=True, exist_ok=True)
-
-        created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        _save_state(run_id, {
-            "run_id": run_id,
-            "app_name": app_name,
-            "app": app,
-            "created_at": created_at,
-            "workspace": str(ws),
-            "step": "created",
-            **({"description": description} if description else {}),
-        })
-
-        # Write pointer so pipeline_get_run_id can recall this run
-        pointer = _workspaces_root() / app_name / ".current_run"
-        pointer.write_text(run_id)
+        run_id, ws = _create_run(app, description=description)
+        state = _load_state(run_id)
 
         return _ok(
             f"Run {run_id} created",
             run_id=run_id,
-            app_name=app_name,
+            app_name=state.get("app_name", _derive_app_name(app)),
             workspace=str(ws),
-            created_at=created_at,
+            created_at=state.get("created_at", ""),
         )
 
     @mcp.tool()

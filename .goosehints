@@ -2,6 +2,20 @@
 
 ## Standing Orders (read first, apply always)
 
+0. **Full annotation coverage is mandatory — no exceptions.** Every non-trivial
+   function in every target file MUST be annotated before the session is complete.
+   "Coverage" means 100% of functions that touch I/O, memory, CPU, or network —
+   not just the named public API. This includes:
+   - All storage-backend functions in `aiori-*.c` and equivalent files
+   - Lifecycle functions (`*_init`, `*_fini`, `*_initialize`, `*_finalize`,
+     `*_Sync`, `*_Fsync`, `*_Delete`, `*_Rename`) even if the body is short
+   - Internal helpers that contain any syscall trigger (open, read, write, close,
+     mknod, mkstemp, ioctl, gpfs_fcntl, cuFileHandleRegister, beegfs_*, llapi_*)
+   - Vendor-specific functions under `#ifdef` guards (gpfs_*, beegfs_*, lustre_*)
+   The only permanent exemption is **Rule 0**: pure getter/setter ≤5 lines with
+   zero I/O and zero data movement. Everything else is annotated, period.
+   Difficulty, complexity, or "deprecated" status are NOT valid skip reasons.
+
 1. **Read the cheatsheet first.** Before any annotation session, read
    `00-critical-cheatsheet.md` for the five critical rules (C1–C5), seven corner
    cases (CC1–CC7), and ten known mistakes (M1–M10). These are drawn from real
@@ -44,6 +58,20 @@
 10. **Scan the whole file for internal helpers** (Rule F). After named API functions,
     run the awk coverage scan and check every unannotated definition for syscall
     triggers (open, mknod, mkstemp, ioctl, gpfs_fcntl, cuFileHandleRegister, etc.).
+
+11. **Get user confirmation before marking annotation done** (Pass 5, Step 1). After
+    all passes complete, present the Coverage Summary, Annotated, and Skipped tables
+    inline to the user and ask for explicit confirmation. Do NOT proceed to finalise
+    until the user replies "confirmed" or equivalent. If they request changes, apply,
+    rebuild, and re-present.
+
+12. **Extract new rules from every session** (Pass 5, Steps 2–4). After confirmation,
+    read `annotation_process.log` and `annotation_report.md`; extract every missed
+    function, wrong macro placement, wrong comp type, and user-correction pattern;
+    add each as a pitfall entry in `02-annotation-pitfalls.md`; promote generic patterns
+    to `01-annotation-rules-c.md` or `01-annotation-rules-general.md`; promote critical
+    silent-failure patterns to `00-critical-cheatsheet.md`. Append a `[RULES]` line to
+    `annotation_process.log`. The session is not complete until this is done.
 
 ---
 

@@ -36,6 +36,49 @@ def _new_run_id(requested: Optional[str] = None) -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
+def _create_run(
+    app: str,
+    run_id: Optional[str] = None,
+    description: Optional[str] = None,
+) -> tuple:
+    """
+    Create a structured <app_name>/<YYYYMMDD_HHMMSS> run directory and write
+    the .current_run pointer so pipeline_get_run_id can recall it.
+
+    Returns (run_id: str, workspace: Path).
+
+    If run_id is given and not a placeholder it is used as-is, so callers
+    can resume an existing run by passing its ID.
+    """
+    app_name = _derive_app_name(app)
+    if run_id and run_id not in _PLACEHOLDER_IDS:
+        rid = run_id
+    else:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        rid = f"{app_name}/{timestamp}"
+
+    ws = _ws(rid)
+    ws.mkdir(parents=True, exist_ok=True)
+
+    created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    _save_state(rid, {
+        "run_id": rid,
+        "app_name": app_name,
+        "app": app,
+        "created_at": created_at,
+        "workspace": str(ws),
+        "step": "created",
+        **({"description": description} if description else {}),
+    })
+
+    # Write pointer so pipeline_get_run_id can recall this run
+    pointer = _workspaces_root() / app_name / ".current_run"
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    pointer.write_text(rid)
+
+    return rid, ws
+
+
 def _derive_app_name(app: str) -> str:
     """
     Derive a safe, lowercase directory name from an app argument.

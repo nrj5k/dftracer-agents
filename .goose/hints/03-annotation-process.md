@@ -321,3 +321,103 @@ Final report with:
 - Pending work (functions that could not be completed this session)
 
 **Both files must exist before reporting the pipeline as complete.**
+
+---
+
+## Pass 5 — Review, Confirm, and Extract Rules (MANDATORY — do not skip)
+
+After writing `annotation.patch` and `annotation_report.md`, **stop and present the
+report to the user before marking the session done.** Follow this sequence exactly:
+
+### Step 1 — Present the coverage summary to the user
+
+Show the user the following three tables from `annotation_status.md` inline (do not
+ask them to open the file):
+
+1. **Coverage Summary table** — rows: category, total, annotated, annotated %, traced-in-test
+2. **Annotated functions table** — all rows with ✅ DONE
+3. **Skipped/Rule-0 table** — every skipped function with reason
+
+Then ask explicitly:
+
+> "Annotation complete. Please review:
+> - Are there any functions in the Skipped list that you think should be annotated?
+> - Are any functions in the Annotated list incorrect (wrong comp type, wrong macros)?
+> - Any other changes before I finalize the report?
+> Reply 'confirmed' to proceed, or tell me what to fix."
+
+**Do not proceed to Step 2 until the user replies 'confirmed' (or equivalent approval).**
+
+If the user requests changes:
+1. Apply the change (annotate the missed function, fix the wrong comp type, etc.)
+2. Rebuild and verify
+3. Update `annotation_status.md` and `annotation_report.md`
+4. Re-present the updated tables and ask again
+
+### Step 2 — Extract new rules from the session log
+
+After confirmation, read `annotation_logs/annotation_process.log` and
+`annotation_logs/annotation_report.md` in full and extract every pattern that meets
+ANY of these criteria:
+
+| Criterion | Signals in log |
+|-----------|----------------|
+| A function was initially skipped/missed and had to be added later | `[SKIP]` followed by later `[PASS2]` for same function |
+| A build failed and required a specific fix | `attempt N FAILED` + `attempt N+1` with description |
+| A comp type was wrong and had to be corrected | `UPDATE comp` appearing more than once for a function |
+| A macro was placed wrong (e.g. END after return) | `END-after-return`, `unreachable`, `moved END` |
+| A new function category was discovered (not in mandatory list) | functions not in the mandatory list that were annotated |
+| A #ifdef guard caused confusion or missed coverage | `#ifdef`, `guarded`, `not in trace` |
+| A user correction during the review step (Step 1 above) | anything the user asked to fix |
+
+For each extracted pattern:
+
+**a. Add a pitfall entry to `.goose/hints/02-annotation-pitfalls.md`** using the
+standard format:
+
+```
+---
+context: <one-line description>
+error: |
+  <what went wrong or what was missed>
+root_cause: <why it happened>
+fix: |
+  <the rule or steps that resolve it — phrased generically so it applies to any
+  future project, not just this one>
+tags: [c, annotation, <keywords>]
+---
+```
+
+**b. If the pattern is a NEW category of function that should always be annotated**
+(not already in the mandatory list in this file), add it to the appropriate mandatory
+list in `03-annotation-process.md`.
+
+**c. If the pattern is a generic annotation rule** (applies to any C/C++/Python file,
+not just this specific backend), add or update the relevant rule in:
+- `01-annotation-rules-c.md` (C-specific rules)
+- `01-annotation-rules-general.md` (language-agnostic rules)
+
+**d. If the pattern is a critical mistake** (causes silent failure — empty trace,
+unreachable END, missing comp=) that is not already in `00-critical-cheatsheet.md`,
+add it to the Known Mistakes (M-series) section there.
+
+### Step 3 — Update the cheatsheet coverage verification commands
+
+After extracting rules, check whether the coverage verification commands in
+`00-critical-cheatsheet.md` would have caught the new pattern. If not, add a new
+check command to the **Coverage Verification Commands** section.
+
+### Step 4 — Write the rule-update log
+
+Append to `annotation_logs/annotation_process.log`:
+
+```
+[RULES] <date> — extracted N new rules from session
+  - pitfalls added: <list of context: lines>
+  - mandatory list updates: <functions added>
+  - cheatsheet updates: <section updated>
+```
+
+**The session is not complete until Steps 1–4 are done.** Do not report "pipeline
+complete" to the user before the user has confirmed the report (Step 1) and new rules
+have been extracted (Steps 2–4).

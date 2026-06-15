@@ -7,7 +7,16 @@
 These are real mistakes that caused build failures or missing trace data in actual
 annotation sessions. Check pitfalls matching your current file type before writing.
 
-**Standing instruction — update this file whenever something fails and gets fixed:**
+**Standing instruction — update this file in two situations:**
+
+1. **Immediately after any fix during annotation** — the moment you fix a build error
+   or annotation mistake, append a new entry before moving to the next function.
+
+2. **At end of every session (Pass 5, Step 2)** — after user confirmation, scan
+   `annotation_process.log` and add entries for every pattern not yet covered here:
+   missed functions, wrong comp types, misplaced END macros, user corrections during
+   the review step. This second pass catches patterns that didn't cause a build error
+   but represented incorrect or incomplete annotation.
 
 When you encounter ANY error during annotation, build, or run that is not already
 covered by an entry below, and you fix it, you MUST immediately append a new entry
