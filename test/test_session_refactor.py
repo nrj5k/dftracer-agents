@@ -199,12 +199,56 @@ def run_tests(tmpdir: Path):
     check("session_run_pipeline[bad url]", r, expect="error")
 
 
+# ── Docs service bootstrap ────────────────────────────────────────────────────
+
+_docs_path = REPO / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "docs_service.py"
+_docs_mod = srv_mod._load_module("dftracer.docs_service", _docs_path)
+_docs_svc = _docs_mod.DFTracerDocsService()
+D = _docs_svc.docs_subservice
+
+
+# ── Docs tool tests ───────────────────────────────────────────────────────────
+
+def run_docs_tests():
+    """Smoke-test the docs service tools (no network required for list_sources)."""
+
+    # 12. docs_list_sources — no network needed
+    r = call(D, "docs_list_sources")
+    check("docs_list_sources", r, expect="ok", keys=("sources",))
+    srcs = r.get("sources", [])
+    src_keys = {s["key"] for s in srcs}
+    expected = {"dftracer", "dftracer-utils", "pydftracer", "dfanalyzer"}
+    if not expected.issubset(src_keys):
+        FAIL.append(("docs_list_sources[keys]", f"Missing sources: {expected - src_keys}"))
+    else:
+        PASS.append("docs_list_sources[keys]")
+
+    # 13. docs_search — fetch_content=False avoids network
+    r = call(D, "docs_search", query="DFTRACER_C_FUNCTION_START",
+             source="dftracer", max_results=1, fetch_content=False)
+    check("docs_search[no-fetch]", r, keys=("results",))
+
+    # 14. docs_search — bad source alias falls back to all sources
+    r = call(D, "docs_search", query="installation", source="unknown_xyz",
+             max_results=1, fetch_content=False)
+    check("docs_search[unknown-src]", r)
+
+    # 15. docs_fetch_page — non-existent URL returns error status
+    r = call(D, "docs_fetch_page", url="https://invalid.example.invalid/no-page.html")
+    check("docs_fetch_page[bad-url]", r, expect="error")
+
+    # 16. docs_search_key_pages — unknown source returns error
+    r = call(D, "docs_search_key_pages", source="not_a_source")
+    check("docs_search_key_pages[bad-src]", r, expect="error")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     tmpdir = Path(tempfile.mkdtemp(prefix="dft_test_"))
     try:
         run_tests(tmpdir)
+        run_docs_tests()
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 

@@ -578,6 +578,65 @@ fix: |
 tags: [c, annotation, comp, classification, missing-comp, rule4]
 
 ---
+context: dftracer header added to a .h file instead of .c file, breaking all includers
+error: |
+  fatal error: dftracer/dftracer.h: No such file or directory
+  (appears in files that never include dftracer themselves, because a shared header
+  now pulls it in transitively, and not all compile units have -I<dftracer>/include)
+root_cause: |
+  #include <dftracer/dftracer.h> was placed in a .h header (e.g. aiori.h) instead
+  of each individual .c file. Every .c that includes that header now requires the
+  dftracer include path, which breaks builds for translation units that are not part
+  of the annotation (e.g. test files, utility programs built separately).
+fix: |
+  Move the #include <dftracer/dftracer.h> into each .c / .cpp file that contains
+  annotation macros. Never add it to a .h header file. The include belongs in the
+  implementation file, placed as the last #include in the existing include block.
+tags: [c, annotation, include, header, build-error, rule10a]
+
+---
+context: Linker fails with "undefined reference to dftracer_*" after annotations compile cleanly
+error: |
+  /usr/bin/ld: foo.o: undefined reference to `dftracer_init'
+  /usr/bin/ld: foo.o: undefined reference to `dftracer_function_start'
+root_cause: |
+  The annotation macros expanded correctly (include path is right) but the binary
+  was not linked against libdftracer_core.so. The Makefile LIBS or LDFLAGS was not
+  updated to include -ldftracer_core and -L<prefix>/lib.
+fix: |
+  Add to src/Makefile (not just the top-level Makefile):
+    CFLAGS  += -I$(DFTRACER_PREFIX)/include
+    LDFLAGS += -L$(DFTRACER_PREFIX)/lib -Wl,-rpath,$(DFTRACER_PREFIX)/lib
+    LIBS    += -ldftracer_core
+  For CMake: target_link_libraries(${TARGET} PRIVATE dftracer::dftracer_core)
+  Verify the prefix: it should be install_ann/ (the dftracer install), NOT install/
+  (the annotated project install). They are different directories.
+  Also note: if dftracer was installed via pip into a venv, libdftracer_core.so is
+  in <venv>/lib/python*/site-packages/dftracer/lib/ — use that path for -L and -rpath.
+  Find it with:
+    DFTRACER_LIB=$(python3 -c \
+      "import importlib.util, pathlib; \
+       p=importlib.util.find_spec('dftracer'); \
+       print(pathlib.Path(p.origin).parent / 'lib')")
+  Use the venv's python3, not the system python.
+tags: [c, annotation, linker, undefined-reference, dftracer_core, rule10b]
+
+---
+context: Binary links but crashes or produces empty trace — dftracer .so not found at runtime
+error: |
+  ./myprogram: error while loading shared libraries: libdftracer_core.so: cannot
+  open shared object file: No such file or directory
+root_cause: |
+  -Wl,-rpath was not added to LDFLAGS, so the binary does not embed the library
+  search path. At runtime the dynamic linker cannot find libdftracer_core.so unless
+  LD_LIBRARY_PATH is set manually.
+fix: |
+  Add -Wl,-rpath,$(DFTRACER_PREFIX)/lib to LDFLAGS alongside -L$(DFTRACER_PREFIX)/lib.
+  This embeds the path into the binary so it works without LD_LIBRARY_PATH.
+  If you cannot rebuild, export LD_LIBRARY_PATH=$(DFTRACER_PREFIX)/lib before running.
+tags: [c, annotation, rpath, runtime, shared-library, rule10b]
+
+---
 context: Vendor-specific functions (gpfs_*, beegfs_*, lustre_*) not appearing in trace
 error: |
   After annotating gpfs_access_start, beegfs_getStriping, lustre_disable_file_locks

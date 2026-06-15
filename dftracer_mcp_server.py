@@ -144,6 +144,17 @@ def _build_plot_server() -> FastMCP:
     return server
 
 
+def _build_docs_server() -> FastMCP:
+    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "docs_service.py"
+    mod = _load_module("dftracer.docs_service", path)
+    service = mod.DFTracerDocsService()
+
+    server = FastMCP("DFTracerDocs")
+    for tool in asyncio.run(service.docs_subservice.list_tools()):
+        server.add_tool(tool)
+    return server
+
+
 def _build_session_server() -> FastMCP:
     session_dir = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "session"
     # Load session submodules in dependency order so relative imports resolve
@@ -182,6 +193,9 @@ def build_server(service: str) -> FastMCP:
     if service == "session":
         return _build_session_server()
 
+    if service == "docs":
+        return _build_docs_server()
+
     # both — all services
     combined = FastMCP("DFTracer")
     for srv in (
@@ -189,6 +203,7 @@ def build_server(service: str) -> FastMCP:
         _build_analyzer_server(),
         _build_plot_server(),
         _build_session_server(),
+        _build_docs_server(),
     ):
         for tool in asyncio.run(srv.list_tools()):
             combined.add_tool(tool)
@@ -205,7 +220,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--service",
-        choices=["utils", "analyzer", "session", "both"],
+        choices=["utils", "analyzer", "session", "docs", "both"],
         default="both",
         help="Which service(s) to expose (default: both)",
     )

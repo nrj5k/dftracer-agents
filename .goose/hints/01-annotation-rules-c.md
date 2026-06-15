@@ -363,9 +363,177 @@ grep -c "DFTRACER_C_FUNCTION_START" annotated/src/foo.c  # START count
 ```
 If counts differ significantly, use Check 1 to find the gap.
 
+### C Rule 10 — Header include and linker setup (must be done BEFORE any macro compiles)
+
+Before the first annotated file can compile, two things must be in place:
+the dftracer header and the dftracer shared library. Neither is optional — missing
+either produces hard compile or link errors.
+
+---
+
+#### 10a — Header: `#include <dftracer/dftracer.h>`
+
+Add this line to **every `.c` or `.cpp` file that contains annotations**.
+
+Placement rule:
+- Add it as the **last `#include`** in the existing include block of that file.
+- **Never add it to a `.h` header file** — doing so forces dftracer as a
+  compile-time dependency on every translation unit that includes that header,
+  which breaks builds that don't link dftracer.
+- If the file has no existing includes, place it at the very top.
+
+```c
+/* ✅ Correct — in a .c file, after existing includes */
+#include <stdio.h>
+#include <stdlib.h>
+#include "myproject.h"
+#include <dftracer/dftracer.h>   /* ← dftracer last */
+```
+
+```c
+/* ❌ Wrong — in a .h header file */
+#ifndef MYMODULE_H
+#define MYMODULE_H
+#include <dftracer/dftracer.h>   /* ← will break all includers */
+...
+```
+
+---
+
+#### 10b — Linker: `-ldftracer_core` and runtime path
+
+The annotation macros expand to calls into `libdftracer_core.so`.
+**The library must be on both the link path and the runtime library path.**
+
+The shared library name is `dftracer_core` (not `dftracer`). The install prefix
+is wherever dftracer was built/installed — typically `workspaces/<run_id>/install_ann/`
+for pipeline runs, or a system path like `/usr/local`.
+
+**For Makefile / autotools projects** — patch `src/Makefile` (not just the
+top-level Makefile):
+
+```makefile
+DFTRACER_PREFIX = /path/to/install_ann
+
+CFLAGS  += -I$(DFTRACER_PREFIX)/include
+LDFLAGS += -L$(DFTRACER_PREFIX)/lib -Wl,-rpath,$(DFTRACER_PREFIX)/lib
+LIBS    += -ldftracer_core
+```
+
+`-Wl,-rpath,...` embeds the library search path into the binary so it does not
+depend on `LD_LIBRARY_PATH` at run time.
+
+**For CMake projects** — add to `CMakeLists.txt` before the target definitions:
+
+```cmake
+find_package(dftracer REQUIRED
+    HINTS ${DFTRACER_PREFIX}/lib/cmake/dftracer
+          ${DFTRACER_PREFIX}/share/cmake/dftracer)
+
+target_link_libraries(${MY_TARGET} PRIVATE dftracer::dftracer_core)
+target_include_directories(${MY_TARGET} PRIVATE
+    ${DFTRACER_PREFIX}/include)
+```
+
+If `find_package` is not available (dftracer built without cmake export), fall
+back to manual flags:
+
+```cmake
+target_include_directories(${MY_TARGET} PRIVATE ${DFTRACER_PREFIX}/include)
+target_link_directories(${MY_TARGET} PRIVATE ${DFTRACER_PREFIX}/lib)
+target_link_libraries(${MY_TARGET} PRIVATE dftracer_core)
+set_target_properties(${MY_TARGET} PROPERTIES
+    BUILD_RPATH "${DFTRACER_PREFIX}/lib"
+    INSTALL_RPATH "${DFTRACER_PREFIX}/lib")
+```
+
+**For pkg-config** (when dftracer installs a `.pc` file):
+
+```bash
+pkg-config --cflags dftracer    # → -I/path/to/include
+pkg-config --libs   dftracer    # → -L/path/to/lib -ldftracer_core
+```
+
+**When dftracer was installed via pip / venv** — the shared library and headers
+live inside the Python package tree, not in a system prefix:
+
+```
+<venv>/lib/python<ver>/site-packages/dftracer/lib/libdftracer_core.so
+<venv>/lib/python<ver>/site-packages/dftracer/include/dftracer/dftracer.h
+```
+
+Find the paths at build time:
+
+```bash
+DFTRACER_SITE=$(python3 -c \
+    "import importlib.util, pathlib; \
+     p=importlib.util.find_spec('dftracer'); \
+     print(pathlib.Path(p.origin).parent)")
+
+DFTRACER_INC="${DFTRACER_SITE}/include"
+DFTRACER_LIB="${DFTRACER_SITE}/lib"
+```
+
+Then set flags as normal:
+
+```makefile
+CFLAGS  += -I$(DFTRACER_INC)
+LDFLAGS += -L$(DFTRACER_LIB) -Wl,-rpath,$(DFTRACER_LIB)
+LIBS    += -ldftracer_core
+```
+
+Use the **venv's python3** when querying — not the system python — to get the
+path for the venv that will actually be on `LD_LIBRARY_PATH` at runtime.
+
+---
+
+#### 10c — Dependency libraries (if linker reports undefined symbols)
+
+`libdftracer_core.so` may depend on `libcpp-logger` and `libbrahma`. On systems
+without `RUNPATH` in dftracer's own binary, the linker may need these explicitly:
+
+```makefile
+LIBS += -ldftracer_core -lcpp-logger -lbrahma
+```
+
+Only add these if the link fails with `undefined reference to …` symbols from those
+libraries. If dftracer was built with `-Wl,--as-needed`, they are already pulled in
+transitively and adding them explicitly causes no harm.
+
+---
+
+#### 10d — Verify the build setup before annotating any source
+
+Before writing the first annotation macro, confirm the build setup works:
+
+```bash
+# 1. Add ONLY the include to one .c file and build it
+echo '#include <dftracer/dftracer.h>' >> annotated/src/one_file.c
+make -C annotated/src 2>&1 | grep -i "error\|cannot find"
+
+# 2. If it compiles cleanly, the include path is correct.
+# 3. If "dftracer.h: No such file or directory", fix CFLAGS first.
+# 4. Link a minimal program to confirm the .so is found:
+gcc -o /tmp/dft_probe /dev/stdin \
+    -I${DFTRACER_PREFIX}/include \
+    -L${DFTRACER_PREFIX}/lib -ldftracer_core \
+    -Wl,-rpath,${DFTRACER_PREFIX}/lib <<'C'
+#include <dftracer/dftracer.h>
+int main(void){ return 0; }
+C
+```
+
+If the probe compiles and links, the environment is ready. Do not start annotation
+until this probe succeeds — a broken build environment means every subsequent build
+failure will be ambiguous.
+
 ### C Quick checklist
 
-- [ ] `#include <dftracer/dftracer.h>` added to .c files only (never headers)
+- [ ] **Build setup verified before first annotation** (Rule 10d): header probe compiles clean, linker probe links without errors
+- [ ] `#include <dftracer/dftracer.h>` added to every annotated `.c`/`.cpp` file — as the last include, never in `.h` headers (Rule 10a)
+- [ ] Linker flags set: `-ldftracer_core -L<prefix>/lib -Wl,-rpath,<prefix>/lib` (Rule 10b)
+- [ ] For CMake: `target_link_libraries(... dftracer::dftracer_core)` or manual `-ldftracer_core` added (Rule 10b)
+- [ ] If linker reports missing symbols: `-lcpp-logger -lbrahma` added after `-ldftracer_core` (Rule 10c)
 - [ ] ALL non-trivial functions annotated — skip only pure getters/setters/formatters (Rule D)
 - [ ] START is the first statement after `{` (not before `{`)
 - [ ] START is in the function definition body, not a forward declaration (Rule 7)
