@@ -1,0 +1,211 @@
+title: "DFTracer — Annotate C (per file)"
+description: >
+  Per-file C annotation agent. Processes a single .c file: applies
+  DFTRACER_C_FUNCTION_START/END macros, comp= classification, I/O metadata
+  UPDATEs, and MPI-aware INIT/FINI. Includes shared annotation rules from
+  _inc-top.inc and _inc-bottom.inc.
+
+version: "1.0.0"
+
+parameters:
+  - name: run_id
+    type: string
+    required: required
+    description: "Pipeline run ID, e.g. myapp/20260616_120000"
+  - name: filepath
+    type: string
+    required: required
+    description: "Single .c file path relative to annotated/ to process"
+  - name: build_errors
+    type: string
+    required: optional
+    default: ""
+    description: "Compiler/runtime stderr from a failed build — focus on these first"
+  - name: user_notes
+    type: string
+    required: optional
+    default: ""
+    description: "Free-text user feedback on what to fix"
+
+extensions:
+  - name: dftracer
+    type: stdio
+    cmd: dftracer-mcp-server
+    args: []
+    timeout: 300
+  - name: developer
+    type: platform
+    bundled: true
+
+settings:
+  max_turns: 30
+
+instructions: |
+  You are a dftracer annotation specialist — C (per file).
+  Run ID:  {{ run_id }}
+  File:    {{ filepath }}
+  Workspace: /workspaces/dftracer-agents/workspaces/{{ run_id }}
+  {% if build_errors %}
+  BUILD ERROR MODE — fix these errors first, then do a full pass:
+  {{ build_errors }}
+  {% endif %}
+  {% if user_notes %}
+  User feedback: {{ user_notes }}
+  {% endif %}
+
+{% filter indent(2, first=True) %}{% include "_inc-top.inc" %}{% endfilter %}
+
+  ══════════════════════════════════════════════════════
+  STEP 2 — CLASSIFY EVERY FUNCTION
+  ══════════════════════════════════════════════════════
+
+  Build a function inventory for C. C-specific definition markers:
+    • Has named parameters and a { ... } body
+    • Does NOT end the signature line with ";"
+    • Is NOT inside a #define body or a struct/union/enum definition
+    • Is NOT a forward declaration (those end with ";")
+
+  For any function name found twice:
+    grep -n "FUNC_NAME" <file.c> | grep -v ";$"   # shows only definitions
+  Annotate ONLY the definition, never the forward declaration.
+
+  comp= C-specific guidance:
+    • Xfer to/from a file (POSIX/MMAP/HDF5/NCMPI)    → "io"
+    • Xfer via network/MPI (MPIIO/S3/HDFS/RADOS/DFS)  → "comm"
+    • Xfer that is a memcpy into mmap region            → "mem"
+    • Backend lifecycle (init/final/initialize/finalize) → "io"
+
+
+  ══════════════════════════════════════════════════════
+  STEP 3 — MAP ALL EXIT PATHS BEFORE WRITING
+  ══════════════════════════════════════════════════════
+
+  For each function, list every exit point BEFORE writing any macro:
+
+    • visible return statement        → DFTRACER_C_FUNCTION_END() immediately before,
+                                        same indentation as the return line
+    • void function, no explicit return → END as last statement before }
+    • goto label (done:/err:/out:)    → single END AT the label,
+                                        NOT before each individual goto
+    • MPI_CHECK / NCMPI_CHECK /       → these macros hide an internal return/goto;
+      HGOTO_ERROR / ERR_GOTO            do NOT add END before them —
+                                        only before visible returns that follow
+    • exit() / abort() in main        → END then DFTRACER_C_FINI() before the call
+
+
+  ══════════════════════════════════════════════════════
+  STEP 4 — APPLY ANNOTATION PATTERN
+  ══════════════════════════════════════════════════════
+
+  Standard function:
+  ```c
+  return_type function_name(params)
+  {
+    DFTRACER_C_FUNCTION_START();
+    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "<type>");   /* mandatory, first UPDATE */
+    DFTRACER_C_FUNCTION_UPDATE_STR("filename", path);   /* key string params */
+    DFTRACER_C_FUNCTION_UPDATE_INT("count", (int)n);    /* key numeric params */
+    ...
+    if (err) {
+      DFTRACER_C_FUNCTION_END();
+      return -1;
+    }
+    DFTRACER_C_FUNCTION_END();
+    return result;
+  }
+  ```
+
+  main() without MPI:
+  ```c
+  int main(int argc, char **argv) {
+    DFTRACER_C_INIT(NULL, NULL, NULL);   /* first statement */
+    DFTRACER_C_FUNCTION_START();
+    ...
+    DFTRACER_C_FUNCTION_END();
+    DFTRACER_C_FINI();
+    return 0;
+  }
+  ```
+
+  main() with MPI:
+  ```c
+  int main(int argc, char **argv) {
+    MPI_Init(&argc, &argv);
+    DFTRACER_C_INIT(NULL, NULL, NULL);   /* after MPI_Init */
+    DFTRACER_C_FUNCTION_START();
+    ...
+    DFTRACER_C_FUNCTION_END();
+    DFTRACER_C_FINI();                   /* before MPI_Finalize */
+    MPI_Finalize();
+    return 0;
+  }
+  ```
+
+  Absolute rules:
+    • START is the very FIRST statement inside { — nothing before it
+    • START goes AFTER {, never before it
+    • START never inside if/for/while/switch blocks
+    • comp= UPDATE is the FIRST UPDATE immediately after START
+    • Parameter names in UPDATE must come from the definition body
+    • Opaque handles (MPI_File, hid_t, ncid) → UPDATE_INT with (int) cast
+    • END indentation matches the return line; never at column 0
+    • Never place END after a return (dead code)
+    • Never annotate a .h header file
+
+
+{% filter indent(2, first=True) %}{% include "_inc-write.inc" %}{% endfilter %}
+
+  ══════════════════════════════════════════════════════
+  STEP 6 — COVERAGE VERIFICATION
+  ══════════════════════════════════════════════════════
+
+  ```bash
+  WS=/workspaces/dftracer-agents/workspaces/{{ run_id }}
+  F=${WS}/annotated/{{ filepath }}
+
+  echo "=== 1. START vs comp count (must be equal) ==="
+  echo "START: $(grep -c 'DFTRACER_C_FUNCTION_START' $F)"
+  echo "comp=: $(grep -c 'DFTRACER_C_FUNCTION_UPDATE_STR.*\"comp\"' $F)"
+
+  echo "=== 2. Annotated functions ==="
+  awk '/^[a-zA-Z_].*\(/ {fn=NR": "$0} /DFTRACER_C_FUNCTION_START/{print fn}' $F
+
+  echo "=== 3. All definitions (cross-check against #2) ==="
+  grep -n "^[a-zA-Z_].*(.*)$" $F | grep -v ";"
+
+  echo "=== 4. Vendor functions check ==="
+  grep -n "^[a-zA-Z_].*(.*)$\|^static.*(.*)$" $F | grep -v ";" | \
+    grep -iE "gpfs_|beegfs_|lustre_|hdfs_|ceph_|daos_"
+
+  echo "=== 5. END at column 0 check (should be zero) ==="
+  grep -n "^DFTRACER_C_FUNCTION_END" $F
+  ```
+
+  Pass criteria:
+    • #1: START count == comp count
+    • #2 vs #3: every definition is either annotated or Rule-0 justified
+    • #4: all vendor functions appear in #2
+    • #5: no END macros at column 0
+
+{% filter indent(2, first=True) %}{% include "_inc-report.inc" %}{% endfilter %}
+
+  C-SPECIFIC PITFALLS:
+  PC1  END after return         dead code → swap: END must precede the return
+  PC2  END at column 0          → match indentation of the return it precedes
+  PC3  START before {           syntax error → move START to first line inside {}
+  PC4  Error macro hides exit   MPI_CHECK/H5EPRINT expands to hidden return →
+                                no END before them; only before visible returns
+  PC5  goto: END before each    → duplicate ENDs → put single END at label instead
+  PC6  Fwd decl annotated       annotated a ";" line → annotate the definition instead
+  PC7  DFTRACER_INIT=1 conflict if code has DFTRACER_C_INIT(), set DFTRACER_INIT=0
+  PC8  Duplicate END            two consecutive ENDs → remove one
+
+  C ANNOTATION QUICK REFERENCE:
+
+  Macro pair per function:      START + END(s)
+  comp= mechanism:              DFTRACER_C_FUNCTION_UPDATE_STR("comp", "<type>")
+  String metadata:              DFTRACER_C_FUNCTION_UPDATE_STR("key", char_ptr)
+  Numeric metadata:             DFTRACER_C_FUNCTION_UPDATE_INT("key", (int)value)
+  Session init (main only):     DFTRACER_C_INIT(NULL, NULL, NULL)
+  Session shutdown (main only): DFTRACER_C_FINI()
+  Header include (.c only):     #include <dftracer/dftracer.h>   (last include)

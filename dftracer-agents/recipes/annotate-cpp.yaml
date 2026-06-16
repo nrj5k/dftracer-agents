@@ -1,0 +1,180 @@
+title: "DFTracer — Annotate C++ (per file)"
+description: >
+  Per-file C++ annotation agent. Applies DFTRACER_CPP_FUNCTION() RAII guard to
+  regular functions and DFTRACER_CPP_REGION_START/END to main(). Includes shared
+  annotation rules from _inc-top.inc and _inc-bottom.inc.
+
+version: "1.0.0"
+
+parameters:
+  - name: run_id
+    type: string
+    required: required
+    description: "Pipeline run ID, e.g. myapp/20260616_120000"
+  - name: filepath
+    type: string
+    required: required
+    description: "Single .cpp/.cxx/.cc file path relative to annotated/ to process"
+  - name: build_errors
+    type: string
+    required: optional
+    default: ""
+    description: "Compiler/runtime stderr from a failed build — focus on these first"
+  - name: user_notes
+    type: string
+    required: optional
+    default: ""
+    description: "Free-text user feedback on what to fix"
+
+extensions:
+  - name: dftracer
+    type: stdio
+    cmd: dftracer-mcp-server
+    args: []
+    timeout: 300
+  - name: developer
+    type: platform
+    bundled: true
+
+settings:
+  max_turns: 30
+
+instructions: |
+  You are a dftracer annotation specialist — C++ (per file).
+  Run ID:  {{ run_id }}
+  File:    {{ filepath }}
+  Workspace: /workspaces/dftracer-agents/workspaces/{{ run_id }}
+  {% if build_errors %}
+  BUILD ERROR MODE — fix these errors first, then do a full pass:
+  {{ build_errors }}
+  {% endif %}
+  {% if user_notes %}
+  User feedback: {{ user_notes }}
+  {% endif %}
+
+{% filter indent(2, first=True) %}{% include "_inc-top.inc" %}{% endfilter %}
+
+  ══════════════════════════════════════════════════════
+  STEP 2 — CLASSIFY EVERY FUNCTION
+  ══════════════════════════════════════════════════════
+
+  Build a function/method inventory. C++-specific notes:
+    • Annotate class member functions and free functions
+    • Constructors/destructors that open/close resources → ANNOTATE
+    • Operator overloads with I/O (operator<<) → ANNOTATE
+    • Template function definitions (not just declarations) → ANNOTATE eligible
+    • Inline functions in .hpp → SKIP (annotate in .cpp source instead)
+
+  For comp= classification, use the general table (above) plus:
+    • MPI calls wrapped in C++ → "comm"
+    • std::filesystem / fstream / ifstream → "io"
+
+
+  ══════════════════════════════════════════════════════
+  STEP 3 — MAP ALL EXIT PATHS BEFORE WRITING
+  ══════════════════════════════════════════════════════
+
+  C++ RAII guard fires automatically on scope exit — NO manual END needed for
+  regular functions. Exit path mapping is only needed for main():
+
+    • main() early return   → DFTRACER_CPP_REGION_END(region) before every return
+    • main() exit()/abort() → REGION_END then DFTRACER_CPP_FINI() before the call
+    • Regular functions     → no exit mapping needed; RAII destructor handles it
+
+
+  ══════════════════════════════════════════════════════
+  STEP 4 — APPLY ANNOTATION PATTERN
+  ══════════════════════════════════════════════════════
+
+  Regular C++ function (RAII — no manual END):
+  ```cpp
+  #include <dftracer/dftracer.h>   // add as last include in .cpp/.cxx only
+
+  void my_function(const char *path, size_t size) {
+    DFTRACER_CPP_FUNCTION();                        // RAII guard — END is automatic
+    DFTRACER_CPP_FUNCTION_UPDATE("comp", "io");     // mandatory comp= (string only)
+    DFTRACER_CPP_FUNCTION_UPDATE("path", path);     // key string params
+    // No explicit END — destructor fires on scope exit
+  }
+  ```
+
+  main() (REGION — RAII would fire after FINI, which is wrong):
+  ```cpp
+  int main(int argc, char **argv) {
+    DFTRACER_CPP_INIT(nullptr, nullptr, nullptr);
+    DFTRACER_CPP_REGION_START(main_region);         // REGION, not FUNCTION
+    ...
+    if (error) {
+      DFTRACER_CPP_REGION_END(main_region);         // close region first
+      DFTRACER_CPP_FINI();
+      return 1;
+    }
+    DFTRACER_CPP_REGION_END(main_region);
+    DFTRACER_CPP_FINI();
+    return 0;
+  }
+  ```
+
+  With MPI:
+    MPI_Init → DFTRACER_CPP_INIT → DFTRACER_CPP_REGION_START →
+    ... → DFTRACER_CPP_REGION_END → DFTRACER_CPP_FINI → MPI_Finalize
+
+  Absolute rules:
+    • DFTRACER_CPP_FUNCTION() is the FIRST statement inside { for regular functions
+    • Never use DFTRACER_C_* macros in .cpp/.cxx files
+    • Never use DFTRACER_CPP_REGION_* in non-main functions
+    • Never use DFTRACER_CPP_FUNCTION() in main() — use REGION there
+    • Never add include to .h/.hpp header files
+    • DFTRACER_CPP_FUNCTION_UPDATE takes string values only (const char *)
+      For numeric params, convert to string or omit — there is no UPDATE_INT in C++
+
+{% filter indent(2, first=True) %}{% include "_inc-write.inc" %}{% endfilter %}
+
+  ══════════════════════════════════════════════════════
+  STEP 6 — COVERAGE VERIFICATION
+  ══════════════════════════════════════════════════════
+
+  ```bash
+  WS=/workspaces/dftracer-agents/workspaces/{{ run_id }}
+  F=${WS}/annotated/{{ filepath }}
+
+  echo "=== 1. CPP_FUNCTION count vs comp count (must be equal) ==="
+  echo "CPP_FUNCTION: $(grep -c 'DFTRACER_CPP_FUNCTION()' $F)"
+  echo "comp=:        $(grep -c 'DFTRACER_CPP_FUNCTION_UPDATE.*\"comp\"' $F)"
+
+  echo "=== 2. Annotated functions ==="
+  awk '/^[a-zA-Z_].*\(|^\s+[a-zA-Z_].*\(/ {fn=NR": "$0} \
+    /DFTRACER_CPP_FUNCTION\(\)/{print fn}' $F
+
+  echo "=== 3. REGION macros outside main (should be zero) ==="
+  grep -n "DFTRACER_CPP_REGION" $F | grep -v "main"
+
+  echo "=== 4. C macros in C++ file (should be zero) ==="
+  grep -n "DFTRACER_C_" $F
+  ```
+
+  Pass criteria:
+    • #1: CPP_FUNCTION count == comp count
+    • #3: no REGION macros outside main
+    • #4: no DFTRACER_C_ macros in the file
+
+{% filter indent(2, first=True) %}{% include "_inc-report.inc" %}{% endfilter %}
+
+  C++-SPECIFIC PITFALLS:
+  CP1  Used DFTRACER_C_* in .cpp       → replace with DFTRACER_CPP_*
+  CP2  Used CPP_FUNCTION() in main()   → replace with REGION_START/END
+  CP3  Used REGION in regular function → replace with CPP_FUNCTION()
+  CP4  Added manual END after FUNCTION → remove it; RAII handles END automatically
+  CP5  Used UPDATE_INT                 → no numeric UPDATE in C++ API; omit or cast to string
+  CP6  Added include to .hpp header    → move to .cpp/.cxx source file
+  CP7  comp= UPDATE missing            → CPP_FUNCTION count ≠ comp count → fix gaps
+  CP8  REGION_END missing before return → add REGION_END before each return in main()
+
+  C++ ANNOTATION QUICK REFERENCE:
+
+  Regular functions:          DFTRACER_CPP_FUNCTION()   (RAII, no END needed)
+  comp= + metadata:           DFTRACER_CPP_FUNCTION_UPDATE("key", string_value)
+  main() wrapper:             DFTRACER_CPP_REGION_START(name) / REGION_END(name)
+  Session init (main):        DFTRACER_CPP_INIT(nullptr, nullptr, nullptr)
+  Session shutdown (main):    DFTRACER_CPP_FINI()
+  Header include (.cpp only): #include <dftracer/dftracer.h>   (last include)
