@@ -1,0 +1,52 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:dftracer.readthedocs.io)",
+      "Bash(python -m pytest test/test_dftracer_utils_mcp_tools.py test/test_dfanalyzer_service.py -v)",
+      "Bash(python -m pytest test/ -v --ignore=test/test_dftracer_utils_mcp_stdio_integration.py)",
+      "Bash(tee /workspaces/dftracer-agents/pytest_output.txt)",
+      "Bash(python -m pytest test/ -v -s --ignore=test/test_dftracer_utils_mcp_stdio_integration.py)",
+      "Bash(dftracer_info -d test/data/cm1_1_48_20240926 --query summary)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(dftracer_gen_fake_trace --output-dir /tmp/fake-traces --num-events 100)",
+      "Bash(dftracer_gen_fake_trace --output-dir /tmp/fake-traces --num-processes 2 --num-hosts 1 --num-epochs 1 --steps-per-epoch 2)",
+      "Read(//tmp/**)",
+      "Bash(dftracer_reader --help)",
+      "Bash(dftracer_stats --help)",
+      "Bash(dftracer_merge --help)",
+      "Bash(dftracer_event_count --help)",
+      "Bash(dftracer_event_count -d test/data/cm1_1_48_20240926)",
+      "Bash(dftracer_stats -d test/data/cm1_1_48_20240926)",
+      "Bash(dftracer_view -d test/data/cm1_1_48_20240926)",
+      "Bash(dftracer_index -d test/data/cm1_1_48_20240926)",
+      "Bash(dftracer_stats -d test/data/cm1_1_48_20240926 --no-auto-index)",
+      "Bash(dftracer_view -d test/data/cm1_1_48_20240926 --preset summary)",
+      "Bash(echo \"view exit: $?\")",
+      "Bash(dftracer_view -d test/data/cm1_1_48_20240926 --query 'cat == \"POSIX\"')",
+      "Bash(echo \"view query exit: $?\")",
+      "Bash(echo \"reader help: $?\")",
+      "Bash(echo \"merge help: $?\")",
+      "Bash(mkdir -p /tmp/test-merge-empty)",
+      "Bash(dftracer_merge -d /tmp/test-merge-empty)",
+      "Bash(echo \"merge empty: $?\")",
+      "Bash(dftracer_view --no-metadata)",
+      "Bash(echo \"view --no-metadata: $?\")",
+      "Bash(dftracer_pgzip -d .)",
+      "Bash(echo \"pgzip -d .: $?\")",
+      "Bash(dftracer_comparator)",
+      "Bash(echo \"comparator rc: $?\")",
+      "Bash(dftracer_reconstruct)",
+      "Bash(echo \"reconstruct rc: $?\")",
+      "Bash(dftracer_replay)",
+      "Bash(echo \"replay rc: $?\")",
+      "Bash(dftracer_organize)",
+      "Bash(echo \"organize rc: $?\")",
+      "Bash(dftracer_call_tree)",
+      "Bash(echo \"call_tree rc: $?\")",
+      "Bash(python3 -c ' *)"
+    ],
+    "additionalDirectories": [
+      "/tmp/test-merge-empty"
+    ]
+  }
+}

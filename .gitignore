@@ -17,3 +17,7 @@ dftracer_agents.egg-info/top_level.txt
 test/data/cm1_1_48_20240926/.dftindex/
 outputs
 .goose/secrets.yaml
+node_modules
+.gitignore
+package.json
+build

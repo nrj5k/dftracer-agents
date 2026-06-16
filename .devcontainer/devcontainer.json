@@ -11,6 +11,7 @@
     "OLLAMA_HOST": "http://host.docker.internal:11434",
     "TMPDIR": "/tmp/goose"
   },
+  "forwardPorts": [5000],
   "postCreateCommand": "bash .devcontainer/postCreate.sh",
   "postStartCommand": "bash .devcontainer/link-goose-config.sh",
   "customizations": {

@@ -120,8 +120,9 @@ active_provider: ollama_cloud
 OLLAMA_HOST: http://host.docker.internal:11434
 OLLAMA_TIMEOUT: '600'
 GOOSE_TOOLSHIM: true
-GOOSE_TOOLSHIM_OLLAMA_MODEL: qwen2.5-coder:7b
+GOOSE_TOOLSHIM_OLLAMA_MODEL: kimi-k2.7-code
 GOOSE_TELEMETRY_ENABLED: false
 CURSOR_AGENT_COMMAND: cursor-agent
 ANTHROPIC_HOST: https://api.anthropic.com
 GOOSE_THINKING_EFFORT: medium
+GOOSE_CLI_MIN_PRIORITY: 0.0

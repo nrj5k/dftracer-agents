@@ -76,6 +76,9 @@ def _bootstrap_package_context() -> None:
     )
     factory_mod = importlib.util.module_from_spec(spec)
     sys.modules["dftracer_agents.mcp_service_factory"] = factory_mod
+    # Also register under the mcp_tools sub-path so 3-dot relative imports from
+    # dftracer_agents.mcp_tools.tools.dftracer.* resolve to the same object.
+    sys.modules["dftracer_agents.mcp_tools.mcp_service_factory"] = factory_mod
     spec.loader.exec_module(factory_mod)
 
     sys.modules["dftracer_agents"] = pkg
