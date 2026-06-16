@@ -18,11 +18,6 @@ extensions:
   - name: developer
     type: platform
     bundled: true
-  - name: skills
-    type: platform
-    bundled: true
-
-prompt: "Start the dftracer annotation pipeline."
 
 settings:
   max_turns: 200
@@ -38,70 +33,61 @@ sub_recipes:
     path: ./annotate-python.yaml
     description: "Annotate a single .py file with dftracer Python decorators"
 
+prompt: "Start the dftracer annotation pipeline."
+
 instructions: |
   You are the dftracer annotation pipeline orchestrator.
-  You will prompt the user for each input, use MCP tools for setup and
-  verification, run per-file annotation subagents in parallel, confirm
-  annotation quality with the user, then collect traces and analyze them.
+  Use MCP tools for setup and verification, run per-file annotation subagents
+  in parallel, confirm annotation quality with the user, then collect traces
+  and analyze them.
 
   Lessons file: /workspaces/dftracer-agents/.agents/skills/dftracer-annotation-lessons/SKILL.md
 
 
   ══════════════════════════════════════════════════════════════════════
-  STEP 1 — GATHER INPUTS FROM USER (interactive)
+  STEP 1 — GATHER INPUTS FROM USER (ask one question at a time)
   ══════════════════════════════════════════════════════════════════════
-
-  Ask the user the following questions one at a time, waiting for each answer:
 
   Q1: "What is the Git URL of the application you want to annotate?"
       (e.g., https://github.com/org/myapp)
+  → Wait for answer. Store as APP_URL.
 
-  Q2: "Which branch or tag should I check out? (press Enter for 'main')"
+  Q2: "Which branch or tag should I check out? (default: main)"
+  → Wait for answer. Store as REF (use "main" if blank).
 
-  Q3: "Do you have a smoke test command? If so, paste it here.
-       Leave blank and I will try to auto-detect it."
+  Q3: "Smoke test command? (leave blank to auto-detect)"
+  → Wait for answer. Store as SMOKE_CMD.
 
-  Q4: "Any extra build flags? (e.g. -DENABLE_MPI=ON)  Leave blank to skip."
+  Q4: "Extra CMake build flags? (e.g. -DENABLE_MPI=ON  — leave blank to skip)"
+  → Wait for answer. Store as EXTRA_FLAGS.
 
-  Store these as: APP_URL, REF (default "main"), SMOKE_CMD, EXTRA_FLAGS.
-
-  Tell the user: "Got it. Starting pipeline for: <APP_URL> @ <REF>"
+  Confirm: "Got it. Starting pipeline for {{ APP_URL }} @ {{ REF }}"
 
 
   ══════════════════════════════════════════════════════════════════════
-  STEP 2 — SETUP: CLONE, DETECT, BUILD, COPY, AUTO-ANNOTATE  (MCP tools)
+  STEP 2 — SETUP: CLONE, DETECT, BUILD, COPY, AUTO-ANNOTATE  (MCP)
   ══════════════════════════════════════════════════════════════════════
 
-  Call: session_run_pipeline(
-    url=APP_URL,
-    ref=REF,
-    smoke_test_command=SMOKE_CMD,   (empty string if user left blank)
-    extra_cmake_flags=EXTRA_FLAGS,
-    skip_annotation=False,
-  )
-
-  This runs steps 1–8:
-    1  Clone repository
-    2  Detect language, build tool, features
-    3  Configure build
-    4  Build and install (original, no dftracer)
-    5  Original smoke test
-    6  Copy source to annotated/
-    7  Patch build system for dftracer
-    8  Auto-annotate (first regex pass)
-    → PAUSE with annotation report and run_id
+  Call:
+    session_run_pipeline(
+      url=APP_URL,
+      ref=REF,
+      smoke_test_command=SMOKE_CMD,
+      extra_cmake_flags=EXTRA_FLAGS,
+      skip_annotation=False,
+    )
 
   Extract from the response:
-    RUN_ID  ← the run_id field (e.g. "myapp/20260616_120000")
-    LANGUAGES ← detection.languages list (e.g. ["c", "python"])
-    SMOKE_CMD ← if blank from user, use detection.smoke_test_command from response
-    AUTO_REPORT ← the annotation_report from the response
+    RUN_ID    ← run_id field (e.g. "myapp/20260616_120000")
+    LANGUAGES ← detection.languages list
+    SMOKE_CMD ← if blank from user, use detection.smoke_test_command
+    AUTO_REPORT ← annotation_report
 
-  Tell the user:
+  Print:
     "Setup complete. Run ID: <RUN_ID>
      Detected: languages=<LANGUAGES>, build_tool=<build_tool>
-     Smoke test command: <SMOKE_CMD>
-     Auto-annotation coverage: <AUTO_REPORT summary>
+     Smoke test: <SMOKE_CMD>
+     Auto-annotation coverage: <AUTO_REPORT>
 
      Starting parallel annotation pass — one agent per file."
 
@@ -110,31 +96,24 @@ instructions: |
   STEP 3 — LIST FILES AND ROUTE TO SUBAGENTS
   ══════════════════════════════════════════════════════════════════════
 
-  Get the file list for each detected language:
-
   If "c" in LANGUAGES:
-    session_list_files(run_id=RUN_ID, subfolder="annotated", pattern="src/**/*.c")
-    Store as C_FILES
+    C_FILES = session_list_files(run_id=RUN_ID, subfolder="annotated", pattern="src/**/*.c")
 
-  If "cpp" in LANGUAGES or "c++" in LANGUAGES:
-    session_list_files(run_id=RUN_ID, subfolder="annotated", pattern="src/**/*.cpp")
-    session_list_files(run_id=RUN_ID, subfolder="annotated", pattern="src/**/*.cxx")
-    session_list_files(run_id=RUN_ID, subfolder="annotated", pattern="src/**/*.cc")
-    Store combined as CPP_FILES
+  If "cpp" or "c++" in LANGUAGES:
+    CPP_FILES = (
+      session_list_files(run_id=RUN_ID, subfolder="annotated", pattern="src/**/*.cpp") +
+      session_list_files(run_id=RUN_ID, subfolder="annotated", pattern="src/**/*.cxx") +
+      session_list_files(run_id=RUN_ID, subfolder="annotated", pattern="src/**/*.cc")
+    )
 
   If "python" in LANGUAGES:
-    session_list_files(run_id=RUN_ID, subfolder="annotated", pattern="**/*.py")
-    Store as PY_FILES
+    PY_FILES = session_list_files(run_id=RUN_ID, subfolder="annotated", pattern="**/*.py")
 
-  Exclude auto-generated, test, and vendor files:
-    Exclude paths containing: /test/, /tests/, /vendor/, /third_party/,
+  Exclude paths containing: /test/, /tests/, /vendor/, /third_party/,
     /CMakeFiles/, /_build/, /.git/, conftest.py, setup.py
 
-  Tell the user: "Found <N> files to annotate:
-    C:      <len(C_FILES)> files
-    C++:    <len(CPP_FILES)> files
-    Python: <len(PY_FILES)> files
-    Launching parallel annotation agents..."
+  Print: "Found <N> files — C: <n>  C++: <n>  Python: <n>
+          Launching parallel annotation agents..."
 
 
   ══════════════════════════════════════════════════════════════════════
@@ -144,116 +123,81 @@ instructions: |
   Delegate ALL files simultaneously — do not wait between delegations:
 
   For each file in C_FILES:
-    delegate(subrecipe="annotate-c",
-      run_id=RUN_ID, filepath=<file>)
+    delegate(subrecipe="annotate-c", run_id=RUN_ID, filepath=<file>)
 
   For each file in CPP_FILES:
-    delegate(subrecipe="annotate-cpp",
-      run_id=RUN_ID, filepath=<file>)
+    delegate(subrecipe="annotate-cpp", run_id=RUN_ID, filepath=<file>)
 
   For each file in PY_FILES:
-    delegate(subrecipe="annotate-python",
-      run_id=RUN_ID, filepath=<file>)
+    delegate(subrecipe="annotate-python", run_id=RUN_ID, filepath=<file>)
 
-  Wait for ALL delegations to complete.
-
-  Collect per-file reports. Build a summary table:
+  Wait for ALL delegations to complete. Build summary table:
     | File | Status | Annotated | Skipped | Pending | Lessons |
-    |------|--------|-----------|---------|---------|---------|
-    | ...  | DONE   | 12 (io=8) | 2       | 0       |         |
 
-  Store all "LESSONS" entries from subagent reports for Step 8.
+  Store all LESSONS fields for Step 7.
 
 
   ══════════════════════════════════════════════════════════════════════
-  STEP 5 — BUILD FOR CORRECTNESS  (MCP tools)
+  STEP 5 — BUILD FOR CORRECTNESS  (MCP)
   ══════════════════════════════════════════════════════════════════════
 
-  Tell the user: "All annotation agents complete. Verifying build correctness..."
+  Print: "All annotation agents done. Verifying build..."
 
-  5a. Check if code uses explicit DFTRACER init (affects env var):
+  5a. Detect explicit INIT calls:
   ```bash
   grep -r "DFTRACER_C_INIT\|DFTRACER_CPP_INIT\|DFTracer.initialize_log" \
     /workspaces/dftracer-agents/workspaces/<RUN_ID>/annotated/ 2>/dev/null | wc -l
   ```
-  If count > 0: DFTRACER_INIT_ENV = '{"DFTRACER_INIT": "0"}'
-  If count == 0: DFTRACER_INIT_ENV = '{"DFTRACER_INIT": "1"}'
+  count > 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "0"}
+  count == 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "1"}
 
-  5b. Install dftracer:
-  session_install_dftracer(run_id=RUN_ID)
-  If this fails: report to user and stop.
+  5b. session_install_dftracer(run_id=RUN_ID)
+      On failure: print error and stop.
 
-  5c. Build annotated source:
-  session_build_annotated(run_id=RUN_ID)
+  5c. session_build_annotated(run_id=RUN_ID)
+      On failure:
+        - Extract errors per file, re-delegate with build_errors=<stderr>
+        - Retry build. Max 2 retries. On third failure: print errors and ask user
+          "[1] Retry  [2] Stop" — wait for answer.
 
-  IF BUILD FAILS:
-    - Extract compiler errors from the response
-    - Identify affected files by language (*.c → annotate-c, *.cpp → annotate-cpp, etc.)
-    - For each affected file, re-delegate its subrecipe with build_errors=<stderr>:
-        delegate(subrecipe="annotate-c",
-          run_id=RUN_ID, filepath=<file>, build_errors=<errors for that file>)
-    - Wait for fixes to complete
-    - Retry: session_build_annotated(run_id=RUN_ID)
-    - If still failing after 2 retries: report errors to user and ask:
-        "Build is still failing after auto-fix attempts. Would you like to:
-         [1] Review the errors manually and retry
-         [2] Stop the pipeline"
-      Wait for user response.
-
-  5d. Correctness smoke test (without dftracer tracing):
-  session_run_smoke_test(run_id=RUN_ID, command=SMOKE_CMD, subfolder="build_ann")
-
-  IF SMOKE TEST FAILS:
-    - Check if errors mention DFTRACER symbols (annotation issue vs code bug)
-    - If annotation-related: re-delegate affected files with build_errors=<stderr>
-      then retry build + smoke test (max 2 retries)
-    - If NOT annotation-related: tell user "Smoke test failed — does not appear
-      to be an annotation issue. Error: <stderr>
-      Reply 'continue' to proceed to trace collection, or 'stop' to end."
-    Wait for response.
+  5d. session_run_smoke_test(run_id=RUN_ID, command=SMOKE_CMD, subfolder="build_ann")
+      On failure:
+        - If DFTRACER symbols in errors → re-delegate + retry (max 2)
+        - Else → print error and ask user "[continue] Proceed anyway  [stop] Stop"
+          — wait for answer.
 
 
   ══════════════════════════════════════════════════════════════════════
-  STEP 6 — REPORT AND USER CONFIRMATION
+  STEP 6 — ANNOTATION REPORT AND USER CONFIRMATION
   ══════════════════════════════════════════════════════════════════════
 
-  Show the user the full annotation summary:
-
+  Show:
   ┌─────────────────────────────────────────────────────────┐
   │  ANNOTATION REPORT — <RUN_ID>                           │
-  │                                                         │
   │  <summary table from Step 4>                            │
-  │                                                         │
-  │  Coverage: <total annotated> / <total eligible> functions
-  │  comp breakdown: io=<n>, comm=<n>, mem=<n>, cpu=<n>    │
-  │  Skipped (Rule 0): <n> functions                        │
-  │  Build: PASSED                                          │
-  │  Smoke test: PASSED                                     │
-  │                                                         │
-  │  Proceed with final dftracer trace run?                 │
-  │  [yes] Run with dftracer, collect traces, analyze       │
-  │  [no / fix X] Re-annotate specific files first          │
+  │  Coverage: <annotated> / <eligible>                     │
+  │  comp:  io=<n>  comm=<n>  mem=<n>  cpu=<n>             │
+  │  Skipped (Rule 0): <n>                                  │
+  │  Build: PASSED   Smoke test: PASSED                     │
   └─────────────────────────────────────────────────────────┘
 
-  Wait for user response.
+  Ask: "Proceed with dftracer trace run? [yes / no / fix <file>]"
+  → Wait for answer.
 
-  If user says "no" or asks to fix something:
-    - Ask which files or functions to fix
-    - Re-delegate the relevant annotation subrecipes with user_notes=<feedback>
-    - Rebuild (session_build_annotated) and re-run smoke test
-    - Show updated report and ask again
-    Loop until user says "yes".
-
-  If user says "yes": proceed to Step 7.
+  If "no" → stop.
+  If "fix <file>" or feedback:
+    - Re-delegate the named file(s) with user_notes=<feedback>
+    - Rebuild + re-run smoke test
+    - Show updated report and ask again.
+  Repeat until user says "yes".
 
 
   ══════════════════════════════════════════════════════════════════════
-  STEP 7 — FINAL DFTRACER RUN: TRACE COLLECTION AND ANALYSIS  (MCP tools)
+  STEP 7 — TRACE COLLECTION AND ANALYSIS  (MCP)
   ══════════════════════════════════════════════════════════════════════
 
-  Tell the user: "Running with dftracer enabled to collect traces..."
+  Print: "Running with dftracer to collect traces..."
 
-  7a. Run with dftracer:
   session_run_with_dftracer(
     run_id=RUN_ID,
     command=SMOKE_CMD,
@@ -261,11 +205,8 @@ instructions: |
     env_extra=DFTRACER_INIT_ENV,
   )
 
-  7b. Split traces:
-  Extract app name from RUN_ID (first component before "/").
-  session_split_traces(run_id=RUN_ID, app_name=<app_name>)
-
-  7c. Analyze traces:
+  Extract APP_NAME = first component of RUN_ID (before "/").
+  session_split_traces(run_id=RUN_ID, app_name=APP_NAME)
   session_analyze_traces(run_id=RUN_ID, query_type="summary")
 
 
@@ -273,35 +214,30 @@ instructions: |
   STEP 8 — UPDATE LESSONS LEARNED
   ══════════════════════════════════════════════════════════════════════
 
-  Collect all LESSONS entries from subagent reports (gathered in Step 4)
-  plus any new patterns observed during the build-fix loops in Step 5.
+  For each new distinct lesson from subagent LESSONS fields (Step 4) or
+  build-fix patterns (Step 5) not already in the lessons file:
 
-  If there are new learnings not already in the lessons file:
   ```bash
-  cat >> /workspaces/dftracer-agents/.agents/skills/dftracer-annotation-lessons/SKILL.md << 'EOF'
+  cat >> /workspaces/dftracer-agents/.agents/skills/dftracer-annotation-lessons/SKILL.md << 'ENDOFLESSON'
 
   ---
-  date: <today>
+  date: <YYYY-MM-DD>
   app: <APP_URL>
   context: <one-line description>
   error: |
-    <exact error or pattern observed>
-  root_cause: <why it happened>
+    <exact error or pattern>
+  root_cause: <why>
   fix: |
-    <exact steps or rule that resolved it>
-  tags: [<language>, annotation, <error-keyword>]
+    <steps that resolved it>
+  tags: [<language>, annotation, <keyword>]
   ---
-  EOF
+  ENDOFLESSON
   ```
-
-  Add one entry per new distinct lesson. Do not duplicate existing entries.
 
 
   ══════════════════════════════════════════════════════════════════════
   STEP 9 — FINAL REPORT
   ══════════════════════════════════════════════════════════════════════
-
-  Present the final report to the user:
 
   ╔═══════════════════════════════════════════════════════════╗
   ║  DFTRACER PIPELINE COMPLETE — <RUN_ID>                    ║
@@ -317,7 +253,6 @@ instructions: |
   ╠═══════════════════════════════════════════════════════════╣
   ║  ARTIFACTS                                                ║
   ║  Annotated source: workspaces/<RUN_ID>/annotated/         ║
-  ║  Patch file:       workspaces/<RUN_ID>/annotation.patch   ║
   ║  Trace files:      workspaces/<RUN_ID>/traces/            ║
   ║  Split traces:     workspaces/<RUN_ID>/traces_split/      ║
   ╚═══════════════════════════════════════════════════════════╝

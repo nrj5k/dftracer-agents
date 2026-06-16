@@ -251,8 +251,15 @@ you> which files were accessed most?
 ### Install Goose
 
 ```bash
-pip install goose-ai
-# or follow https://github.com/block/goose for the latest install method
+curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh \
+  | CONFIGURE=false GOOSE_BIN_DIR=/usr/local/bin bash
+```
+
+Node.js ≥ 20 is required for `goose tui`. Install it if not present:
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt-get install -y nodejs
 ```
 
 ### Configure the dftracer extension
@@ -298,58 +305,115 @@ extensions:
 
 ### Using Goose to annotate an application and run the full pipeline
 
-The session tools expose a complete annotation + build + run pipeline.
-Start a session and describe the full task in one prompt — Goose will plan
-each step, confirm with you before executing, and report results as it goes.
+The annotation pipeline clones a target application, detects languages,
+auto-annotates source files with dftracer macros, verifies correctness with
+a build + smoke test, pauses for your review, then collects and analyzes
+traces.
+
+Pipeline files live in `dftracer-agents/recipes/`:
+
+| File | Purpose |
+|---|---|
+| `pipeline.yaml` | Main orchestration recipe (headless) |
+| `annotate-c.yaml` | Per-file C annotation sub-recipe |
+| `annotate-cpp.yaml` | Per-file C++ annotation sub-recipe |
+| `annotate-python.yaml` | Per-file Python annotation sub-recipe |
+| `_inc-top.inc` | Shared: Step 0 (lessons), General Rules, Step 1 (read) |
+| `_inc-write.inc` | Shared: Step 5 (write back) |
+| `_inc-report.inc` | Shared: Step 7 (report format) + General Pitfalls |
+
+A lessons-learned file at
+`.agents/skills/dftracer-annotation-lessons/SKILL.md` is read by every
+annotation agent at startup and appended after each session.
+
+#### Option A — Interactive session (recommended)
+
+Runs interactively: the agent asks you questions, pauses for confirmation
+before the trace run, and lets you request fixes between steps.
 
 ```bash
-goose session
+# Prerequisites: Node.js >=20 (for goose tui, if using that route)
+# The recommended interactive method uses the pipeline skill + wrapper script:
+
+./dftracer-agents/run-pipeline.sh
 ```
 
-Paste a prompt like this (adapt the app, version, and repo as needed):
+This starts a `goose session`, injects the startup prompt automatically,
+then connects your keyboard for the Q&A. The agent will ask:
 
 ```
-I want to annotate the IOR app (get from GitHub, tag 4.0.0) and integrate it
-with dftracer. This includes:
-  - cloning and building IOR from source
-  - annotating the source files with dftracer macros
-  - compiling the annotated version
-  - running a simple smoke test with dftracer enabled
-  - splitting and analyzing the resulting traces
+What is the Git URL of the application you want to annotate?
+> https://github.com/org/myapp
 
-Run the full pipeline under workspaces/<RUN_ID> where RUN_ID is a unique ID
-you generate (e.g. the current date/time).
+Which branch or tag? (default: main)
+> main
 
-I have MCP tools for each step. First show me a numbered plan, then execute
-one step at a time — after each step tell me what was done and what is next,
-and wait for my confirmation before continuing.
+Smoke test command? (leave blank to auto-detect)
+> make test
+
+Extra CMake build flags? (leave blank to skip)
+>
 ```
 
-Goose will respond with a numbered plan, then drive the pipeline step by step,
-pausing after each one:
+After annotation and build verification it pauses:
 
 ```
-Plan:
-  1. session_create       — clone IOR 4.0.0 into workspaces/<RUN_ID>/source
-  2. session_detect       — detect build system and language
-  3. session_configure    — run ./configure with dftracer prefix
-  4. session_build_install — build and install original IOR
-  5. session_run_smoke_test — baseline smoke test (single process, no MPI)
-  6. session_copy_annotated — copy source → annotated/
-  7. session_annotate_source — scan for annotation candidates, produce plan
-  8. [manual] annotate files — Pass 1 (INIT/FINI), Pass 2 (START/END), Pass 3 (UPDATE)
-  9. session_build_annotated — build annotated version
-  10. session_run_with_dftracer — run with tracing enabled
-  11. session_split_traces — split raw .pfw.gz files
-  12. session_analyze_traces — summarize trace data
+┌─────────────────────────────────────────────────────────┐
+│  ANNOTATION REPORT — myapp/20260616_120000              │
+│  src/io.c       DONE   12 annotated  2 skipped          │
+│  src/main.c     DONE    4 annotated  0 skipped          │
+│  Coverage: 16 / 18   io=10  comm=4  mem=2  cpu=0        │
+│  Build: PASSED   Smoke test: PASSED                      │
+└─────────────────────────────────────────────────────────┘
 
-✅ Step 1 done — cloned IOR 4.0.0 (tag v4.0.0), workspace: workspaces/20260614_120000
-⏳ Next: Step 2 — detect build system
-
-Shall I proceed? (yes/no)
+Proceed with dftracer trace run? [yes / no / fix <file>]
+> yes
 ```
 
-Type `yes` (or just press Enter) after each step to continue.
+Alternatively, start a plain `goose session` and paste this prompt manually:
+
+```
+Load and follow the dftracer annotation pipeline skill from:
+/workspaces/dftracer-agents/.agents/skills/dftracer-pipeline/SKILL.md
+
+Read the full SKILL.md file now, then immediately start Step 1 by asking me:
+  'What is the Git URL of the application you want to annotate?'
+```
+
+#### Option B — Headless `goose run` (CI / scripted use)
+
+Pass all inputs as `--params`. The pipeline runs end-to-end unattended,
+annotating files in parallel via sub-recipes, then prints the full report
+and trace analysis.
+
+```bash
+goose run --recipe dftracer-agents/recipes/pipeline.yaml \
+  --params app_url="https://github.com/org/myapp" \
+  --params ref="main" \
+  --params smoke_cmd="make test" \
+  --params extra_flags="-DENABLE_MPI=ON"
+```
+
+`smoke_cmd` and `extra_flags` are optional (auto-detected if omitted).
+
+#### Annotation recipes directly
+
+You can also invoke a single-file annotation recipe without the pipeline:
+
+```bash
+goose run --recipe dftracer-agents/recipes/annotate-c.yaml \
+  --params run_id="myapp/20260616_120000" \
+  --params filepath="src/io.c"
+```
+
+Pass `build_errors` to fix a specific compiler failure:
+
+```bash
+goose run --recipe dftracer-agents/recipes/annotate-c.yaml \
+  --params run_id="myapp/20260616_120000" \
+  --params filepath="src/io.c" \
+  --params build_errors="io.c:42: error: 'DFTRACER_C_FUNCTION_END' undeclared"
+```
 
 ### Example Goose session — trace analysis
 

@@ -60,3 +60,39 @@ export DFTRACER_LOG_FILE=/absolute/path/to/workspaces/<run_id>/traces/<run_id>
 export DFTRACER_DATA_DIR=/absolute/path/to/workspaces/<run_id>/source
 export DFTRACER_INIT=1
 ```
+
+## DFTRACER_LOG_FILE Naming Convention (Critical)
+
+**`DFTRACER_LOG_FILE` must be a PREFIX, not a complete filename.**
+
+dftracer automatically appends `.<pid>-<appid>.pfw.gz` (or similar suffix) to the
+prefix you provide. This allows multiple processes to write separate trace files
+without collisions.
+
+**Correct usage:**
+```bash
+export DFTRACER_LOG_FILE=/workspace/run_id/traces/trace
+# dftracer creates: /workspace/run_id/traces/trace.12345-app.pfw.gz
+```
+
+**Incorrect usage:**
+```bash
+export DFTRACER_LOG_FILE=/workspace/run_id/traces/run_id
+# May create empty file or fail silently
+```
+
+**For sessionRunWithDftracer:**
+The tool should set `DFTRACER_LOG_FILE` to a prefix like:
+- `traces/trace` (simple)
+- `traces/<run_id>/trace` (organized by run)
+
+After the run, find all trace files with:
+```bash
+find <workspace>/traces -name "*.pfw*" -type f
+```
+
+**sessionSplitTraces compatibility:**
+The split tool reads all `*.pfw` / `*.pfw.gz` files from the traces directory.
+If dftracer creates files in a subfolder (e.g., `traces/ior/`), you may need to
+move them to `traces/` root before splitting, or configure the tool to look in
+the correct subdirectory.

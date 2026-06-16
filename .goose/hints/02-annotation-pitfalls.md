@@ -657,3 +657,30 @@ fix: |
 tags: [c, annotation, gpfs, beegfs, lustre, trace, missing-in-trace, ifdef]
 
 ---
+
+---
+context: DFTRACER_LOG_FILE should be a prefix, not a full filename
+error: |
+  Trace files not found or empty when DFTRACER_LOG_FILE was set to a full path
+  like `traces/ior/run_id` instead of a prefix like `traces/trace`.
+root_cause: |
+  dftracer expects DFTRACER_LOG_FILE to be a PREFIX, not a complete filename.
+  The library automatically appends `.<pid>-<appid>.pfw.gz` (or similar suffix)
+  to create the final trace filename. Setting it to a full path causes dftracer
+  to either:
+  1. Fail to create the file (path mismatch)
+  2. Create an empty wrapper file instead of actual trace data
+fix: |
+  Always set DFTRACER_LOG_FILE to a PREFIX path:
+    GOOD:  DFTRACER_LOG_FILE=/workspace/run_id/traces/trace
+    BAD:   DFTRACER_LOG_FILE=/workspace/run_id/traces/run_id
+  
+  dftracer will create files like:
+    /workspace/run_id/traces/trace.<pid>-<appid>.pfw.gz
+  
+  When using sessionRunWithDftracer, ensure the tool sets the LOG_FILE to a
+  prefix (e.g., `traces/trace` or `traces/<run_id>/trace`), not a full filename.
+  After the run, find trace files with:
+    find <workspace>/traces -name "*.pfw*" -type f
+tags: [dftracer, trace-file, naming, log-file, prefix]
+---

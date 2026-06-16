@@ -1,14 +1,29 @@
 #!/usr/bin/env python3
-"""
-DFTracer Utils MCP Service — tools aligned with the official CLI docs.
+"""DFTracer Utils MCP Service — 21 tools aligned with the official CLI docs.
 
-https://dftracer.readthedocs.io/projects/utils/en/latest/cli.html
+This is the largest service in the dftracer-agents package.  It wraps every
+documented ``dftracer_*`` CLI binary as a thin MCP tool and exposes them as a
+collection of categorised sub-servers:
 
-Each tool wraps a ``dftracer_*`` binary.  The mapping follows
-every documented command: reader, info, merge, split, event_count,
-pgzip, stats, aggregator, call_tree, call_tree_mpi, comparator, view,
-index, organize, reconstruct, replay, tar, gen_dlio_config,
-gen_fake_trace, server, aggregator_mpi.
+Sub-server groupings
+--------------------
+* **core** (``DFTracerCore``) — reader, info, merge, split, event_count,
+  pgzip, tar
+* **analysis** (``DFTracerAnalysis``) — stats, aggregator, call_tree,
+  comparator
+* **query** (``DFTracerQuery``) — view, index, organize, reconstruct
+* **utility** (``DFTracerUtility``) — replay, server, gen_fake_trace
+* **dlio** (``DFTracerDLIO``) — gen_dlio_config
+* **synthetic** (``DFTracerSynthetic``) — reserved sub-server (tools currently
+  registered on *utility*)
+* **mpi** (``DFTracerMPI``) — aggregator_mpi, call_tree_mpi
+
+Each registered tool is a thin MCP wrapper around a ``subprocess.run`` call
+that forwards its arguments to the corresponding ``dftracer_*`` binary.  No
+business logic is duplicated here; the binaries are the source of truth.
+
+CLI reference:
+    https://dftracer.readthedocs.io/projects/utils/en/latest/cli.html
 """
 
 import subprocess
@@ -29,7 +44,44 @@ def _build_watchdog_flags(
     watchdog_idle_timeout: Optional[float] = None,
     watchdog_deadlock_timeout: Optional[float] = None,
 ) -> list[str]:
-    """Return the shared watchdog flags used by many dftracer_* tools."""
+    """Build the shared watchdog CLI flags accepted by many ``dftracer_*`` tools.
+
+    Several binaries expose a common set of watchdog/timeout options.  This
+    helper converts the Python keyword arguments into the corresponding
+    ``--watchdog-*`` flags so that individual tool wrappers do not have to
+    duplicate the translation logic.
+
+    Args:
+        disable_watchdog: When ``True``, appends ``--disable-watchdog``,
+            which turns off the watchdog thread entirely.
+        watchdog_global_timeout: Maximum wall-clock seconds the whole process
+            is allowed to run before the watchdog aborts it.  Maps to
+            ``--watchdog-global-timeout <value>``.
+        watchdog_task_timeout: Maximum seconds allowed per individual task
+            before the watchdog fires.  Maps to
+            ``--watchdog-task-timeout <value>``.
+        watchdog_interval: How often (in seconds) the watchdog thread polls
+            for stalls.  Maps to ``--watchdog-interval <value>``.
+        watchdog_warning_threshold: Fraction of a timeout that triggers a
+            warning log before the hard abort.  Maps to
+            ``--watchdog-warning-threshold <value>``.
+        watchdog_idle_timeout: Seconds of inactivity before the watchdog
+            considers the process idle and terminates it.  Maps to
+            ``--watchdog-idle-timeout <value>``.
+        watchdog_deadlock_timeout: Seconds before the watchdog declares a
+            deadlock and aborts.  Maps to
+            ``--watchdog-deadlock-timeout <value>``.
+
+    Returns:
+        A list of strings suitable for appending to a ``subprocess`` command
+        list.  An empty list is returned when all parameters are at their
+        defaults (i.e. the watchdog is left unconfigured).
+
+    Note:
+        This function does not invoke any subprocess; callers are responsible
+        for extending their ``cmd`` list with the returned flags before passing
+        it to ``subprocess.run``.
+    """
     args: list[str] = []
     if disable_watchdog:
         args.append("--disable-watchdog")
@@ -49,7 +101,41 @@ def _build_watchdog_flags(
 
 
 class DftracerUtilsService(MCPService):
-    """MCP tools wrapping every documented ``dftracer_*`` binary."""
+    """MCP service that wraps every documented ``dftracer_*`` CLI binary.
+
+    ``DftracerUtilsService`` is the largest service in the dftracer-agents
+    package.  It registers 21 MCP tools across seven categorised
+    ``FastMCP`` sub-servers.  The sub-server grouping mirrors the logical
+    taxonomy in the official CLI documentation so that clients can mount
+    only the sub-server(s) they need rather than the full combined server.
+
+    Each tool is a *thin wrapper*: it translates Python keyword arguments
+    into a ``subprocess`` command list and delegates all real work to the
+    corresponding ``dftracer_*`` binary.  No parsing or business logic is
+    duplicated here.
+
+    Attributes:
+        core_subservice (FastMCP): Sub-server named ``"DFTracerCore"``.
+            Hosts the following tools: ``reader``, ``info``, ``merge``,
+            ``split``, ``event_count``, ``pgzip``, ``tar``.
+        analysis_subservice (FastMCP): Sub-server named
+            ``"DFTracerAnalysis"``.  Hosts: ``stats``, ``aggregator``,
+            ``call_tree``, ``comparator``.
+        query_subservice (FastMCP): Sub-server named ``"DFTracerQuery"``.
+            Hosts: ``view``, ``index``, ``organize``, ``reconstruct``.
+        utility_subservice (FastMCP): Sub-server named
+            ``"DFTracerUtility"``.  Hosts: ``replay``, ``server``,
+            ``gen_fake_trace``.
+        dlio_subservice (FastMCP): Sub-server named ``"DFTracerDLIO"``.
+            Hosts: ``gen_dlio_config``.
+        synthetic_subservice (FastMCP): Sub-server named
+            ``"DFTracerSynthetic"``.  Reserved for future synthetic-trace
+            tools; ``gen_fake_trace`` is currently registered on
+            *utility_subservice* for historical reasons.
+        mpi_subservice (FastMCP): Sub-server named ``"DFTracerMPI"``.
+            Hosts the MPI-parallel variants: ``aggregator_mpi``,
+            ``call_tree_mpi``.
+    """
 
     def __init__(self):
         self.core_subservice = FastMCP("DFTracerCore")       # read, merge, split…
@@ -73,6 +159,26 @@ class DftracerUtilsService(MCPService):
     # ── Core tools (reader, info, merge, split, event_count, pgzip) ───
 
     def _register_core_tools(self):
+        """Register the core file-IO tools on ``core_subservice``.
+
+        Registers the following MCP tools:
+
+        * ``reader`` — reads raw bytes or lines from a GZIP or TAR.GZ
+          compressed DFTracer trace file via ``dftracer_reader``.
+        * ``info`` — displays index metadata and summary/detailed statistics
+          for ``.pfw.gz`` files via ``dftracer_info``.
+        * ``merge`` — merges multiple ``.pfw`` / ``.pfw.gz`` trace files
+          into a single JSON-array output via ``dftracer_merge``.
+        * ``split`` — splits trace files in a directory into equal-size
+          chunks via ``dftracer_split``.
+        * ``event_count`` — counts the number of valid events across
+          ``.pfw`` / ``.pfw.gz`` files in a directory via
+          ``dftracer_event_count``.
+        * ``pgzip`` — parallel-gzips ``.pfw`` files to ``.pfw.gz`` in a
+          directory via ``dftracer_pgzip``.
+        * ``tar`` — inspects or lists files inside a TAR.GZ archive
+          containing DFTracer data via ``dftracer_tar``.
+        """
         @self.core_subservice.tool()
         def reader(
             file: str,
@@ -347,6 +453,20 @@ class DftracerUtilsService(MCPService):
     # ── Analysis tools (stats, aggregator, call_tree, comparator) ─────
 
     def _register_analysis_tools(self):
+        """Register statistical and analytical tools on ``analysis_subservice``.
+
+        Registers the following MCP tools:
+
+        * ``stats`` — computes event statistics (summary, categories, names,
+          pid_tids, time_range, duration, top-N) via ``dftracer_stats``.
+        * ``aggregator`` — aggregates DFTracer events into time-series
+          counters or Arrow IPC output via ``dftracer_aggregator``.
+        * ``call_tree`` — builds and analyses a hierarchical call tree from
+          trace files via ``dftracer_call_tree``.
+        * ``comparator`` — compares trace metrics between a baseline run and
+          a variant run, reporting delta% and Cohen's d significance via
+          ``dftracer_comparator``.
+        """
         @self.analysis_subservice.tool()
         def stats(
             directory: Optional[str] = None,
@@ -581,6 +701,16 @@ class DftracerUtilsService(MCPService):
     # ── Query tools (view, index) ─────────────────────────────────────
 
     def _register_query_tools(self):
+        """Register filtering and indexing tools on ``query_subservice``.
+
+        Registers the following MCP tools:
+
+        * ``view`` — extracts a filtered subset of trace events with
+          chunk-level pruning via ``dftracer_view``; supports presets,
+          custom queries, time-range filters, and recipe persistence.
+        * ``index`` — builds per-chunk bloom-filter indices (and an optional
+          manifest table) over a trace directory via ``dftracer_index``.
+        """
         @self.query_subservice.tool()
         def view(
             files: Optional[str] = None,
@@ -701,6 +831,18 @@ class DftracerUtilsService(MCPService):
     # ── Organize / Reconstruct tools ──────────────────────────────────
 
     def _register_organize_tools(self):
+        """Register reorganisation tools on ``query_subservice``.
+
+        Registers the following MCP tools:
+
+        * ``organize`` — reorganises trace files into query-defined groups
+          with provenance tracking via ``dftracer_organize``; each group is
+          a ``name:query`` pair and produces a ``.pidx`` sidecar for later
+          reconstruction.
+        * ``reconstruct`` — restores original per-process trace files from
+          reorganised group directories using the ``.pidx`` provenance
+          sidecars written by ``organize``, via ``dftracer_reconstruct``.
+        """
         @self.query_subservice.tool()
         def organize(
             files: Optional[str] = None,
@@ -786,6 +928,15 @@ class DftracerUtilsService(MCPService):
     # ── Replay tool ───────────────────────────────────────────────────
 
     def _register_replay_tools(self):
+        """Register the I/O replay tool on ``utility_subservice``.
+
+        Registers the following MCP tool:
+
+        * ``replay`` — replays I/O operations recorded in trace files,
+          optionally respecting original timing, applying PID/TID/function/
+          category filters, and driving playback from a call-tree structure,
+          via ``dftracer_replay``.
+        """
         @self.utility_subservice.tool()
         def replay(
             inputs: str = "",
@@ -892,6 +1043,16 @@ class DftracerUtilsService(MCPService):
     # ── Utility tools (server) ────────────────────────────────────────
 
     def _register_server_tool(self):
+        """Register the HTTP REST server tool on ``utility_subservice``.
+
+        Registers the following MCP tool:
+
+        * ``server`` — starts the DFTracer HTTP REST server, which exposes
+          trace query endpoints over a network interface, via
+          ``dftracer_server``.  The server process is started as a
+          subprocess; for long-running production deployments callers should
+          manage the process externally (e.g. via a daemon manager).
+        """
         @self.utility_subservice.tool()
         def server(
             bind_address: str = "0.0.0.0",
@@ -924,6 +1085,15 @@ class DftracerUtilsService(MCPService):
     # ── DLIO tools ────────────────────────────────────────────────────
 
     def _register_dlio_tools(self):
+        """Register the DLIO configuration generator on ``dlio_subservice``.
+
+        Registers the following MCP tool:
+
+        * ``gen_dlio_config`` — analyses raw DFTracer traces and generates a
+          DLIO YAML configuration file by fitting distribution models and
+          optimising the ``max_bound`` parameter via an internal simulator,
+          using ``dftracer_gen_dlio_config``.
+        """
         @self.dlio_subservice.tool()
         def gen_dlio_config(
             output: str = "",
@@ -989,6 +1159,15 @@ class DftracerUtilsService(MCPService):
     # ── Synthetic trace tools ─────────────────────────────────────────
 
     def _register_synthetic_tools(self):
+        """Register the synthetic trace generator on ``utility_subservice``.
+
+        Registers the following MCP tool:
+
+        * ``gen_fake_trace`` — generates realistic synthetic DFTracer traces
+          suitable for testing bloom-filter indexing and chunk-skipping
+          logic, via ``dftracer_gen_fake_trace``.  Supports optional
+          end-to-end verification of the generated traces.
+        """
         @self.utility_subservice.tool()
         def gen_fake_trace(
             output_dir: str = "",
@@ -1036,8 +1215,25 @@ class DftracerUtilsService(MCPService):
     # ── MPI tools (aggregator_mpi, call_tree_mpi) ─────────────────────
 
     def _register_mpi_tools(self):
-        """Register distributed/aggregate tools that are typically run via mpirun."""
+        """Register distributed MPI tools on ``mpi_subservice``.
 
+        Registers the following MCP tools:
+
+        * ``aggregator_mpi`` — distributed SST aggregation driven via
+          ``mpirun``, executing a five-task DAG (scan → phase_a → phase_b →
+          phase_c → merge) across MPI ranks and producing a final gzip JSON
+          output, via ``dftracer_aggregator_mpi``.
+        * ``call_tree_mpi`` — distributed call-tree aggregation across MPI
+          ranks, merging per-rank call trees into a single output file, via
+          ``dftracer_call_tree_mpi``.
+
+        Note:
+            Both tools in this group require a build configured with
+            ``DFTRACER_UTILS_ENABLE_MPI=ON`` and are expected to be launched
+            via ``mpirun``.  The MCP wrapper invokes the binary directly; a
+            hint with the correct ``mpirun`` invocation is included in the
+            tool's return value.
+        """
         @self.mpi_subservice.tool()
         def aggregator_mpi(
             directory: Optional[str] = None,
@@ -1129,12 +1325,30 @@ class DftracerUtilsService(MCPService):
     # ── Execute / name (abstract contract) ────────────────────────────
 
     def execute(self, data: dict):
-        """Legacy router — kept to satisfy the MCPService abstract base."""
+        """Satisfy the ``MCPService`` abstract interface (legacy router).
+
+        This method is required by the ``MCPService`` base class contract but
+        is not used by ``DftracerUtilsService``.  All tool dispatch is handled
+        by FastMCP sub-servers registered in ``__init__``.
+
+        Args:
+            data: A dictionary that may contain a ``"command"`` key.  The
+                value is not acted upon.
+
+        Returns:
+            ``None`` unconditionally.
+        """
         command = data.get("command")
         return None
 
     @property
     def name(self) -> str:
+        """Return the canonical service identifier used by ``MCPServiceFactory``.
+
+        Returns:
+            The string ``"dftracer-utils"``, which is the key under which this
+            service is registered with ``MCPServiceFactory``.
+        """
         return "dftracer-utils"
 
 
@@ -1142,11 +1356,23 @@ class DftracerUtilsService(MCPService):
 
 from ...mcp_service_factory import MCPServiceFactory
 
-MCPServiceFactory.register("dftracer-utils", DftracerUtilsService())
+MCPServiceFactory.register("dftracer-utils", DftracerUtilsService())  # Register singleton at import time.
 
 
 def run():
-    """Run the combined MCP server with all tools."""
+    """Start a combined MCP server that exposes all dftracer-utils tools.
+
+    Creates a single ``FastMCP`` instance named ``"DFTracerCombinedServer"``
+    and populates it with every tool registered across all seven sub-servers
+    (``core_subservice``, ``analysis_subservice``, ``query_subservice``,
+    ``utility_subservice``, ``dlio_subservice``, ``synthetic_subservice``,
+    ``mpi_subservice``).  The combined server is then started with
+    ``FastMCP.run()``, which blocks until the process is terminated.
+
+    This function is intended as the entry-point for standalone deployments
+    where a single MCP server endpoint should surface all 21 tools.  For
+    selective deployments, mount individual sub-servers instead.
+    """
     from fastmcp import FastMCP
 
     combined = FastMCP("DFTracerCombinedServer")

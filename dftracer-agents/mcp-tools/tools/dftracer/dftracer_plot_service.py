@@ -1,19 +1,45 @@
 """
 DFTracer Plot Service — MCP tools for visualising dftracer I/O traces.
 
-Generates publication-quality plots from dftracer .pfw.gz trace data.
-Three backends, tried in order:
-  1. dftracer.analyzer Python API  (init_with_hydra → get_flat_view)
-  2. dftracer_stats CLI            (--report --json, fast indexed path)
-  3. Pure-Python scan              (reads .pfw.gz directly, always works)
+Generates publication-quality plots from dftracer ``.pfw.gz`` trace data using
+one of three backends, tried in the following order:
+
+1. **dftracer.analyzer Python API** (``init_with_hydra`` → ``get_flat_view``):
+   Uses the official DFAnalyzer library when available.  Requires a working
+   dftracer Python installation with the Hydra configuration stack.
+
+2. **dftracer_stats CLI** (``--report detailed --json``): Falls back to the
+   command-line tool for fast indexed data access when the Python API is
+   unavailable or fails.
+
+3. **Pure-Python scan** (reads ``.pfw.gz`` / ``.pfw`` files directly via
+   ``gzip`` + ``json``): Always available; no external dependencies beyond
+   ``matplotlib``.  Used unconditionally for ``io_breakdown`` and ``heatmap``
+   plot types, and as the universal fallback for all other types.
 
 Output formats:
-  png  — static image via matplotlib (default)
-  html — interactive plot via Bokeh (open in any browser)
-  svg  — scalable vector via matplotlib
 
-All tools write a file to disk and return its path.  Pass that path to the
-user so they can open it, or use the embedded base64 thumbnail in the result.
+- ``png``  — static raster image via matplotlib at 150 dpi (default).
+- ``html`` — interactive Bokeh chart opened in any browser; supports pan, zoom,
+  hover tooltips, and legend toggling.
+- ``svg``  — scalable vector image via matplotlib (no DPI setting applied).
+
+All plot functions write a file to disk and return a result string containing
+the output file path.  The caller (or the MCP client) is responsible for
+opening or displaying the file.
+
+Key exports:
+    DFTracerPlotService:  ``MCPService`` subclass registering the ``plot`` and
+                          ``plot_all`` FastMCP tools.
+    run():                Standalone entry point for running the plot server
+                          directly (``python -m dftracer_plot_service``).
+
+Runtime notes:
+    ``matplotlib`` is imported at module load time with the ``Agg`` non-
+    interactive backend forced before any other ``matplotlib`` import, so the
+    module is safe to load in headless server environments with no display.
+    ``bokeh``, ``PIL`` (Pillow), and ``numpy`` are optional and imported lazily
+    inside the functions that need them.
 """
 from __future__ import annotations
 

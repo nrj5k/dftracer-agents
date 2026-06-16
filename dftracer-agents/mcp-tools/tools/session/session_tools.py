@@ -1,5 +1,73 @@
-"""
-Session step tools — registers all session_* MCP tools onto a FastMCP instance.
+"""Session step tools — registers all ``session_*`` MCP tools onto a FastMCP instance.
+
+This module implements the granular, step-by-step tools that an agent uses to drive
+the dftracer annotation pipeline one stage at a time.  Each tool corresponds to a
+single, well-defined pipeline step so that the agent can inspect intermediate results,
+make decisions, and recover from failures before proceeding.
+
+**MCP tool registration pattern**
+    All tools are registered inside :func:`register_session_tools`, which is called
+    once at server startup with the shared ``FastMCP`` instance.  Each inner function
+    is decorated with ``@mcp.tool()``, which causes FastMCP to introspect its
+    signature and docstring and expose it as a callable tool over the MCP protocol.
+    Inner functions are *not* importable — they exist only as registered tools.
+
+**Tools exposed to the agent**
+
+    Workspace / file I/O
+        * ``session_create``        — clone a Git repo into a timestamped workspace
+        * ``session_list_files``    — glob files inside a workspace sub-folder
+        * ``session_read_file``     — read a file from any workspace sub-folder
+        * ``session_write_file``    — write (create or overwrite) a file in the workspace
+
+    Detection & configuration
+        * ``session_detect``        — detect language, build tool, and dftracer features
+        * ``session_configure``     — configure the *original* build system
+
+    Build & smoke-test (original source)
+        * ``session_build_install`` — compile and install the original project
+        * ``session_run_smoke_test``— run a smoke test without dftracer
+
+    Annotation workflow
+        * ``session_copy_annotated``    — copy source/ → annotated/ to begin instrumentation
+        * ``session_patch_build``       — patch the build system to link dftracer
+        * ``session_annotate_source``   — produce a manual annotation plan (no auto-write)
+        * ``session_annotation_report`` — coverage report comparing source/ vs annotated/
+
+    dftracer install & annotated build
+        * ``session_install_dftracer``       — build/install dftracer into install_ann/ or venv
+        * ``session_autobuild_dftracer``     — low-level autobuild.sh wrapper with mode control
+        * ``session_install_dftracer_utils`` — install dftracer-utils from the develop branch
+        * ``session_build_annotated``        — build the annotated source with dftracer linked
+
+    Trace collection & analysis
+        * ``session_run_with_dftracer``  — run a command with DFTRACER_* env vars set
+        * ``session_split_traces``       — compact raw .pfw traces via dftracer-utils split
+        * ``session_analyze_traces``     — summarise traces with dftracer_info
+
+    Session management
+        * ``session_status``         — inspect the persisted state of a session
+
+**Relationship to the broader pipeline**
+    :func:`register_session_tools` provides the *individual* building blocks.
+    The orchestrating pipeline (``session_run_pipeline`` in ``pipeline_tools.py``)
+    calls these same underlying helpers directly rather than going through MCP, but
+    an agent can also call every tool here individually for fine-grained control,
+    debugging, or partial re-runs.
+
+    Typical ordered usage::
+
+        session_create → session_detect → session_configure → session_build_install
+        → session_run_smoke_test → session_copy_annotated → session_patch_build
+        → session_annotate_source
+        (manual annotation via session_read_file + session_write_file)
+        → session_annotation_report  [confirm coverage]
+        → session_install_dftracer → session_build_annotated
+        → session_run_with_dftracer → session_split_traces → session_analyze_traces
+
+    Persistent state for each session is stored in
+    ``workspaces/<app>/<timestamp>/session.json`` and updated by ``_save_state``
+    after every step.
 """
 from __future__ import annotations
 
@@ -35,6 +103,28 @@ from .install import (
 
 
 def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but intentional)
+    """Register all ``session_*`` MCP tools onto *mcp*.
+
+    This function is called once at MCP server startup.  Each nested function
+    decorated with ``@mcp.tool()`` becomes a separately callable tool in the
+    agent's tool palette.  The nesting pattern gives every inner function access
+    to *mcp* via closure without polluting the module namespace.
+
+    Registered tools (in pipeline order):
+        ``session_create``, ``session_detect``, ``session_list_files``,
+        ``session_read_file``, ``session_write_file``, ``session_configure``,
+        ``session_build_install``, ``session_run_smoke_test``,
+        ``session_copy_annotated``, ``session_patch_build``,
+        ``session_annotate_source``, ``session_annotation_report``,
+        ``session_autobuild_dftracer``, ``session_install_dftracer``,
+        ``session_install_dftracer_utils``, ``session_build_annotated``,
+        ``session_run_with_dftracer``, ``session_split_traces``,
+        ``session_analyze_traces``, ``session_status``.
+
+    Args:
+        mcp: The shared ``FastMCP`` server instance onto which tools are
+            registered via ``@mcp.tool()`` decorators.
+    """
 
     @mcp.tool()
     def session_create(
@@ -42,15 +132,44 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         ref: str = "main",
         run_id: Optional[str] = None,
     ) -> str:
-        """
-        Create a new session workspace and clone the source repository.
+        """Clone a Git repository into a new, isolated session workspace.
+
+        Creates a timestamped workspace directory under
+        ``workspaces/<app_name>/<YYYYMMDD_HHMMSS>/`` (where *app_name* is
+        derived from *url*), clones *url* at *ref* into the ``source/``
+        sub-folder, and persists initial session state to ``session.json``.
+
+        A shallow clone (``--depth 1``) is attempted first for speed.  If the
+        branch/tag does not exist on the remote the tool retries with a bare
+        clone followed by ``git checkout <ref>``.
+
+        Side effects:
+            * Creates ``workspaces/<app>/<ts>/source/`` on disk.
+            * Writes ``workspaces/<app>/.current_run`` pointer so that
+              ``pipeline_get_run_id`` can recall this session.
+            * Persists ``{"url", "ref", "step": "cloned"}`` to ``session.json``.
 
         Args:
             url: Git URL to clone (https or ssh).
-            ref: Branch, tag, or commit to checkout (default: main).
-            run_id: Optional fixed RUN-ID; a UUID is generated if omitted.
+            ref: Branch, tag, or commit SHA to checkout (default: ``"main"``).
+            run_id: Optional fixed RUN-ID string.  A UUID-based ID is generated
+                when omitted.
 
-        Returns JSON with run_id and workspace path.
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"``).
+                * ``message`` — human-readable confirmation.
+                * ``run_id`` — the session identifier for all subsequent calls.
+                * ``workspace`` — absolute path to the session root directory.
+                * ``source`` — absolute path to the cloned source tree.
+
+        Raises:
+            Returns ``{"status": "error"}`` JSON when both clone attempts fail,
+            with ``clone_stderr`` carrying the git error output.
+
+        Note:
+            This must be the first tool called in a new annotation session.
+            All other ``session_*`` tools require a valid *run_id* produced here.
         """
         # _create_run derives app name from the URL, creates workspaces/<app>/<ts>/,
         # and writes .current_run so pipeline_get_run_id can recall this session.
@@ -86,12 +205,43 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
 
     @mcp.tool()
     def session_detect(run_id: str) -> str:
-        """
-        Detect the programming language, build tool, and dftracer feature flags
-        for the cloned source in a session.
+        """Detect the programming language, build tool, and dftracer feature flags.
 
-        Returns detailed JSON including readme excerpt, key files, and
-        recommended dftracer cmake flags derived from autobuild.sh options.
+        Analyses the cloned ``source/`` tree to determine how the project is
+        built, which languages it uses, and which optional dftracer features
+        (MPI, HDF5, Python bindings) are appropriate.  The detection results
+        guide every downstream step — ``session_configure``, ``session_patch_build``,
+        ``session_install_dftracer``, and ``session_annotate_source`` all read the
+        ``detection`` key written by this tool.
+
+        Side effects:
+            * Persists ``{"detection": <info>, "step": "detected"}`` to
+              ``session.json`` via ``_save_state``.
+            * Writes an artifact log entry at step 2
+              (``<workspace>/annotation_logs/02_session_detect.json``).
+
+        Args:
+            run_id: Session identifier returned by ``session_create``.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"``).
+                * ``message`` — ``"Detection complete"``.
+                * ``languages`` — list of detected languages (e.g. ``["c", "cpp"]``).
+                * ``build_tool`` — one of ``"cmake"``, ``"autotools"``,
+                  ``"make"``, ``"python"``, or ``"unknown"``.
+                * ``features`` — dict of detected optional features
+                  (``{"mpi": bool, "hdf5": bool, "python": bool, ...}``).
+                * ``dftracer_cmake_flags`` — recommended ``-D`` flags for cmake
+                  derived from autobuild.sh option analysis.
+                * Additional keys from ``_detect_info`` (readme excerpt, key files, etc.).
+
+        Raises:
+            Returns ``{"status": "error"}`` when ``source/`` does not exist
+            (i.e. ``session_create`` has not been run for this *run_id*).
+
+        Note:
+            Must be called after ``session_create`` and before ``session_configure``.
         """
         src = _ws(run_id) / "source"
         if not src.exists():
@@ -109,14 +259,32 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         pattern: str = "**/*",
         max_results: int = 100,
     ) -> str:
-        """
-        List files inside a workspace sub-folder.
+        """List files inside a workspace sub-folder using a glob pattern.
+
+        Useful for exploring the directory layout of ``source/``, ``annotated/``,
+        ``build/``, ``install/``, or any other sub-folder that exists in the
+        session workspace.
 
         Args:
-            run_id:     Session identifier.
-            subfolder:  Sub-folder to list (source, annotated, build, install…).
-            pattern:    Glob pattern relative to the sub-folder.
-            max_results: Maximum number of paths to return.
+            run_id: Session identifier returned by ``session_create``.
+            subfolder: Sub-folder to list relative to the workspace root.
+                Common values: ``"source"``, ``"annotated"``, ``"build"``,
+                ``"install"``, ``"traces"``.  Defaults to ``"source"``.
+            pattern: ``pathlib.Path.glob``-compatible pattern relative to
+                *subfolder*.  Defaults to ``"**/*"`` (all files recursively).
+            max_results: Maximum number of file paths to return.  Paths are
+                returned in filesystem order; results are truncated after this
+                count.  Defaults to ``100``.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"``).
+                * ``message`` — ``"<N> files found"``.
+                * ``files`` — list of paths relative to *subfolder* (strings).
+
+        Raises:
+            Returns ``{"status": "error"}`` when *subfolder* does not exist in
+            the session workspace.
         """
         base = _ws(run_id) / subfolder
         if not base.exists():
@@ -135,14 +303,34 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         subfolder: str = "source",
         max_bytes: int = 32768,
     ) -> str:
-        """
-        Read a file from the workspace for inspection.
+        """Read a file from the workspace for inspection or annotation.
+
+        The agent typically reads files from ``source/`` to understand the
+        original code, and from ``annotated/`` to verify or correct
+        instrumentation applied by ``session_annotate_source`` or by hand.
 
         Args:
-            run_id:    Session identifier.
-            filepath:  Path relative to the sub-folder root.
-            subfolder: Workspace sub-folder (source, annotated, build…).
-            max_bytes: Truncate content after this many bytes.
+            run_id: Session identifier returned by ``session_create``.
+            filepath: Path to the file relative to *subfolder* (e.g.
+                ``"src/main.c"`` or ``"CMakeLists.txt"``).
+            subfolder: Workspace sub-folder containing the file.  Defaults to
+                ``"source"``.  Use ``"annotated"`` to read the instrumented copy.
+            max_bytes: Maximum number of bytes to return.  Content is truncated
+                to this limit; the ``truncated`` field in the response indicates
+                whether truncation occurred.  Defaults to ``32768`` (32 KiB).
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"``).
+                * ``message`` — ``"File read"``.
+                * ``filepath`` — the *filepath* argument as passed.
+                * ``subfolder`` — the *subfolder* argument as passed.
+                * ``content`` — file text (UTF-8, with replacement characters for
+                  undecodable bytes), truncated to *max_bytes*.
+                * ``truncated`` — ``true`` if the file was larger than *max_bytes*.
+
+        Raises:
+            Returns ``{"status": "error"}`` when the file does not exist.
         """
         p = _ws(run_id) / subfolder / filepath
         if not p.exists():
@@ -164,15 +352,35 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         content: str,
         subfolder: str = "annotated",
     ) -> str:
-        """
-        Write (create or overwrite) a file inside the workspace.
-        Use this to apply LLM-generated annotations or build patches.
+        """Write (create or overwrite) a file inside the workspace.
+
+        The primary use-case is applying LLM-generated dftracer annotations to
+        files in the ``annotated/`` sub-folder.  The agent reads a file with
+        ``session_read_file``, adds ``DFTRACER_C_FUNCTION_START`` /
+        ``DFTRACER_C_FUNCTION_END`` macros (or ``@dft_fn`` for Python), and
+        writes the result back with this tool.
+
+        Intermediate directories are created automatically if they do not exist.
+
+        Side effects:
+            * Creates or overwrites
+              ``<workspace>/<subfolder>/<filepath>`` on disk.
 
         Args:
-            run_id:    Session identifier.
-            filepath:  Path relative to the sub-folder root.
-            content:   File content to write.
-            subfolder: Workspace sub-folder to write into (default: annotated).
+            run_id: Session identifier returned by ``session_create``.
+            filepath: Destination path relative to *subfolder* (e.g.
+                ``"src/main.c"``).  Parent directories are created as needed.
+            content: Complete file content to write (UTF-8 string).  The existing
+                file, if any, is replaced in full — partial updates are not
+                supported.
+            subfolder: Workspace sub-folder to write into.  Defaults to
+                ``"annotated"``.  Use ``"source"`` with caution as overwriting
+                the original makes it impossible to diff changes later.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"``).
+                * ``message`` — ``"Wrote <N> bytes to <subfolder>/<filepath>"``.
         """
         p = _ws(run_id) / subfolder / filepath
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -186,18 +394,53 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         extra_configure_flags: str = "",
         extra_pip_flags: str = "",
     ) -> str:
-        """
-        Configure the build system for the cloned source.
+        """Configure the build system for the *original* cloned source.
 
-        For cmake:     runs cmake -S source -B build -DCMAKE_INSTALL_PREFIX=install
-        For autotools: runs ./configure --prefix=<install>
-        For python:    creates a venv at install/ and installs in editable mode
+        Runs the appropriate configuration command based on the build tool
+        detected by ``session_detect`` (or re-detected inline if the detection
+        step was skipped):
+
+        * **cmake** — ``cmake -S source -B build -DCMAKE_INSTALL_PREFIX=install
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo [extra_cmake_flags]``
+        * **autotools** — ``autoreconf -fi`` (if ``configure`` does not exist),
+          then ``./configure --prefix=<install> [extra_configure_flags]``
+        * **python** — ``python3 -m venv install/`` followed by
+          ``pip install -e source/ [extra_pip_flags]``
+
+        Side effects:
+            * Creates ``<workspace>/build/`` and ``<workspace>/install/``.
+            * For Python projects, creates a virtualenv at ``<workspace>/install/``.
+            * Persists ``{"step": "configured", "build_tool": <bt>}`` to
+              ``session.json``.
+            * Writes an artifact log at step 3.
 
         Args:
-            run_id:               Session identifier.
-            extra_cmake_flags:    Additional -D flags for cmake.
-            extra_configure_flags: Additional flags for ./configure.
-            extra_pip_flags:      Additional flags for pip install.
+            run_id: Session identifier returned by ``session_create``.
+            extra_cmake_flags: Space-separated additional ``-D`` flags appended
+                to the cmake invocation (e.g. ``"-DENABLE_TESTS=OFF"``).
+                Ignored for non-cmake projects.  Defaults to ``""``.
+            extra_configure_flags: Space-separated flags appended to
+                ``./configure``.  Ignored for non-autotools projects.
+                Defaults to ``""``.
+            extra_pip_flags: Space-separated flags appended to
+                ``pip install -e``.  Ignored for non-Python projects.
+                Defaults to ``""``.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"`` or ``"error"``).
+                * ``message`` — ``"Configure succeeded"`` or error description.
+                * ``build_tool`` — detected build system string.
+                * ``stdout``, ``stderr``, ``returncode`` — subprocess output.
+
+        Raises:
+            Returns ``{"status": "error"}`` for unsupported build tools or when
+            the configuration command exits non-zero.
+
+        Note:
+            Must be called after ``session_detect`` so that ``session.json``
+            contains the ``detection`` key.  If ``session_detect`` was not called,
+            detection is re-run inline.
         """
         ws = _ws(run_id)
         src = ws / "source"
@@ -250,15 +493,39 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         run_id: str,
         jobs: int = 4,
     ) -> str:
-        """
-        Compile and install the project after session_configure.
+        """Compile and install the original project after ``session_configure``.
 
-        For cmake/autotools: runs make -j<jobs> && make install
-        For python:          pip install is already done by session_configure.
+        Runs the appropriate build command based on the ``build_tool`` persisted
+        by ``session_configure``:
+
+        * **cmake / autotools / make** — ``make -j<jobs>`` followed by
+          ``make install``.  Both commands run in ``<workspace>/build/``.
+        * **python** — no-op; installation was already performed by
+          ``session_configure`` (``pip install -e``).
+
+        Side effects:
+            * Populates ``<workspace>/install/`` with installed binaries/libraries.
+            * Persists ``{"step": "installed"}`` to ``session.json``.
+            * Writes an artifact log at step 4.
 
         Args:
-            run_id: Session identifier.
-            jobs:   Parallel make jobs (default: 4).
+            run_id: Session identifier returned by ``session_create``.
+            jobs: Number of parallel ``make`` jobs.  Defaults to ``4``.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"`` or ``"error"``).
+                * ``message`` — description of the outcome.
+                * For cmake/autotools: ``make`` and ``install`` sub-dicts each
+                  containing ``stdout``, ``stderr``, ``returncode``.
+
+        Raises:
+            Returns ``{"status": "error"}`` when ``make`` or ``make install``
+            exits non-zero, or when the ``build_tool`` stored in state is
+            unrecognised (``"unknown"``).
+
+        Note:
+            Must be called after ``session_configure``.
         """
         ws = _ws(run_id)
         build = ws / "build"
@@ -293,23 +560,53 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         env_extra: Optional[str] = None,
         timeout: int = 300,
     ) -> str:
-        """
-        Run a smoke test command inside the workspace as a single process
-        (no MPI, no parallelism).
+        """Run a smoke test command inside the workspace as a single process.
 
-        Any MPI/parallel launcher prefix (mpirun, mpiexec, srun, jsrun, aprun,
-        flux run) is automatically stripped so the binary runs directly.
-        This is intentional: smoke tests must be deterministic and reproducible
-        without a cluster scheduler or MPI runtime.
+        Executes *command* without MPI or any parallel launcher to verify that
+        the original build is functional before annotation begins.  Any MPI /
+        parallel launcher prefix (``mpirun``, ``mpiexec``, ``srun``, ``jsrun``,
+        ``aprun``, ``flux run``) is automatically stripped from *command* so
+        the binary runs directly.
+
+        This stripping is intentional: smoke tests must be deterministic and
+        reproducible without a cluster scheduler or MPI runtime.  The stripped
+        command and a boolean ``mpi_launcher_stripped`` flag are both included
+        in the response so the agent can audit what was actually executed.
+
+        Side effects:
+            * Persists ``{"last_smoke_test": {command, ...subprocess result}}``
+              to ``session.json``.
+            * Writes an artifact log at step 5.
 
         Args:
-            run_id:    Session identifier.
-            command:   Shell command to run (passed to /bin/sh -c).
-                       MPI launchers are stripped automatically — pass the
-                       original command as-is; the tool will clean it up.
-            subfolder: Working directory sub-folder (default: build).
-            env_extra: Optional JSON object of extra env vars.
-            timeout:   Seconds before the command is killed.
+            run_id: Session identifier returned by ``session_create``.
+            command: Shell command to execute (passed to ``/bin/sh -c``).
+                MPI launchers are stripped automatically — pass the original
+                command unchanged; this tool will sanitise it.
+            subfolder: Working-directory sub-folder relative to the workspace
+                root.  Defaults to ``"build"``.  Falls back to ``"source"``
+                if *subfolder* does not exist.
+            env_extra: Optional JSON object string (``'{"VAR": "val"}'``) of
+                additional environment variables merged into the subprocess
+                environment.  Defaults to ``None`` (no extra variables).
+            timeout: Seconds before the subprocess is killed.
+                Defaults to ``300``.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"`` or ``"error"``).
+                * ``message`` — ``"Smoke test passed"`` or ``"Smoke test failed"``.
+                * ``command_run`` — the sanitised command that was actually executed.
+                * ``mpi_launcher_stripped`` — ``true`` if a launcher prefix was removed.
+                * ``stdout``, ``stderr``, ``returncode`` — subprocess output.
+
+        Raises:
+            Returns ``{"status": "error"}`` when the command exits non-zero.
+
+        Note:
+            Must be called after ``session_build_install``.  A failure here does
+            not block the annotation phase — ``session_run_pipeline`` treats a
+            failed smoke test as a warning and continues.
         """
         cwd = _ws(run_id) / subfolder
         if not cwd.exists():
@@ -345,12 +642,39 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
 
     @mcp.tool()
     def session_copy_annotated(run_id: str) -> str:
-        """
-        Copy the original source tree to annotated/ ready for instrumentation.
-        Existing annotated/ contents are replaced.
+        """Copy the original source tree to ``annotated/`` ready for instrumentation.
+
+        Performs a full recursive copy of ``<workspace>/source/`` to
+        ``<workspace>/annotated/``.  If ``annotated/`` already exists (e.g.
+        from a previous attempt) it is deleted first so the copy starts clean.
+
+        The agent subsequently uses ``session_read_file`` /
+        ``session_write_file`` on *subfolder* ``"annotated"`` to apply
+        dftracer instrumentation macros without touching the pristine
+        ``source/`` tree.
+
+        Side effects:
+            * Removes any pre-existing ``<workspace>/annotated/`` directory.
+            * Creates a fresh ``<workspace>/annotated/`` that is an exact
+              copy of ``<workspace>/source/``.
+            * Persists ``{"step": "annotated_copy_created"}`` to
+              ``session.json``.
 
         Args:
-            run_id: Session identifier.
+            run_id: Session identifier returned by ``session_create``.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"``).
+                * ``message`` — ``"Copied source to <path>"``.
+
+        Raises:
+            Returns ``{"status": "error"}`` when ``source/`` does not exist.
+
+        Note:
+            Must be called after ``session_create``.  Typically called after
+            ``session_run_smoke_test`` to confirm the original build is working
+            before beginning instrumentation.
         """
         ws = _ws(run_id)
         src = ws / "source"
@@ -365,15 +689,43 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
 
     @mcp.tool()
     def session_patch_build(run_id: str) -> str:
-        """
-        Automatically patch the build system in annotated/ to link dftracer.
+        """Patch the build system in ``annotated/`` to link dftracer.
 
-        - CMake:     injects find_package(dftracer) + target_link_libraries
-        - Autotools: prepends pkg-config flags to Makefile.am / Makefile
-        - Python:    adds dftracer to install_requires / dependencies
+        Modifies the build files inside ``<workspace>/annotated/`` so that the
+        project is compiled and linked against the dftracer library.  The exact
+        changes depend on the build tool detected by ``session_detect``:
+
+        * **cmake** — injects ``find_package(dftracer REQUIRED)`` and
+          ``target_link_libraries(... dftracer::dftracer)`` into
+          ``CMakeLists.txt`` (root and one level of sub-projects).
+        * **autotools** — prepends ``pkg-config --cflags dftracer`` and
+          ``pkg-config --libs dftracer`` flags to ``Makefile.am`` /
+          ``Makefile`` files found in ``annotated/``.
+        * **python** — adds ``"dftracer"`` to ``install_requires`` in
+          ``setup.py`` and/or the ``dependencies`` table in
+          ``pyproject.toml``.
+
+        Side effects:
+            * Overwrites one or more build files inside
+              ``<workspace>/annotated/`` in place.
+            * Persists ``{"step": "build_patched"}`` to ``session.json``.
 
         Args:
-            run_id: Session identifier.
+            run_id: Session identifier returned by ``session_create``.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"``).
+                * ``message`` — ``"Patched <N> build file(s)"``.
+                * ``patched`` — list of build file paths (relative to
+                  ``annotated/``) that were modified.
+                * ``build_tool`` — the detected build system string.
+
+        Raises:
+            Returns ``{"status": "error"}`` when ``annotated/`` does not exist.
+
+        Note:
+            Must be called after ``session_copy_annotated``.
         """
         ws = _ws(run_id)
         ann = ws / "annotated"
@@ -421,21 +773,67 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         run_id: str,
         auto_detect_entries: bool = True,
     ) -> str:
-        """
-        Scan annotated/ and produce a manual annotation plan.
+        """Scan ``annotated/`` and produce a manual annotation plan.
 
-        Auto-annotation is intentionally disabled — automated regex insertion
-        causes syntax errors (macros inside strings, comments, macro bodies, etc.).
-        This tool scans the source, identifies entry points and unannotated files,
-        and returns a structured plan for Goose to follow manually.
+        Auto-annotation (direct regex insertion of dftracer macros) is
+        intentionally **disabled** in this tool because automated insertion
+        causes syntax errors when macros appear inside string literals,
+        comments, macro bodies, or header-only inline functions.
 
-        Goose MUST use session_read_file + session_write_file to annotate each
-        file by hand, following the rules in .goosehints
-        "C / C++ Annotation Rules".
+        Instead, this tool:
+
+        1. Scans every ``.c`` / ``.cpp`` / ``.cxx`` / ``.cc`` and ``.py``
+           file in ``annotated/`` that does not already carry dftracer markers
+           (``DFTRACER_C_FUNCTION_START`` include or ``@dft_fn`` decorator).
+        2. For each file, detects approximate function names via a lightweight
+           regex scan (result used for planning only, never for injection).
+        3. Identifies entry-point files (those containing ``main()`` or a
+           ``__main__`` block) so the agent prioritises them.
+        4. Returns a structured plan listing files, approximate function counts,
+           sample function names, and entry-point status.
+
+        The agent **must** use ``session_read_file`` + ``session_write_file``
+        to annotate each file by hand, following the rules in
+        ``.goosehints`` "C / C++ Annotation Rules" — especially the pitfalls
+        section.  Do **not** call this tool expecting it to auto-write files.
+
+        Side effects:
+            * Persists ``{"step": "annotation_planned"}`` to ``session.json``.
+            * Writes an artifact log at step 8 with file/function counts and
+              detected entry points.
 
         Args:
-            run_id:              Session identifier.
-            auto_detect_entries: If True, detect main() / __main__ as entry points.
+            run_id: Session identifier returned by ``session_create``.
+            auto_detect_entries: When ``True`` (default), scan for ``main()``
+                (C/C++) and ``if __name__ == "__main__"`` (Python) to mark
+                those files as entry points in the plan.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"``).
+                * ``message`` — instruction reminding the agent to annotate
+                  manually and not to call this tool to auto-write.
+                * ``c_files`` — list of dicts, one per unannotated C/C++ file:
+                    * ``file`` — path relative to ``annotated/``.
+                    * ``is_entry`` — whether this file contains ``main()``.
+                    * ``is_cpp`` — whether the file is C++ (not plain C).
+                    * ``approx_functions`` — count of detected function definitions.
+                    * ``sample_functions`` — list of up to 10 function names.
+                * ``py_files`` — list of dicts, one per unannotated Python file:
+                    * ``file`` — path relative to ``annotated/``.
+                    * ``is_entry`` — whether this file has a ``__main__`` block.
+                * ``entry_points_c`` — sorted list of absolute paths to C/C++
+                  entry-point files.
+                * ``entry_points_py`` — sorted list of absolute paths to Python
+                  entry-point files.
+
+        Raises:
+            Returns ``{"status": "error"}`` when ``annotated/`` does not exist.
+
+        Note:
+            Must be called after ``session_copy_annotated``.  After the agent
+            has finished annotating files, call ``session_annotation_report``
+            to verify coverage before proceeding to ``session_install_dftracer``.
         """
         ws = _ws(run_id)
         ann = ws / "annotated"
@@ -516,32 +914,64 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
 
     @mcp.tool()
     def session_annotation_report(run_id: str) -> str:
-        """
-        Show a coverage report of what was annotated versus what was skipped or
-        missed, comparing source/ against annotated/ in the session workspace.
+        """Show a coverage report comparing ``source/`` against ``annotated/``.
 
-        The report is generated by:
-          1. Diffing source/ and annotated/ to find relevant (changed) files.
-          2. Detecting all C/C++ function definitions in each source file.
-          3. Checking which functions carry DFTRACER_C_FUNCTION_START (or
-             @dft_fn for Python) in the annotated file.
-          4. Cross-referencing annotation_logs/annotation_status.md for the
-             recorded status and reason for each function.
+        Generates a structured report that lets the agent (and user) verify
+        annotation completeness before committing to the annotated build.  The
+        report is produced in four steps:
 
-        Returns a structured JSON report with:
-          - summary:  total files, total functions, annotated / skipped /
-                      failed counts, and overall coverage %.
-          - files[]:  per-file breakdown — file name, function counts, and
-                      per-function status (annotated | skipped | failed |
-                      pending | not_annotated) with reason where applicable.
+        1. Diff ``source/`` and ``annotated/`` to find files that were changed.
+        2. Detect all C/C++ function definitions in each relevant source file
+           using a regex scanner.
+        3. Check which functions carry ``DFTRACER_C_FUNCTION_START`` (C/C++) or
+           ``@dft_fn`` (Python) in the annotated copy.
+        4. Cross-reference ``annotation_logs/annotation_status.md`` for any
+           recorded per-function status and reason.
 
-        After reviewing the report, call session_run_pipeline with
-        annotation_confirmed=True and the same run_id to continue the
-        pipeline from the build-annotated step onward.
+        The response message also instructs the agent to call
+        ``session_run_pipeline`` with ``annotation_confirmed=True`` and the
+        same *run_id* once the coverage is satisfactory.
+
+        Side effects:
+            None — this is a read-only inspection tool.
 
         Args:
-            run_id: Session identifier returned by session_create or
-                    pipeline_create_run.
+            run_id: Session identifier returned by ``session_create`` or
+                ``pipeline_create_run``.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"`` or ``"error"``).
+                * ``message`` — summary of annotated/total functions and
+                  a prompt to confirm and continue the pipeline.
+                * ``summary`` — dict with aggregate metrics:
+                    * ``total_files`` — number of source files examined.
+                    * ``relevant_files`` — files with at least one annotation
+                      change.
+                    * ``total_functions`` — total function definitions found.
+                    * ``annotated`` — functions with dftracer markers present.
+                    * ``skipped`` — functions explicitly recorded as skipped.
+                    * ``failed`` — functions where annotation was attempted but
+                      produced errors.
+                    * ``coverage_pct`` — ``annotated / (total - skipped) * 100``.
+                * ``files`` — list of per-file dicts, each containing:
+                    * ``file`` — path relative to ``annotated/``.
+                    * ``total_functions``, ``annotated``, ``skipped``, ``failed``,
+                      ``pending``, ``not_annotated`` — per-file counts.
+                    * ``functions`` — list of per-function status dicts with
+                      ``name``, ``status`` (``annotated`` | ``skipped`` |
+                      ``failed`` | ``pending`` | ``not_annotated``), and
+                      ``reason`` where applicable.
+
+        Raises:
+            Returns ``{"status": "error"}`` when the workspace does not exist,
+            or when ``_generate_annotation_report`` encounters an internal error
+            (e.g. neither ``source/`` nor ``annotated/`` is present).
+
+        Note:
+            Call after manual annotation is complete.  To continue the pipeline
+            after reviewing this report, call ``session_run_pipeline`` with
+            ``annotation_confirmed=True`` and ``run_id=<run_id>``.
         """
         ws = _ws(run_id)
         if not ws.exists():
@@ -568,36 +998,76 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         install_mode: str = "auto",
         jobs: int = 4,
     ) -> str:
-        """
-        Clone dftracer and build+install it via its own autobuild.sh script.
+        """Clone dftracer and build/install it via its own ``autobuild.sh`` script.
 
-        This is the low-level build tool behind session_install_dftracer.
-        Call it directly when you want fine-grained control over the build
-        (e.g. forcing cmake mode on a Python project, or changing the ref).
+        This is the low-level build tool underlying ``session_install_dftracer``.
+        Call it directly when fine-grained control is needed — for example, to
+        force cmake mode on a Python project, to change the installed ref, or
+        to diagnose a failed ``session_install_dftracer`` call.
 
-        autobuild.sh flags driven by detected project features:
-          --enable-mpi    added when MPI is detected in the project source
-          --enable-hdf5   added when HDF5 is detected in the project source
-          --python <exe>  added when Python is detected (pip mode) or when
-                          the project has Python bindings (cmake mode)
+        The dftracer source is cloned once and cached at
+        ``<workspace>/dftracer_src/``; subsequent calls skip the clone step.
+        Build artefacts land in ``<workspace>/dftracer_build/``.
 
-        install_mode choices:
-          "cmake" — builds and installs the full C/C++ library + headers into
-                    <workspace>/install_ann/.  Required for C/C++ projects so
-                    find_package(dftracer) works in the annotated build.
-          "pip"   — installs the Python package into the project venv at
-                    <workspace>/install/.  Used for Python projects.
-          "auto"  — "cmake" for cmake/autotools/make projects, "pip" for Python.
+        ``autobuild.sh`` flags are derived from the features detected in the
+        project source:
 
-        Build tree is placed at <workspace>/dftracer_build/ and the dftracer
-        source is cached at <workspace>/dftracer_src/ so subsequent calls
-        (e.g. after a failed first attempt) skip the clone step.
+        * ``--enable-mpi``     — added when MPI is detected in the project.
+        * ``--enable-hdf5``    — added when HDF5 is detected in the project.
+        * ``--python <exe>``   — added for Python projects (pip mode) or when
+          the project has Python bindings (cmake mode).
+
+        *install_mode* choices:
+
+        * ``"cmake"`` — builds and installs the full C/C++ library and headers
+          into ``<workspace>/install_ann/``.  Required for C/C++ projects so
+          that ``find_package(dftracer)`` resolves in the annotated cmake build.
+        * ``"pip"`` — installs the Python package into the project venv at
+          ``<workspace>/install/``.  Used for Python-only projects.
+        * ``"auto"`` — selects ``"cmake"`` for cmake/autotools/make projects
+          and ``"pip"`` for Python projects.
+
+        After a successful build, ``dftracer-utils`` is also installed from the
+        ``develop`` branch so that ``dftracer_split`` is available for trace
+        compaction.
+
+        Side effects:
+            * Clones dftracer source into ``<workspace>/dftracer_src/`` (first
+              call only).
+            * Builds dftracer in ``<workspace>/dftracer_build/``.
+            * Installs dftracer headers/libs into *install_prefix*.
+            * Persists ``{"dftracer_install_prefix": str(install_prefix)}`` to
+              ``session.json``.
+            * Installs ``dftracer-utils`` from the ``develop`` branch into the
+              resolved pip environment.
 
         Args:
-            run_id:       Session identifier.
-            dftracer_ref: Git tag or branch to build (default: v2.0.3).
-            install_mode: "cmake", "pip", or "auto" (default: auto).
-            jobs:         Parallel build jobs (default: 4).
+            run_id: Session identifier returned by ``session_create``.
+            dftracer_ref: Git tag or branch of dftracer to build.
+                Defaults to ``"v2.0.3"``.
+            install_mode: One of ``"cmake"``, ``"pip"``, or ``"auto"``.
+                Defaults to ``"auto"``.
+            jobs: Parallel build jobs passed to ``make``.  Defaults to ``4``.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"`` or ``"error"``).
+                * ``message`` — outcome description.
+                * ``ref`` — the dftracer ref that was built.
+                * ``prefix`` — absolute path of the install prefix used.
+                * ``dftracer_utils_installed`` — ``true`` if dftracer-utils
+                  was successfully installed.
+                * ``steps`` — list of step dicts (name, success, stdout, stderr)
+                  from autobuild.sh execution.
+
+        Raises:
+            Returns ``{"status": "error"}`` when ``autobuild.sh`` exits
+            non-zero, with ``steps`` detailing which stage failed.
+
+        Note:
+            Prefer ``session_install_dftracer`` for the normal workflow.  Use
+            this tool only when the default mode selection or install location
+            need to be overridden.
         """
         ws = _ws(run_id)
         state = _load_state(run_id)
@@ -663,27 +1133,53 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         dftracer_ref: str = "v2.0.3",
         jobs: int = 4,
     ) -> str:
-        """
-        Install dftracer into the session's annotated install directory.
+        """Install dftracer into the session's annotated install directory.
 
-        For C/C++ projects (cmake / autotools / make):
-            Clones https://github.com/llnl/dftracer.git at <dftracer_ref>,
-            builds with cmake, and installs into <workspace>/install_ann/ —
-            the same prefix used by session_build_annotated.  The install
-            prefix is stored in session state so session_build_annotated
-            automatically passes CMAKE_PREFIX_PATH / pkg-config flags.
+        Selects the correct install mode based on the build tool detected by
+        ``session_detect`` and invokes ``_install_dftracer_autobuild`` which
+        clones the dftracer repository and runs its ``autobuild.sh`` script:
 
-        For Python projects:
-            Installs dftracer via pip into the project venv at
-            <workspace>/install/.  Tries PyPI first; falls back to git source.
+        * **C/C++ projects (cmake / autotools / make)** — clones
+          ``https://github.com/llnl/dftracer.git`` at *dftracer_ref*, builds
+          with cmake, and installs into ``<workspace>/install_ann/``.  The
+          install prefix is stored in session state so that
+          ``session_build_annotated`` automatically passes
+          ``CMAKE_PREFIX_PATH`` / ``pkg-config`` flags.
 
-        Call this after session_annotate_source and before
-        session_build_annotated.
+        * **Python projects** — installs dftracer via pip into the project
+          venv at ``<workspace>/install/``.  Tries PyPI first; falls back to
+          the git source build.
+
+        Side effects:
+            * Populates ``<workspace>/install_ann/`` (C/C++) or
+              ``<workspace>/install/`` (Python) with dftracer headers, libs,
+              and/or the Python package.
+            * Persists ``{"dftracer_install_prefix": str(<prefix>)}`` to
+              ``session.json``.
 
         Args:
-            run_id:       Session identifier.
-            dftracer_ref: Git tag or branch (default: v2.0.3).
-            jobs:         Parallel make jobs for cmake build (default: 4).
+            run_id: Session identifier returned by ``session_create``.
+            dftracer_ref: Git tag or branch of dftracer to install.
+                Defaults to ``"v2.0.3"``.
+            jobs: Parallel make jobs for the cmake build.  Defaults to ``4``.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"`` or ``"error"``).
+                * ``message`` — outcome description including install mode.
+                * ``prefix`` — absolute path to the install directory (C/C++).
+                * ``ref`` — the dftracer ref that was installed.
+                * ``steps`` — list of step dicts from autobuild.sh.
+
+        Raises:
+            Returns ``{"status": "error"}`` when ``autobuild.sh`` fails or
+            when the build tool is not one of the supported values
+            (``"cmake"``, ``"autotools"``, ``"make"``, ``"python"``).
+
+        Note:
+            Must be called after ``session_annotate_source`` (or after the
+            agent has finished manual annotation) and before
+            ``session_build_annotated``.
         """
         ws = _ws(run_id)
         state = _load_state(run_id)
@@ -750,22 +1246,50 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
     def session_install_dftracer_utils(
         run_id: str,
     ) -> str:
-        """
-        Install dftracer-utils from the develop branch into the session environment.
+        """Install ``dftracer-utils`` from the ``develop`` branch into the session environment.
 
-        dftracer-utils provides the dftracer_split binary used by
-        session_split_traces to compact raw .pfw trace files, as well as
-        dftracer_info, dftracer_merge, and other analysis tools.
+        ``dftracer-utils`` provides the ``dftracer_split`` binary consumed by
+        ``session_split_traces`` to compact raw ``.pfw`` trace files, as well as
+        ``dftracer_info``, ``dftracer_merge``, and other trace analysis tools.
 
-        Installs into the Python environment currently running the MCP server
-        (the same env that provides the dftracer-utils MCP tools) using pip
-        with --upgrade so the latest develop snapshot is always fetched.
+        The package is installed using ``pip install --upgrade`` so that the
+        latest snapshot from the ``develop`` branch is always fetched, regardless
+        of what PyPI currently has.
 
-        Call this once per session before session_split_traces if you want
-        to guarantee the develop-branch version of dftracer-utils is active.
+        Pip resolution order:
+
+        1. ``<workspace>/install/bin/pip`` — the session virtualenv's pip.
+        2. ``<server_python_dir>/pip`` — the pip adjacent to the MCP server's
+           own Python interpreter.
+        3. ``pip3`` — system fallback.
+
+        Side effects:
+            * Installs ``dftracer-utils`` (develop snapshot) into the resolved
+              pip environment.
+            * Persists ``{"dftracer_utils_installed": bool}`` to
+              ``session.json``.
 
         Args:
-            run_id: Session identifier (used only for state tracking).
+            run_id: Session identifier (used only for workspace path resolution
+                and state tracking; does not affect the install target).
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"`` or ``"error"``).
+                * ``message`` — ``"dftracer-utils installed from develop"`` or
+                  ``"dftracer-utils install failed"``.
+                * Additional keys from the pip subprocess result
+                  (``stdout``, ``stderr``, ``returncode``).
+
+        Raises:
+            Returns ``{"status": "error"}`` when pip exits non-zero.
+
+        Note:
+            Call once per session before ``session_split_traces`` if you want to
+            guarantee the ``develop``-branch version of ``dftracer-utils`` is
+            active.  The ``session_autobuild_dftracer`` tool also installs
+            ``dftracer-utils`` automatically after a successful build, so this
+            tool is only needed when ``session_autobuild_dftracer`` was not used.
         """
         # Prefer the session venv pip; fall back to the server's own pip
         ws = _ws(run_id)
@@ -787,22 +1311,52 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         jobs: int = 4,
         extra_cmake_flags: str = "",
     ) -> str:
-        """
-        Configure and build the annotated source with dftracer linked.
+        """Configure and build the annotated source with dftracer linked.
 
-        Builds into build_ann/ and installs into install_ann/ so the
-        original build is preserved for comparison.
+        Mirrors the configure → build → install sequence of
+        ``session_configure`` + ``session_build_install`` but targets the
+        ``annotated/`` source tree and uses separate output directories
+        (``build_ann/`` and ``install_ann/``) to preserve the original build
+        for comparison.
 
-        If session_install_dftracer was called first, the dftracer install
-        prefix is read from session state and automatically added:
-          - cmake:     -DCMAKE_PREFIX_PATH=<prefix>
-          - autotools: PKG_CONFIG_PATH / CPPFLAGS / LDFLAGS env vars
-          - python:    dftracer already in the venv; no extra flags needed
+        If ``session_install_dftracer`` was called first, the dftracer install
+        prefix recorded in session state is automatically injected:
+
+        * **cmake** — ``-DCMAKE_PREFIX_PATH=<prefix>`` appended to cmake flags.
+        * **autotools** — ``PKG_CONFIG_PATH``, ``CPPFLAGS``, and ``LDFLAGS``
+          environment variables set to point at ``<prefix>/lib/pkgconfig``,
+          ``<prefix>/include``, and ``<prefix>/lib`` respectively.
+        * **python** — dftracer is already in the venv; no extra flags needed.
+
+        Side effects:
+            * Creates ``<workspace>/build_ann/`` and ``<workspace>/install_ann/``.
+            * For cmake/autotools: runs configure, ``make -j<jobs>``, and
+              ``make install`` inside ``build_ann/``.
+            * For Python: runs ``pip install -e annotated/``.
+            * Persists ``{"step": "annotated_built"}`` to ``session.json``.
 
         Args:
-            run_id:            Session identifier.
-            jobs:              Parallel make jobs.
-            extra_cmake_flags: Extra -D flags passed to cmake.
+            run_id: Session identifier returned by ``session_create``.
+            jobs: Parallel make jobs.  Defaults to ``4``.
+            extra_cmake_flags: Space-separated additional ``-D`` flags appended
+                to the cmake invocation.  Defaults to ``""``.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"`` or ``"error"``).
+                * ``message`` — ``"Annotated build succeeded"`` or error
+                  description.
+                * ``build_tool`` — the detected build system string.
+                * ``steps`` — dict of step results keyed by stage name
+                  (``"configure"``, ``"build"``, ``"install"``, or
+                  ``"pip_install"``), each a subprocess result dict.
+
+        Raises:
+            Returns ``{"status": "error"}`` when any build stage exits
+            non-zero, or when ``annotated/`` does not exist.
+
+        Note:
+            Must be called after ``session_install_dftracer``.
         """
         ws = _ws(run_id)
         ann = ws / "annotated"
@@ -896,27 +1450,66 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         timeout: int = 600,
         env_extra: Optional[str] = None,
     ) -> str:
-        """
-        Run a command with dftracer environment variables set so traces are
-        captured in the dedicated <workspace>/traces/ directory.
+        """Run a command with dftracer environment variables set to capture traces.
 
-        Trace files land at <workspace>/traces/<run_id>.<pid>.pfw and are
-        consumed by session_split_traces.
+        Executes *command* inside the workspace with all ``DFTRACER_*`` env
+        vars configured per the
+        `dftracer documentation <https://dftracer.readthedocs.io/en/latest/api.html>`_.
+        Trace files (``<run_id>.<pid>.pfw``) are written to
+        ``<workspace>/traces/`` and consumed by ``session_split_traces``.
 
-        Sets (per https://dftracer.readthedocs.io/en/latest/api.html):
-          DFTRACER_ENABLE=1        — activate tracing
-          DFTRACER_INC_METADATA=1  — include process/thread metadata in traces
-          DFTRACER_LOG_FILE=<workspace>/traces/<run_id>  (prefix; dftracer appends .<pid>.pfw)
-          DFTRACER_DATA_DIR=<data_dir or source/>
-          DFTRACER_INIT=1          — auto-initialise without explicit API call
+        The following variables are always set:
+
+        * ``DFTRACER_ENABLE=1``         — activates tracing.
+        * ``DFTRACER_INC_METADATA=1``   — records process/thread metadata.
+        * ``DFTRACER_LOG_FILE=<workspace>/traces/<run_id>`` — trace file
+          prefix; dftracer appends ``.<pid>.pfw``.
+        * ``DFTRACER_DATA_DIR=<data_dir or source/>`` — directory to monitor
+          for I/O tracing.
+        * ``DFTRACER_INIT=1``           — auto-initialises dftracer without an
+          explicit API call.
+
+        Additional variables can be merged/overridden via *env_extra*.
+
+        Side effects:
+            * Creates ``<workspace>/traces/`` if it does not exist.
+            * Writes one or more ``<run_id>.<pid>.pfw`` trace files inside
+              ``<workspace>/traces/``.
+            * Persists ``{"step": "ran_with_dftracer", "dftracer_run": {...}}``
+              to ``session.json``.
+            * Writes an artifact log at step 11.
 
         Args:
-            run_id:    Session identifier.
-            command:   Shell command to run (via /bin/sh -c).
-            subfolder: Working directory inside the workspace (default: build_ann).
-            data_dir:  Path to monitor for I/O tracing (defaults to source/).
-            timeout:   Seconds before killing the command.
-            env_extra: JSON object of additional env vars to merge/override.
+            run_id: Session identifier returned by ``session_create``.
+            command: Shell command to run (via ``/bin/sh -c``).  The command
+                should invoke the annotated binary installed in ``install_ann/``
+                or reachable via the venv in ``install/``.
+            subfolder: Working-directory sub-folder relative to the workspace
+                root.  Defaults to ``"build_ann"``.  Falls back to ``"build"``
+                then ``"source"`` if the requested subfolder does not exist.
+            data_dir: Absolute path passed to ``DFTRACER_DATA_DIR``.  Defaults
+                to ``<workspace>/source/`` when not provided.
+            timeout: Seconds before the subprocess is killed.
+                Defaults to ``600``.
+            env_extra: Optional JSON object string (``'{"VAR": "val"}'``) of
+                additional environment variables merged into the dftracer env,
+                allowing overrides of any ``DFTRACER_*`` variable or addition
+                of project-specific variables.  Defaults to ``None``.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"`` or ``"error"``).
+                * ``message`` — ``"Command completed with dftracer"`` or
+                  ``"Command failed with dftracer"``.
+                * ``traces_dir`` — absolute path to the traces directory.
+                * ``stdout``, ``stderr``, ``returncode`` — subprocess output.
+
+        Raises:
+            Returns ``{"status": "error"}`` when the command exits non-zero.
+
+        Note:
+            Must be called after ``session_build_annotated``.  Follow with
+            ``session_split_traces`` to compact the raw ``.pfw`` files.
         """
         ws = _ws(run_id)
         traces_dir = ws / "traces"   # always the canonical trace directory
@@ -958,24 +1551,47 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         run_id: str,
         app_name: str = "app",
     ) -> str:
-        """
-        Compact raw dftracer traces via the dftracer-utils split MCP tool.
+        """Compact raw dftracer traces via the ``dftracer-utils`` split service.
 
-        Reads raw .pfw / .pfw.gz files from <workspace>/traces/ (the
-        dedicated trace directory written by session_run_with_dftracer)
-        and writes compacted chunks to <workspace>/traces_split/.
+        Reads raw ``.pfw`` / ``.pfw.gz`` files from ``<workspace>/traces/``
+        (written by ``session_run_with_dftracer``) and writes compacted chunk
+        files to ``<workspace>/traces_split/``.
 
-        Uses DftracerUtilsService.split under the hood so that all
-        dftracer-utils error handling and output formatting is applied.
-        Falls back to calling the dftracer_split binary directly if the
-        service cannot be loaded.
+        Splitting is performed by ``DftracerUtilsService.split`` so that all
+        ``dftracer-utils`` error handling and output formatting is applied.  If
+        the service cannot be loaded the tool falls back to calling the
+        ``dftracer_split`` binary directly.
 
-        Call session_install_dftracer_utils first to ensure the
-        develop-branch version of dftracer-utils is active.
+        Side effects:
+            * Creates ``<workspace>/traces_split/`` if it does not exist.
+            * Writes compacted trace chunks named ``<app_name>_*.pfw`` inside
+              ``<workspace>/traces_split/``.
+            * Persists ``{"step": "traces_split", "split_result": <r>}`` to
+              ``session.json``.
+            * Writes an artifact log at step 12.
 
         Args:
-            run_id:   Session identifier.
-            app_name: Prefix for output chunk files (default: "app").
+            run_id: Session identifier returned by ``session_create``.
+            app_name: Prefix used for output chunk file names.
+                Defaults to ``"app"``.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"`` or ``"error"``).
+                * ``message`` — outcome description.
+                * ``output`` — absolute path to ``traces_split/`` directory.
+                * Additional keys from the split service result.
+
+        Raises:
+            Returns ``{"status": "error"}`` when:
+                * ``traces/`` does not exist in the session workspace.
+                * No ``.pfw`` or ``.pfw.gz`` files are found in ``traces/``.
+                * The split service/binary exits non-zero.
+
+        Note:
+            Must be called after ``session_run_with_dftracer``.  Call
+            ``session_install_dftracer_utils`` first to ensure the
+            ``develop``-branch version of ``dftracer-utils`` is active.
         """
         ws = _ws(run_id)
         traces_in = ws / "traces"
@@ -1008,15 +1624,47 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         index_dir: Optional[str] = None,
         extra_flags: str = "",
     ) -> str:
-        """
-        Summarise dftracer traces using dftracer_info (dfanalyzer).
+        """Summarise dftracer traces using ``dftracer_info`` (dfanalyzer).
+
+        Invokes ``dftracer_info`` against the compacted trace directory to
+        produce a human-readable summary of I/O behaviour — function call
+        counts, time spent in I/O, per-file breakdowns, and metadata such as
+        process counts.  The index directory is created automatically to cache
+        the parsed trace data for faster subsequent queries.
+
+        Side effects:
+            * Creates *index_dir* (or ``<traces_subdir>/idx/``) if it does not
+              exist.
+            * Persists ``{"step": "traces_analyzed", "analysis_result": <r>}``
+              to ``session.json``.
+            * Writes an artifact log at step 13.
 
         Args:
-            run_id:       Session identifier.
-            trace_subdir: Sub-folder containing split traces.
-            query_type:   dftracer_info --query value (default: summary).
-            index_dir:    Optional index directory; defaults to traces_subdir/idx.
-            extra_flags:  Additional flags for dftracer_info.
+            run_id: Session identifier returned by ``session_create``.
+            trace_subdir: Sub-folder (relative to workspace root) containing
+                compacted traces to analyse.  Defaults to ``"traces_split"``.
+            query_type: Value passed to ``dftracer_info --query``.  Common
+                values: ``"summary"`` (default), ``"function"``, ``"file"``.
+            index_dir: Absolute path to the dftracer_info index directory.
+                Defaults to ``<workspace>/<trace_subdir>/idx/``.
+            extra_flags: Additional space-separated flags appended to the
+                ``dftracer_info`` invocation.  Defaults to ``""``.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"`` or ``"error"``).
+                * ``message`` — ``"Analysis complete"`` or error description.
+                * ``stdout`` — raw ``dftracer_info`` output.
+                * ``stderr``, ``returncode`` — subprocess result.
+
+        Raises:
+            Returns ``{"status": "error"}`` when *trace_subdir* does not exist
+            or when ``dftracer_info`` exits non-zero.
+
+        Note:
+            Must be called after ``session_split_traces``.  This is the final
+            step of the annotation pipeline; its output is the primary artifact
+            for evaluating dftracer coverage.
         """
         ws = _ws(run_id)
         traces = ws / trace_subdir
@@ -1044,11 +1692,35 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
 
     @mcp.tool()
     def session_status(run_id: str) -> str:
-        """
-        Return the current state of a session.
+        """Return the current persisted state of a session.
+
+        Reads ``<workspace>/session.json`` and lists all sub-directories that
+        exist in the workspace root.  Useful for understanding how far a
+        session has progressed, what build tool was detected, and which
+        workspace sub-folders are present (``source``, ``annotated``,
+        ``build``, ``install``, ``traces``, etc.).
+
+        Side effects:
+            None — this is a read-only inspection tool.
 
         Args:
-            run_id: Session identifier.
+            run_id: Session identifier returned by ``session_create`` or
+                ``pipeline_create_run``.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"``).
+                * ``message`` — ``"Session status"``.
+                * ``workspace`` — absolute path to the session workspace.
+                * ``subdirs`` — list of sub-directory names present in the
+                  workspace root.
+                * All keys stored in ``session.json`` (e.g. ``step``,
+                  ``url``, ``ref``, ``build_tool``, ``detection``,
+                  ``dftracer_install_prefix``, etc.).
+
+        Raises:
+            Returns ``{"status": "error"}`` when no workspace directory exists
+            for *run_id*.
         """
         ws = _ws(run_id)
         if not ws.exists():
