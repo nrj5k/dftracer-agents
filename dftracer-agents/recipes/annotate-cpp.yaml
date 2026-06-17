@@ -7,22 +7,22 @@ description: >
 version: "1.0.0"
 
 parameters:
-  - name: run_id
-    type: string
-    required: required
+  - key: run_id
+    input_type: string
+    requirement: required
     description: "Pipeline run ID, e.g. myapp/20260616_120000"
-  - name: filepath
-    type: string
-    required: required
+  - key: filepath
+    input_type: string
+    requirement: required
     description: "Single .cpp/.cxx/.cc file path relative to annotated/ to process"
-  - name: build_errors
-    type: string
-    required: optional
+  - key: build_errors
+    input_type: string
+    requirement: optional
     default: ""
     description: "Compiler/runtime stderr from a failed build — focus on these first"
-  - name: user_notes
-    type: string
-    required: optional
+  - key: user_notes
+    input_type: string
+    requirement: optional
     default: ""
     description: "Free-text user feedback on what to fix"
 
@@ -67,7 +67,7 @@ instructions: |
   User feedback: {{ user_notes }}
   {% endif %}
 
-{% filter indent(2, first=True) %}{% include "_inc-top.inc" %}{% endfilter %}
+{% include "_inc-top.inc" %}
 
   Also fetch the C++-specific docs before classifying functions:
 
@@ -230,7 +230,7 @@ instructions: |
     • DFTRACER_CPP_FUNCTION_UPDATE takes string values only (const char *)
       For numeric params, convert to string or omit — there is no UPDATE_INT in C++
 
-{% filter indent(2, first=True) %}{% include "_inc-write.inc" %}{% endfilter %}
+{% include "_inc-write.inc" %}
 
   ══════════════════════════════════════════════════════
   STEP 6 — COVERAGE VERIFICATION
@@ -260,7 +260,7 @@ instructions: |
     • #3: no REGION macros outside main
     • #4: no DFTRACER_C_ macros in the file
 
-{% filter indent(2, first=True) %}{% include "_inc-report.inc" %}{% endfilter %}
+{% include "_inc-report.inc" %}
 
   C++-SPECIFIC PITFALLS:
   CP1  Used DFTRACER_C_* in .cpp       → replace with DFTRACER_CPP_*

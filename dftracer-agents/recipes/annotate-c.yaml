@@ -8,22 +8,22 @@ description: >
 version: "1.0.0"
 
 parameters:
-  - name: run_id
-    type: string
-    required: required
+  - key: run_id
+    input_type: string
+    requirement: required
     description: "Pipeline run ID, e.g. myapp/20260616_120000"
-  - name: filepath
-    type: string
-    required: required
+  - key: filepath
+    input_type: string
+    requirement: required
     description: "Single .c file path relative to annotated/ to process"
-  - name: build_errors
-    type: string
-    required: optional
+  - key: build_errors
+    input_type: string
+    requirement: optional
     default: ""
     description: "Compiler/runtime stderr from a failed build — focus on these first"
-  - name: user_notes
-    type: string
-    required: optional
+  - key: user_notes
+    input_type: string
+    requirement: optional
     default: ""
     description: "Free-text user feedback on what to fix"
 
@@ -68,7 +68,7 @@ instructions: |
   User feedback: {{ user_notes }}
   {% endif %}
 
-{% filter indent(2, first=True) %}{% include "_inc-top.inc" %}{% endfilter %}
+{% include "_inc-top.inc" %}
 
   Also fetch the C-specific docs before classifying functions:
 
@@ -256,7 +256,7 @@ instructions: |
     • Never annotate a .h header file
 
 
-{% filter indent(2, first=True) %}{% include "_inc-write.inc" %}{% endfilter %}
+{% include "_inc-write.inc" %}
 
   ══════════════════════════════════════════════════════
   STEP 6 — COVERAGE VERIFICATION
@@ -290,7 +290,7 @@ instructions: |
     • #4: all vendor functions appear in #2
     • #5: no END macros at column 0
 
-{% filter indent(2, first=True) %}{% include "_inc-report.inc" %}{% endfilter %}
+{% include "_inc-report.inc" %}
 
   C-SPECIFIC PITFALLS:
   PC1  END after return         dead code → swap: END must precede the return

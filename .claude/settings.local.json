@@ -62,7 +62,8 @@
       "Bash(bash autobuild.sh --enable-mpi --install-mode cmake --install-prefix /workspaces/dftracer-agents/workspaces/ior/clean-20260617/install_ann --jobs 4)",
       "mcp__dftracer__session_list_files",
       "mcp__dftracer__session_read_file",
-      "mcp__dftracer__session_extract_functions"
+      "mcp__dftracer__session_extract_functions",
+      "Bash(gcc -include /tmp/dftracer_stub.h -fsyntax-only -w -x c /workspaces/dftracer-agents/workspaces/ior/clean-20260617/annotated/src/aiori-POSIX.c)"
     ],
     "additionalDirectories": [
       "/tmp/test-merge-empty"

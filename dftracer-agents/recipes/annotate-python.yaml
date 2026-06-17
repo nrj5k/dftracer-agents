@@ -8,22 +8,22 @@ description: >
 version: "1.0.0"
 
 parameters:
-  - name: run_id
-    type: string
-    required: required
+  - key: run_id
+    input_type: string
+    requirement: required
     description: "Pipeline run ID, e.g. myapp/20260616_120000"
-  - name: filepath
-    type: string
-    required: required
+  - key: filepath
+    input_type: string
+    requirement: required
     description: "Single .py file path relative to annotated/ to process"
-  - name: build_errors
-    type: string
-    required: optional
+  - key: build_errors
+    input_type: string
+    requirement: optional
     default: ""
     description: "Runtime error or import error — focus on these first"
-  - name: user_notes
-    type: string
-    required: optional
+  - key: user_notes
+    input_type: string
+    requirement: optional
     default: ""
     description: "Free-text user feedback on what to fix"
 
@@ -66,7 +66,7 @@ instructions: |
   User feedback: {{ user_notes }}
   {% endif %}
 
-{% filter indent(2, first=True) %}{% include "_inc-top.inc" %}{% endfilter %}
+{% include "_inc-top.inc" %}
 
   Also fetch the Python-specific docs before classifying functions:
 
@@ -197,7 +197,7 @@ instructions: |
     • initialize_log must appear in every entry point file
     • finalize_log must appear before every process exit path
 
-{% filter indent(2, first=True) %}{% include "_inc-write.inc" %}{% endfilter %}
+{% include "_inc-write.inc" %}
 
   ══════════════════════════════════════════════════════
   STEP 6 — COVERAGE VERIFICATION
@@ -230,7 +230,7 @@ instructions: |
     • #4: initialize_log AND finalize_log are in every entry point file
     • #5: no @property methods decorated
 
-{% filter indent(2, first=True) %}{% include "_inc-report.inc" %}{% endfilter %}
+{% include "_inc-report.inc" %}
 
   PYTHON-SPECIFIC PITFALLS:
   PP1  Missing import            ImportError at runtime → add from dftracer.logger import ...
