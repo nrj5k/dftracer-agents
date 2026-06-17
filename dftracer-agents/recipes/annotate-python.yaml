@@ -55,6 +55,12 @@ instructions: |
 
 {% filter indent(2, first=True) %}{% include "_inc-top.inc" %}{% endfilter %}
 
+  Also fetch the Python-specific docs before classifying functions:
+
+    docs_search(query="dftracer_fn decorator DFTracer initialize_log finalize_log process_id log_file data_dir", source="pydftracer", fetch_content=True)
+
+  Note the exact import path, decorator signature, and whether comp= is a supported keyword.
+
   ══════════════════════════════════════════════════════
   STEP 2 — CLASSIFY EVERY FUNCTION/METHOD
   ══════════════════════════════════════════════════════
@@ -96,8 +102,24 @@ instructions: |
 
 
   ══════════════════════════════════════════════════════
-  STEP 4 — APPLY ANNOTATION PATTERN
+  STEP 4 — APPLY ANNOTATION PATTERN (per-function incremental loop)
   ══════════════════════════════════════════════════════
+
+  Follow the PER-FUNCTION INCREMENTAL ANNOTATION LOOP from Step 1.5 above.
+  Syntax check command for Python after each function write:
+  ```bash
+  WS=/workspaces/dftracer-agents/workspaces/{{ run_id }}
+  python3 -c "
+  import ast, sys
+  try:
+      ast.parse(open('${WS}/annotated/{{ filepath }}').read())
+  except SyntaxError as e:
+      print(f'SyntaxError line {e.lineno}: {e.msg}')
+      sys.exit(1)
+  " 2>&1
+  ```
+  A non-empty output means a syntax error — apply step d of the loop.
+  Note: the stub header is not needed for Python; ast.parse() checks syntax only.
 
   Standard function decoration:
   ```python

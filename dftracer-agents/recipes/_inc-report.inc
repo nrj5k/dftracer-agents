@@ -1,4 +1,21 @@
 ══════════════════════════════════════════════════════
+STEP 6.5 — FLUSH NEW PITFALLS TO LESSONS FILE
+══════════════════════════════════════════════════════
+
+If you discovered any pitfalls during the annotation loop that you have NOT yet
+written to the lessons file (because you wrote them inline during Step 4), verify
+they are present now:
+
+```bash
+SKILL=/workspaces/dftracer-agents/.agents/skills/dftracer-annotation-lessons/SKILL.md
+grep -c "^---" "$SKILL" 2>/dev/null || echo "0 lessons"
+```
+
+If any new patterns from this file are missing, append them NOW using the
+template from the PER-FUNCTION INCREMENTAL ANNOTATION LOOP section.
+Include: exact error text, root cause, fix or skip reason, and relevant tags.
+
+══════════════════════════════════════════════════════
 STEP 7 — OUTPUT PER-FILE REPORT
 ══════════════════════════════════════════════════════
 
@@ -24,4 +41,11 @@ PG5  Vendor fn skipped         gpfs_*/beegfs_*/lustre_* → comp="io", always an
 PG6  Re-annotating dirty file  File already has macros → restore original first
 PG7  Coverage check skipped    Always run Step 6 before reporting DONE
 PG8  UPDATE uses fwd-decl name 'param' undeclared → read names from definition body
+PG9  Wrong tool name (-32002)  Dot notation not valid: use todo__todo_write not
+                               todo.todoWrite; use load not read_file; use
+                               dftracer__session_read_file not session_read_file
+PG10 Revert-all on build error Do NOT revert the whole file on a syntax/build error.
+                               Strip macros from the FAILING FUNCTION ONLY, mark it
+                               PENDING, and continue annotating the remaining functions.
+                               Write the pitfall to lessons-learned immediately.
 

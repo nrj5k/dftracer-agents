@@ -31,7 +31,6 @@ make decisions, and recover from failures before proceeding.
     Annotation workflow
         * ``session_copy_annotated``    — copy source/ → annotated/ to begin instrumentation
         * ``session_patch_build``       — patch the build system to link dftracer
-        * ``session_annotate_source``   — produce a manual annotation plan (no auto-write)
         * ``session_annotation_report`` — coverage report comparing source/ vs annotated/
 
     dftracer install & annotated build
@@ -59,8 +58,7 @@ make decisions, and recover from failures before proceeding.
 
         session_create → session_detect → session_configure → session_build_install
         → session_run_smoke_test → session_copy_annotated → session_patch_build
-        → session_annotate_source
-        (manual annotation via session_read_file + session_write_file)
+        (annotation via goose recipe subagents using session_read_file + session_write_file)
         → session_annotation_report  [confirm coverage]
         → session_install_dftracer → session_build_annotated
         → session_run_with_dftracer → session_split_traces → session_analyze_traces
@@ -87,15 +85,12 @@ from .workspace import (
 )
 from .detection import _detect_info
 from .annotation import (
-    _annotate_c_source, _annotate_python_source,
-    _strip_dftracer_c_macros, _fix_dftracer_annotation_errors,
-    _strip_mpi_launcher, _C_INCLUDE, _C_KEYWORDS,
+    _strip_mpi_launcher,
     _generate_annotation_report,
 )
 from .build import (
     _patch_cmake, _patch_setup_py, _patch_pyproject,
-    _patch_autotools_makefile, _find_c_entry_points,
-    _find_python_entry_points, _guess_smoke_test,
+    _patch_autotools_makefile,
 )
 from .install import (
     _install_dftracer_autobuild, _dftracer_utils_split, _install_dftracer_utils,
@@ -115,7 +110,7 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         ``session_read_file``, ``session_write_file``, ``session_configure``,
         ``session_build_install``, ``session_run_smoke_test``,
         ``session_copy_annotated``, ``session_patch_build``,
-        ``session_annotate_source``, ``session_annotation_report``,
+        ``session_annotation_report``,
         ``session_autobuild_dftracer``, ``session_install_dftracer``,
         ``session_install_dftracer_utils``, ``session_build_annotated``,
         ``session_run_with_dftracer``, ``session_split_traces``,
@@ -211,7 +206,7 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         built, which languages it uses, and which optional dftracer features
         (MPI, HDF5, Python bindings) are appropriate.  The detection results
         guide every downstream step — ``session_configure``, ``session_patch_build``,
-        ``session_install_dftracer``, and ``session_annotate_source`` all read the
+        and ``session_install_dftracer`` all read the
         ``detection`` key written by this tool.
 
         Side effects:
@@ -307,7 +302,7 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
 
         The agent typically reads files from ``source/`` to understand the
         original code, and from ``annotated/`` to verify or correct
-        instrumentation applied by ``session_annotate_source`` or by hand.
+        instrumentation applied by goose recipe subagents or by hand.
 
         Args:
             run_id: Session identifier returned by ``session_create``.
@@ -769,150 +764,6 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         return _ok(f"Patched {len(patched)} build file(s)", patched=patched, build_tool=bt)
 
     @mcp.tool()
-    def session_annotate_source(
-        run_id: str,
-        auto_detect_entries: bool = True,
-    ) -> str:
-        """Scan ``annotated/`` and produce a manual annotation plan.
-
-        Auto-annotation (direct regex insertion of dftracer macros) is
-        intentionally **disabled** in this tool because automated insertion
-        causes syntax errors when macros appear inside string literals,
-        comments, macro bodies, or header-only inline functions.
-
-        Instead, this tool:
-
-        1. Scans every ``.c`` / ``.cpp`` / ``.cxx`` / ``.cc`` and ``.py``
-           file in ``annotated/`` that does not already carry dftracer markers
-           (``DFTRACER_C_FUNCTION_START`` include or ``@dft_fn`` decorator).
-        2. For each file, detects approximate function names via a lightweight
-           regex scan (result used for planning only, never for injection).
-        3. Identifies entry-point files (those containing ``main()`` or a
-           ``__main__`` block) so the agent prioritises them.
-        4. Returns a structured plan listing files, approximate function counts,
-           sample function names, and entry-point status.
-
-        The agent **must** use ``session_read_file`` + ``session_write_file``
-        to annotate each file by hand, following the rules in
-        ``.goosehints`` "C / C++ Annotation Rules" — especially the pitfalls
-        section.  Do **not** call this tool expecting it to auto-write files.
-
-        Side effects:
-            * Persists ``{"step": "annotation_planned"}`` to ``session.json``.
-            * Writes an artifact log at step 8 with file/function counts and
-              detected entry points.
-
-        Args:
-            run_id: Session identifier returned by ``session_create``.
-            auto_detect_entries: When ``True`` (default), scan for ``main()``
-                (C/C++) and ``if __name__ == "__main__"`` (Python) to mark
-                those files as entry points in the plan.
-
-        Returns:
-            JSON string with keys:
-                * ``status`` (``"ok"``).
-                * ``message`` — instruction reminding the agent to annotate
-                  manually and not to call this tool to auto-write.
-                * ``c_files`` — list of dicts, one per unannotated C/C++ file:
-                    * ``file`` — path relative to ``annotated/``.
-                    * ``is_entry`` — whether this file contains ``main()``.
-                    * ``is_cpp`` — whether the file is C++ (not plain C).
-                    * ``approx_functions`` — count of detected function definitions.
-                    * ``sample_functions`` — list of up to 10 function names.
-                * ``py_files`` — list of dicts, one per unannotated Python file:
-                    * ``file`` — path relative to ``annotated/``.
-                    * ``is_entry`` — whether this file has a ``__main__`` block.
-                * ``entry_points_c`` — sorted list of absolute paths to C/C++
-                  entry-point files.
-                * ``entry_points_py`` — sorted list of absolute paths to Python
-                  entry-point files.
-
-        Raises:
-            Returns ``{"status": "error"}`` when ``annotated/`` does not exist.
-
-        Note:
-            Must be called after ``session_copy_annotated``.  After the agent
-            has finished annotating files, call ``session_annotation_report``
-            to verify coverage before proceeding to ``session_install_dftracer``.
-        """
-        ws = _ws(run_id)
-        ann = ws / "annotated"
-        if not ann.exists():
-            return _err("annotated/ not found — run session_copy_annotated first")
-
-        state = _load_state(run_id)
-        info = state.get("detection") or _detect_info(ws / "source")
-        langs = info.get("languages", [])
-
-        c_entries: set = set()
-        py_entries: set = set()
-        if auto_detect_entries:
-            c_entries = {str(p) for p in _find_c_entry_points(ann)}
-            py_entries = {str(p) for p in _find_python_entry_points(ann)}
-
-        # Rough function-name scan — only used for the plan summary, not for injection
-        _FN_SCAN_RE = re.compile(
-            r"^\s*(?:static\s+)?(?:inline\s+)?\w[\w\s\*:<>]*\s+(\w+)\s*\([^;{]*\)\s*\{",
-            re.MULTILINE,
-        )
-
-        c_plan: List[dict] = []
-        if "c" in langs or "cpp" in langs:
-            for ext in ("*.c", "*.cpp", "*.cxx", "*.cc"):
-                for f in sorted(ann.rglob(ext)):
-                    try:
-                        content = f.read_text(errors="ignore")
-                        if _C_INCLUDE in content:
-                            continue  # already has dftracer include — may be annotated
-                        rel = str(f.relative_to(ann))
-                        is_entry = str(f) in c_entries
-                        is_cpp = f.suffix.lower() in {".cpp", ".cxx", ".cc"}
-                        fns = [
-                            m.group(1) for m in _FN_SCAN_RE.finditer(content)
-                            if m.group(1) not in _C_KEYWORDS
-                        ]
-                        c_plan.append({
-                            "file": rel,
-                            "is_entry": is_entry,
-                            "is_cpp": is_cpp,
-                            "approx_functions": len(fns),
-                            "sample_functions": fns[:10],
-                        })
-                    except OSError:
-                        pass
-
-        py_plan: List[dict] = []
-        if "python" in langs:
-            for f in sorted(ann.rglob("*.py")):
-                try:
-                    content = f.read_text(errors="ignore")
-                    if "dft_fn" in content or "@dft_fn" in content:
-                        continue
-                    rel = str(f.relative_to(ann))
-                    py_plan.append({"file": rel, "is_entry": str(f) in py_entries})
-                except OSError:
-                    pass
-
-        _save_state(run_id, {"step": "annotation_planned"})
-        _write_artifact_log(ws, 8, "session_annotate_source", {
-            "c_files_to_annotate": len(c_plan),
-            "py_files_to_annotate": len(py_plan),
-            "entry_points_c": sorted(c_entries),
-            "entry_points_py": sorted(py_entries),
-        }, run_id)
-
-        return _ok(
-            "Annotation plan ready. Annotate each file MANUALLY using "
-            "session_read_file + session_write_file. Follow all rules in "
-            ".goosehints 'C / C++ Annotation Rules' — especially the pitfalls "
-            "section. Do NOT call session_annotate_source to auto-write files.",
-            c_files=c_plan,
-            py_files=py_plan,
-            entry_points_c=sorted(c_entries),
-            entry_points_py=sorted(py_entries),
-        )
-
-    @mcp.tool()
     def session_annotation_report(run_id: str) -> str:
         """Show a coverage report comparing ``source/`` against ``annotated/``.
 
@@ -1075,22 +926,11 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         bt = info.get("build_tool", "unknown")
         features = info.get("features", {})
 
-        # Resolve "auto" mode
-        if install_mode == "auto":
-            install_mode = "pip" if bt == "python" else "cmake"
-
-        if install_mode == "cmake":
-            install_prefix = ws / "install_ann"
-            install_prefix.mkdir(exist_ok=True)
-            python_exe = None
-            if features.get("python"):
-                venv_py = ws / "install" / "bin" / "python3"
-                python_exe = str(venv_py) if venv_py.exists() else sys.executable
-        else:  # pip
-            install_prefix = ws / "install"
-            install_prefix.mkdir(exist_ok=True)
-            venv_py = ws / "install" / "bin" / "python3"
-            python_exe = str(venv_py) if venv_py.exists() else sys.executable
+        # Always use pip — cmake mode is fragile across autobuild.sh versions
+        install_mode = "pip"
+        install_prefix = ws / "install_ann"
+        install_prefix.mkdir(exist_ok=True)
+        python_exe = sys.executable
 
         result = _install_dftracer_autobuild(
             ws=ws,
@@ -1177,8 +1017,8 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             (``"cmake"``, ``"autotools"``, ``"make"``, ``"python"``).
 
         Note:
-            Must be called after ``session_annotate_source`` (or after the
-            agent has finished manual annotation) and before
+            Must be called after annotation is complete (goose recipe subagents
+            or manual ``session_read_file`` + ``session_write_file``) and before
             ``session_build_annotated``.
         """
         ws = _ws(run_id)
@@ -1186,61 +1026,30 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         info = state.get("detection") or _detect_info(ws / "source")
         bt = info.get("build_tool", "unknown")
 
-        if bt in {"cmake", "autotools", "make"}:
-            install_ann = ws / "install_ann"
-            install_ann.mkdir(exist_ok=True)
-            result = _install_dftracer_autobuild(
-                ws=ws,
-                install_prefix=install_ann,
-                dftracer_ref=dftracer_ref,
-                jobs=jobs,
-                install_mode="cmake",
-                features=info.get("features", {}),
-            )
-            if not result["success"]:
-                return _err(
-                    "dftracer autobuild (cmake mode) failed",
-                    prefix=str(install_ann),
-                    ref=dftracer_ref,
-                    steps=result["steps"],
-                )
-            _save_state(run_id, {"dftracer_install_prefix": str(install_ann)})
-            return _ok(
-                "dftracer installed via autobuild.sh (cmake mode)",
-                prefix=str(install_ann),
+        # Always use pip mode — cmake mode is fragile across autobuild.sh versions
+        install_dir = ws / "install_ann"
+        install_dir.mkdir(exist_ok=True)
+        result = _install_dftracer_autobuild(
+            ws=ws,
+            install_prefix=install_dir,
+            dftracer_ref=dftracer_ref,
+            jobs=jobs,
+            install_mode="pip",
+            features=info.get("features", {}),
+            python_exe=sys.executable,
+        )
+        if not result["success"]:
+            return _err(
+                "dftracer autobuild (pip mode) failed",
                 ref=dftracer_ref,
                 steps=result["steps"],
             )
-
-        if bt == "python":
-            venv_python = ws / "install" / "bin" / "python3"
-            if not venv_python.exists():
-                venv_python = Path(sys.executable)
-            install_dir = ws / "install"
-            install_dir.mkdir(exist_ok=True)
-            result = _install_dftracer_autobuild(
-                ws=ws,
-                install_prefix=install_dir,
-                dftracer_ref=dftracer_ref,
-                jobs=jobs,
-                install_mode="pip",
-                features=info.get("features", {}),
-                python_exe=str(venv_python),
-            )
-            if not result["success"]:
-                return _err(
-                    "dftracer autobuild (pip mode) failed",
-                    ref=dftracer_ref,
-                    steps=result["steps"],
-                )
-            _save_state(run_id, {"dftracer_install_prefix": str(install_dir)})
-            return _ok(
-                "dftracer installed via autobuild.sh (pip mode)",
-                ref=dftracer_ref,
-                steps=result["steps"],
-            )
-
-        return _err(f"Unsupported build tool for dftracer install: {bt}")
+        _save_state(run_id, {"dftracer_install_prefix": str(install_dir)})
+        return _ok(
+            "dftracer installed via autobuild.sh (pip mode)",
+            ref=dftracer_ref,
+            steps=result["steps"],
+        )
 
     @mcp.tool()
     def session_install_dftracer_utils(

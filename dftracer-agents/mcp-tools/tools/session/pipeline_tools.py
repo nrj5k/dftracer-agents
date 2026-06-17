@@ -327,50 +327,25 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         build_ann.mkdir(exist_ok=True)
         install_ann.mkdir(exist_ok=True)
 
-        dft_prefix: Optional[str] = None
-        if bt in {"cmake", "autotools", "make"}:
-            dft_r = _install_dftracer_autobuild(
-                ws=ws,
-                install_prefix=install_ann,
-                dftracer_ref=dftracer_ref,
-                jobs=jobs,
-                install_mode="cmake",
-                features=info.get("features", {}),
-            )
-            report["step_8_5_install_dftracer"] = {
-                "ref": dftracer_ref,
-                "prefix": str(install_ann),
-                "steps": dft_r["steps"],
-                "success": dft_r["success"],
-            }
-            _write_artifact_log(ws, 9, "session_install_dftracer", report["step_8_5_install_dftracer"], rid)
-            if not dft_r["success"]:
-                return _err("Step 8.5 failed: dftracer autobuild (cmake mode)", step="8.5", report=report)
-            dft_prefix = str(install_ann)
-        elif bt == "python":
-            venv_python = ws / "install" / "bin" / "python3"
-            if not venv_python.exists():
-                venv_python = Path(sys.executable)
-            install_dir = ws / "install"
-            install_dir.mkdir(exist_ok=True)
-            dft_r = _install_dftracer_autobuild(
-                ws=ws,
-                install_prefix=install_dir,
-                dftracer_ref=dftracer_ref,
-                jobs=jobs,
-                install_mode="pip",
-                features=info.get("features", {}),
-                python_exe=str(venv_python),
-            )
-            report["step_8_5_install_dftracer"] = {
-                "ref": dftracer_ref,
-                "steps": dft_r["steps"],
-                "success": dft_r["success"],
-            }
-            _write_artifact_log(ws, 9, "session_install_dftracer", report["step_8_5_install_dftracer"], rid)
-            if not dft_r["success"]:
-                return _err("Step 8.5 failed: dftracer autobuild (pip mode)", step="8.5", report=report)
-            dft_prefix = str(install_dir)
+        # Always use pip — cmake mode is fragile across autobuild.sh versions
+        dft_r = _install_dftracer_autobuild(
+            ws=ws,
+            install_prefix=install_ann,
+            dftracer_ref=dftracer_ref,
+            jobs=jobs,
+            install_mode="pip",
+            features=info.get("features", {}),
+            python_exe=sys.executable,
+        )
+        report["step_8_5_install_dftracer"] = {
+            "ref": dftracer_ref,
+            "steps": dft_r["steps"],
+            "success": dft_r["success"],
+        }
+        _write_artifact_log(ws, 9, "session_install_dftracer", report["step_8_5_install_dftracer"], rid)
+        if not dft_r["success"]:
+            return _err("Step 8.5 failed: dftracer autobuild (pip mode)", step="8.5", report=report)
+        dft_prefix = str(install_ann)
 
         _save_state(rid, {"dftracer_install_prefix": dft_prefix})
 

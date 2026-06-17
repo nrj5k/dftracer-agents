@@ -110,13 +110,13 @@ extensions:
 providers:
   ollama:
     enabled: true
-    model: qwen3.6:35b-a3b
+    model: qwen2.5-coder:7b
     configured: true
   ollama_cloud:
     enabled: true
     model: qwen3.5
     configured: true
-active_provider: ollama_cloud
+active_provider: ollama
 OLLAMA_HOST: http://host.docker.internal:11434
 OLLAMA_TIMEOUT: '600'
 GOOSE_TOOLSHIM: true

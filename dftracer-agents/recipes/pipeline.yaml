@@ -1,11 +1,12 @@
 title: "DFTracer Annotation Pipeline"
 description: >
   Full end-to-end dftracer annotation pipeline. Prompts the user for inputs,
-  runs setup via MCP tools, dispatches one annotation subagent per source file
-  in parallel, verifies annotation correctness with a build+smoke-test, asks the
-  user to confirm, then runs the final dftracer-instrumented build, collects
-  traces, and produces a trace analysis report. Updates the lessons-learned
-  skill after each session.
+  runs setup via MCP tools (clone, detect, build, copy, patch), then annotates
+  one source file at a time — building incrementally after each file. Build
+  errors trigger targeted fix attempts (never a full revert); if stuck after
+  2 retries the user is asked for guidance which is immediately saved to the
+  lessons-learned skill file. Ends with a smoke test, user confirmation, trace
+  collection, and analysis.
 
 version: "1.0.0"
 
@@ -37,11 +38,12 @@ prompt: "Start the dftracer annotation pipeline."
 
 instructions: |
   You are the dftracer annotation pipeline orchestrator.
-  Use MCP tools for setup and verification, run per-file annotation subagents
-  in parallel, confirm annotation quality with the user, then collect traces
-  and analyze them.
+  Annotate one file at a time, build after each file, and fix errors before
+  moving on. Never remove an annotation completely — simplify it instead.
+  Escalate to the user only when you are truly stuck, and record every new
+  pattern in the lessons-learned skill file so the next run benefits.
 
-  Lessons file: /workspaces/dftracer-agents/.agents/skills/dftracer-annotation-lessons/SKILL.md
+  SKILL_FILE=/workspaces/dftracer-agents/.agents/skills/dftracer-annotation-lessons/SKILL.md
 
 
   ══════════════════════════════════════════════════════════════════════
@@ -49,135 +51,227 @@ instructions: |
   ══════════════════════════════════════════════════════════════════════
 
   Q1: "What is the Git URL of the application you want to annotate?"
-      (e.g., https://github.com/org/myapp)
   → Wait for answer. Store as APP_URL.
 
-  Q2: "Which branch or tag should I check out? (default: main)"
+  Q2: "Which branch or tag? (default: main)"
   → Wait for answer. Store as REF (use "main" if blank).
 
   Q3: "Smoke test command? (leave blank to auto-detect)"
   → Wait for answer. Store as SMOKE_CMD.
 
-  Q4: "Extra CMake build flags? (e.g. -DENABLE_MPI=ON  — leave blank to skip)"
+  Q4: "Extra CMake flags? (e.g. -DENABLE_MPI=ON — leave blank to skip)"
   → Wait for answer. Store as EXTRA_FLAGS.
 
-  Confirm: "Got it. Starting pipeline for {{ APP_URL }} @ {{ REF }}"
+  Confirm: "Got it. Starting pipeline for <APP_URL> @ <REF>"
 
 
   ══════════════════════════════════════════════════════════════════════
-  STEP 2 — SETUP: CLONE, DETECT, BUILD, COPY, AUTO-ANNOTATE  (MCP)
+  STEP 2 — SETUP: CLONE, DETECT, BUILD, COPY, PATCH  (MCP)
   ══════════════════════════════════════════════════════════════════════
 
   Call:
-    session_run_pipeline(
-      url=APP_URL,
-      ref=REF,
+    dftracer__session_run_pipeline(
+      url=APP_URL, ref=REF,
       smoke_test_command=SMOKE_CMD,
       extra_cmake_flags=EXTRA_FLAGS,
-      skip_annotation=False,
     )
 
-  Extract from the response:
-    RUN_ID    ← run_id field (e.g. "myapp/20260616_120000")
-    LANGUAGES ← detection.languages list
-    SMOKE_CMD ← if blank from user, use detection.smoke_test_command
-    AUTO_REPORT ← annotation_report
+  Extract:
+    RUN_ID    ← run_id
+    LANGUAGES ← languages list
+    BUILD_TOOL ← build_tool
+    SMOKE_CMD ← if still blank, use step_reports.step_5_smoke_test.command
+    WS        ← workspace path  (e.g. /workspaces/dftracer-agents/workspaces/<RUN_ID>)
 
-  Print:
-    "Setup complete. Run ID: <RUN_ID>
-     Detected: languages=<LANGUAGES>, build_tool=<build_tool>
-     Smoke test: <SMOKE_CMD>
-     Auto-annotation coverage: <AUTO_REPORT>
+  Install dftracer NOW — this must happen before the annotation loop so that
+  incremental builds work after each file:
 
-     Starting parallel annotation pass — one agent per file."
+    dftracer__session_install_dftracer(run_id=RUN_ID)
+    On failure → print error and stop.
+
+  Baseline build (empty annotations, just verifies the patched build system):
+
+    dftracer__session_build_annotated(run_id=RUN_ID)
+    On failure → print cmake/make error and stop; the build system patch is broken.
+
+  Store:
+    BUILD_ANN = <WS>/build_ann   (make runs here for incremental builds)
+
+  Print: "Setup complete. RUN_ID=<RUN_ID>  Languages=<LANGUAGES>
+          dftracer installed. Baseline build passed.
+          Starting file-by-file annotation."
 
 
   ══════════════════════════════════════════════════════════════════════
-  STEP 3 — LIST FILES AND ROUTE TO SUBAGENTS
+  STEP 3 — LIST AND ORDER FILES
   ══════════════════════════════════════════════════════════════════════
 
-  If "c" in LANGUAGES:
-    C_FILES = session_list_files(run_id=RUN_ID, subfolder="annotated", pattern="src/**/*.c")
-
-  If "cpp" or "c++" in LANGUAGES:
-    CPP_FILES = (
-      session_list_files(run_id=RUN_ID, subfolder="annotated", pattern="src/**/*.cpp") +
-      session_list_files(run_id=RUN_ID, subfolder="annotated", pattern="src/**/*.cxx") +
-      session_list_files(run_id=RUN_ID, subfolder="annotated", pattern="src/**/*.cc")
-    )
-
-  If "python" in LANGUAGES:
-    PY_FILES = session_list_files(run_id=RUN_ID, subfolder="annotated", pattern="**/*.py")
+  Collect files by language (use dftracer__session_list_files):
+    C_FILES   ← annotated/**/*.c  (exclude *.h headers)
+    CPP_FILES ← annotated/**/*.cpp + *.cxx + *.cc
+    PY_FILES  ← annotated/**/*.py
 
   Exclude paths containing: /test/, /tests/, /vendor/, /third_party/,
     /CMakeFiles/, /_build/, /.git/, conftest.py, setup.py
 
-  Print: "Found <N> files — C: <n>  C++: <n>  Python: <n>
-          Launching parallel annotation agents..."
+  Order for annotation (process in this sequence):
+    1. Library/inner files first (no main(), no __main__)
+    2. Entry-point files last  (contain main() / if __name__ == "__main__")
+
+  Detect entry points:
+  ```bash
+  grep -rl "^int main\b" <WS>/annotated/ --include="*.c" --include="*.cpp"
+  grep -rl "if __name__" <WS>/annotated/ --include="*.py"
+  ```
+
+  Print: "Files to annotate — C: <n>  C++: <n>  Python: <n>  (entry-points last)"
 
 
   ══════════════════════════════════════════════════════════════════════
-  STEP 4 — PARALLEL ANNOTATION  (one subagent per file)
+  STEP 4 — SEQUENTIAL ANNOTATION WITH INCREMENTAL BUILD
   ══════════════════════════════════════════════════════════════════════
 
-  Delegate ALL files simultaneously — do not wait between delegations:
+  Process files ONE AT A TIME in the order determined by Step 3.
+  Do NOT start the next file until the current file builds successfully.
 
-  For each file in C_FILES:
-    delegate(subrecipe="annotate-c", run_id=RUN_ID, filepath=<file>)
+  For each FILE in (C_FILES + CPP_FILES + PY_FILES):
 
-  For each file in CPP_FILES:
-    delegate(subrecipe="annotate-cpp", run_id=RUN_ID, filepath=<file>)
+    ── 4a. Annotate ──────────────────────────────────────────────────
+    Choose the right subrecipe:
+      .c          → delegate(subrecipe="annotate-c",      run_id=RUN_ID, filepath=FILE)
+      .cpp/.cxx   → delegate(subrecipe="annotate-cpp",    run_id=RUN_ID, filepath=FILE)
+      .py         → delegate(subrecipe="annotate-python", run_id=RUN_ID, filepath=FILE)
 
-  For each file in PY_FILES:
-    delegate(subrecipe="annotate-python", run_id=RUN_ID, filepath=<file>)
+    Record the subagent's STATUS, ANNOTATED count, SKIPPED, PENDING, LESSONS.
 
-  Wait for ALL delegations to complete. Build summary table:
-    | File | Status | Annotated | Skipped | Pending | Lessons |
+    ── 4b. Incremental build ─────────────────────────────────────────
+    Run make in the existing build directory (no cmake reconfigure needed):
+    ```bash
+    make -C <BUILD_ANN> -j4 2>&1
+    ```
+    Capture output as BUILD_OUT.
 
-  Store all LESSONS fields for Step 7.
+    ── 4c. Build passed ──────────────────────────────────────────────
+    If exit code 0:
+      Print: "  ✓ <FILE>  (<n> functions annotated)"
+      Continue to next file.
+
+    ── 4d. Build failed — targeted fix loop ──────────────────────────
+    If exit code non-zero:
+
+      Extract the failing lines:
+      ```bash
+      echo "<BUILD_OUT>" | grep "error:" | head -20
+      ```
+      Store as ERROR_LINES.
+
+      Identify the specific file(s) and function(s) named in ERROR_LINES.
+      For each failing function (may be in FILE or in a previously annotated file):
+
+        FIX ATTEMPT 1 and 2 (max 2 retries per function):
+
+          Re-delegate with the exact error:
+            delegate(subrecipe="annotate-<lang>", run_id=RUN_ID,
+                     filepath=<failing file>, build_errors=<ERROR_LINES>)
+
+          The subagent MUST:
+            • Fix ONLY the function(s) named in the error.
+            • NOT remove the DFTRACER_* macros entirely — instead:
+                - Simplify: remove UPDATE calls for edge-case parameters
+                - Cover only the happy-path exit (single return/END pair)
+                - Remove explicit FINI only if that causes the crash
+            • Re-run its per-function syntax check before returning.
+
+          Rebuild:
+          ```bash
+          make -C <BUILD_ANN> -j4 2>&1
+          ```
+
+          If build passes → record the fix pattern, continue outer loop.
+          If still failing → try FIX ATTEMPT 2 with narrower scope.
+
+        After 2 failed fix attempts — ESCALATE TO USER:
+
+          Print exactly:
+          ┌──────────────────────────────────────────────────────────┐
+          │  ANNOTATION HELP NEEDED                                   │
+          │  File:     <failing file>                                 │
+          │  Function: <function name>                                │
+          │  Current annotation:                                      │
+          │  <show the 10-20 lines around the annotated function>     │
+          │  Build error:                                             │
+          │  <show the exact compiler error lines>                    │
+          └──────────────────────────────────────────────────────────┘
+          Ask: "How should I handle this? Options:
+                  [1] Give me guidance — type what the annotation should look like
+                  [2] Skip this function only (mark PENDING, keep rest of file)
+                  [3] Remove annotation from this function only"
+          → Wait for user response.
+
+          Apply user guidance:
+            Option 1 → apply exactly as described, rebuild, if still failing → ask again
+            Option 2 → strip macros from this function only, mark PENDING, rebuild
+            Option 3 → strip macros from this function only, rebuild
+
+          Write the new rule to the skill file IMMEDIATELY:
+          ```bash
+          mkdir -p "$(dirname $SKILL_FILE)"
+          cat >> "$SKILL_FILE" << 'ENDLESSON'
+
+          ---
+          date: <YYYY-MM-DD>
+          app: <APP_URL>
+          file: <failing file>
+          function: <function name>
+          context: <one-line description of what went wrong>
+          error: |
+            <exact compiler error>
+          root_cause: <why the macro placement failed>
+          fix: |
+            <what the user said / what was applied>
+          tags: [<c|cpp|python>, annotation, build-error, <keyword>]
+          ---
+          ENDLESSON
+          ```
+
+          Print: "  ✓ <FILE> (with user guidance — rule saved to SKILL_FILE)"
+          Continue to next file.
 
 
   ══════════════════════════════════════════════════════════════════════
-  STEP 5 — BUILD FOR CORRECTNESS  (MCP)
+  STEP 5 — FINAL SMOKE TEST
   ══════════════════════════════════════════════════════════════════════
 
-  Print: "All annotation agents done. Verifying build..."
+  All files now build. Run the smoke test with dftracer enabled:
 
-  5a. Detect explicit INIT calls:
+  5a. Detect whether the code calls INIT explicitly:
   ```bash
   grep -r "DFTRACER_C_INIT\|DFTRACER_CPP_INIT\|DFTracer.initialize_log" \
-    /workspaces/dftracer-agents/workspaces/<RUN_ID>/annotated/ 2>/dev/null | wc -l
+    <WS>/annotated/ 2>/dev/null | wc -l
   ```
-  count > 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "0"}
-  count == 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "1"}
+  count > 0 → DFTRACER_INIT_ENV = '{"DFTRACER_INIT": "0"}'
+  count == 0 → DFTRACER_INIT_ENV = '{"DFTRACER_INIT": "1"}'
 
-  5b. session_install_dftracer(run_id=RUN_ID)
-      On failure: print error and stop.
-
-  5c. session_build_annotated(run_id=RUN_ID)
+  5b. dftracer__session_run_smoke_test(run_id=RUN_ID, command=SMOKE_CMD,
+        subfolder="build_ann")
       On failure:
-        - Extract errors per file, re-delegate with build_errors=<stderr>
-        - Retry build. Max 2 retries. On third failure: print errors and ask user
-          "[1] Retry  [2] Stop" — wait for answer.
-
-  5d. session_run_smoke_test(run_id=RUN_ID, command=SMOKE_CMD, subfolder="build_ann")
-      On failure:
-        - If DFTRACER symbols in errors → re-delegate + retry (max 2)
-        - Else → print error and ask user "[continue] Proceed anyway  [stop] Stop"
-          — wait for answer.
+        - If "DFTRACER" or "dftracer" in stderr → targeted fix (same loop as 4d)
+        - Otherwise → ask user: "[continue] Proceed anyway  [stop] Stop"
 
 
   ══════════════════════════════════════════════════════════════════════
   STEP 6 — ANNOTATION REPORT AND USER CONFIRMATION
   ══════════════════════════════════════════════════════════════════════
 
-  Show:
+  Show coverage report:
+    dftracer__session_annotation_report(run_id=RUN_ID)
+
+  Print summary:
   ┌─────────────────────────────────────────────────────────┐
   │  ANNOTATION REPORT — <RUN_ID>                           │
-  │  <summary table from Step 4>                            │
-  │  Coverage: <annotated> / <eligible>                     │
-  │  comp:  io=<n>  comm=<n>  mem=<n>  cpu=<n>             │
-  │  Skipped (Rule 0): <n>                                  │
+  │  Files annotated: <n>                                   │
+  │  Functions: annotated=<n>  skipped=<n>  pending=<n>    │
+  │  comp: io=<n>  comm=<n>  mem=<n>  cpu=<n>              │
   │  Build: PASSED   Smoke test: PASSED                     │
   └─────────────────────────────────────────────────────────┘
 
@@ -185,54 +279,52 @@ instructions: |
   → Wait for answer.
 
   If "no" → stop.
-  If "fix <file>" or feedback:
-    - Re-delegate the named file(s) with user_notes=<feedback>
-    - Rebuild + re-run smoke test
+  If "fix <file> <feedback>":
+    - Re-delegate that file with user_notes=<feedback>
+    - Rebuild (make -C <BUILD_ANN> -j4)
     - Show updated report and ask again.
   Repeat until user says "yes".
 
 
   ══════════════════════════════════════════════════════════════════════
-  STEP 7 — TRACE COLLECTION AND ANALYSIS  (MCP)
+  STEP 7 — TRACE COLLECTION AND ANALYSIS
   ══════════════════════════════════════════════════════════════════════
 
-  Print: "Running with dftracer to collect traces..."
-
-  session_run_with_dftracer(
-    run_id=RUN_ID,
-    command=SMOKE_CMD,
-    subfolder="build_ann",
-    env_extra=DFTRACER_INIT_ENV,
+  dftracer__session_run_with_dftracer(
+    run_id=RUN_ID, command=SMOKE_CMD,
+    subfolder="build_ann", env_extra=DFTRACER_INIT_ENV,
   )
 
-  Extract APP_NAME = first component of RUN_ID (before "/").
-  session_split_traces(run_id=RUN_ID, app_name=APP_NAME)
-  session_analyze_traces(run_id=RUN_ID, query_type="summary")
+  APP_NAME = first component of RUN_ID (before "/")
+  dftracer__session_split_traces(run_id=RUN_ID, app_name=APP_NAME)
+  dftracer__session_analyze_traces(run_id=RUN_ID, query_type="summary")
 
 
   ══════════════════════════════════════════════════════════════════════
-  STEP 8 — UPDATE LESSONS LEARNED
+  STEP 8 — FLUSH ALL LESSONS TO SKILL FILE
   ══════════════════════════════════════════════════════════════════════
 
-  For each new distinct lesson from subagent LESSONS fields (Step 4) or
-  build-fix patterns (Step 5) not already in the lessons file:
+  Collect any LESSONS reported by subagents in Step 4 that were NOT already
+  written inline during the fix loop. Append each new one now:
 
   ```bash
-  cat >> /workspaces/dftracer-agents/.agents/skills/dftracer-annotation-lessons/SKILL.md << 'ENDOFLESSON'
+  cat >> "$SKILL_FILE" << 'ENDOFLESSON'
 
   ---
   date: <YYYY-MM-DD>
   app: <APP_URL>
   context: <one-line description>
   error: |
-    <exact error or pattern>
+    <exact error or pattern that triggered the lesson>
   root_cause: <why>
   fix: |
-    <steps that resolved it>
-  tags: [<language>, annotation, <keyword>]
+    <what resolved it>
+  tags: [<c|cpp|python>, annotation, <keyword>]
   ---
   ENDOFLESSON
   ```
+
+  Deduplicate: if the same error pattern is already in the file, skip.
 
 
   ══════════════════════════════════════════════════════════════════════
@@ -243,16 +335,17 @@ instructions: |
   ║  DFTRACER PIPELINE COMPLETE — <RUN_ID>                    ║
   ╠═══════════════════════════════════════════════════════════╣
   ║  Application:  <APP_URL> @ <REF>                          ║
-  ║  Workspace:    workspaces/<RUN_ID>/                       ║
+  ║  Workspace:    <WS>/                                      ║
   ╠═══════════════════════════════════════════════════════════╣
   ║  ANNOTATION SUMMARY                                       ║
-  ║  <per-language annotated/skipped table>                   ║
+  ║  <per-file annotated/skipped/pending table>               ║
+  ║  New rules added to SKILL_FILE: <n>                       ║
   ╠═══════════════════════════════════════════════════════════╣
   ║  TRACE ANALYSIS                                           ║
   ║  <output from session_analyze_traces>                     ║
   ╠═══════════════════════════════════════════════════════════╣
   ║  ARTIFACTS                                                ║
-  ║  Annotated source: workspaces/<RUN_ID>/annotated/         ║
-  ║  Trace files:      workspaces/<RUN_ID>/traces/            ║
-  ║  Split traces:     workspaces/<RUN_ID>/traces_split/      ║
+  ║  Annotated source: <WS>/annotated/                        ║
+  ║  Trace files:      <WS>/traces/                           ║
+  ║  Split traces:     <WS>/traces_split/                     ║
   ╚═══════════════════════════════════════════════════════════╝

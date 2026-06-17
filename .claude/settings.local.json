@@ -43,7 +43,18 @@
       "Bash(echo \"organize rc: $?\")",
       "Bash(dftracer_call_tree)",
       "Bash(echo \"call_tree rc: $?\")",
-      "Bash(python3 -c ' *)"
+      "Bash(python3 -c ' *)",
+      "mcp__dftracer__docs_search",
+      "mcp__dftracer__docs_fetch_page",
+      "mcp__dftracer__session_run_pipeline",
+      "mcp__dftracer__session_run_smoke_test",
+      "mcp__dftracer__session_copy_annotated",
+      "mcp__dftracer__session_patch_build",
+      "mcp__dftracer__session_install_dftracer",
+      "Bash(pkg-config --libs dftracer)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\({k:v for k,v in d.items\\(\\) if 'dftracer' in k.lower\\(\\) or 'prefix' in k.lower\\(\\) or 'ann' in k.lower\\(\\)}, indent=2\\)\\)\")",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(list\\(d.keys\\(\\)\\)\\)\")",
+      "mcp__dftracer__session_build_annotated"
     ],
     "additionalDirectories": [
       "/tmp/test-merge-empty"

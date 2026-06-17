@@ -55,6 +55,12 @@ instructions: |
 
 {% filter indent(2, first=True) %}{% include "_inc-top.inc" %}{% endfilter %}
 
+  Also fetch the C-specific docs before classifying functions:
+
+    docs_search(query="DFTRACER_C_FUNCTION_START DFTRACER_C_FUNCTION_END UPDATE_STR UPDATE_INT C API", source="dftracer", fetch_content=True)
+
+  Note the exact argument counts, the correct include path, and whether comp= uses UPDATE_STR or a different macro.
+
   ══════════════════════════════════════════════════════
   STEP 2 — CLASSIFY EVERY FUNCTION
   ══════════════════════════════════════════════════════
@@ -94,8 +100,17 @@ instructions: |
 
 
   ══════════════════════════════════════════════════════
-  STEP 4 — APPLY ANNOTATION PATTERN
+  STEP 4 — APPLY ANNOTATION PATTERN (per-function incremental loop)
   ══════════════════════════════════════════════════════
+
+  Follow the PER-FUNCTION INCREMENTAL ANNOTATION LOOP from Step 1.5 above.
+  Syntax check command for C after each function write:
+  ```bash
+  WS=/workspaces/dftracer-agents/workspaces/{{ run_id }}
+  gcc -include /tmp/dftracer_stub.h -fsyntax-only -w \
+    -x c ${WS}/annotated/{{ filepath }} 2>&1
+  ```
+  A non-empty output means a syntax error — apply step d of the loop.
 
   Standard function:
   ```c
