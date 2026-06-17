@@ -96,6 +96,7 @@ from .build import (
 )
 from .install import (
     _install_dftracer_autobuild, _dftracer_utils_split, _install_dftracer_utils,
+    _find_dftracer_dirs,
 )
 
 
@@ -460,12 +461,20 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
                 timeout=300,
             )
         elif bt == "autotools":
+            # Clean stale .deps dirs — these cause config.status to fail
+            for deps_dir in src.rglob(".deps"):
+                if deps_dir.is_dir():
+                    shutil.rmtree(deps_dir, ignore_errors=True)
+            for deps_dir in build.rglob(".deps"):
+                if deps_dir.is_dir():
+                    shutil.rmtree(deps_dir, ignore_errors=True)
             # Bootstrap if needed
             if (src / "configure.ac").exists() and not (src / "configure").exists():
                 _run(["autoreconf", "-fi"], cwd=src, timeout=120)
-            flags = [f"--prefix={install}"] + (
-                extra_configure_flags.split() if extra_configure_flags else []
-            )
+            flags = [
+                f"--prefix={install}",
+                "--disable-dependency-tracking",  # avoids config.status .deps failures
+            ] + (extra_configure_flags.split() if extra_configure_flags else [])
             r = _run([str(src / "configure")] + flags, cwd=build, timeout=300)
         elif bt == "python":
             venv_r = _run(["python3", "-m", "venv", str(install)], timeout=60)
@@ -734,23 +743,43 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         info = state.get("detection") or _detect_info(ws / "source")
         bt = info.get("build_tool", "unknown")
 
+        # Paths saved by session_install_dftracer; rediscover if not yet set.
+        pip_inc = state.get("dftracer_pip_include_dir", "")
+        pip_lib = state.get("dftracer_pip_lib_dir", "")
+        if not pip_inc:
+            cmake_prefix = ws / "install_ann"
+            dirs = _find_dftracer_dirs(cmake_prefix=cmake_prefix if cmake_prefix.exists() else None)
+            if dirs:
+                pip_inc = dirs.get("include_dir", "")
+                pip_lib = dirs.get("lib_dir", "")
+
         if bt == "cmake":
             cml = ann / "CMakeLists.txt"
             if cml.exists():
-                cml.write_text(_patch_cmake(cml))
+                cml.write_text(_patch_cmake(cml, pip_inc, pip_lib))
                 patched.append("CMakeLists.txt")
             # Recurse one level for sub-projects
             for sub in ann.iterdir():
                 if sub.is_dir():
                     scml = sub / "CMakeLists.txt"
                     if scml.exists():
-                        scml.write_text(_patch_cmake(scml))
+                        scml.write_text(_patch_cmake(scml, pip_inc, pip_lib))
                         patched.append(str(scml.relative_to(ann)))
+            # Also check annotated/src/ for deeper sub-trees
+            for src_sub in ann.rglob("CMakeLists.txt"):
+                rel = str(src_sub.relative_to(ann))
+                if rel == "CMakeLists.txt" or rel in patched:
+                    continue
+                src_sub.write_text(_patch_cmake(src_sub, pip_inc, pip_lib))
+                patched.append(rel)
 
-        elif bt == "autotools":
-            for mf in ann.glob("Makefile*"):
-                mf.write_text(_patch_autotools_makefile(mf))
-                patched.append(mf.name)
+        elif bt in ("autotools", "make"):
+            # Patch all Makefiles found under annotated/ (including src/)
+            for mf in ann.rglob("Makefile*"):
+                new_content = _patch_autotools_makefile(mf, pip_inc, pip_lib)
+                if new_content != mf.read_text():
+                    mf.write_text(new_content)
+                    patched.append(str(mf.relative_to(ann)))
 
         elif bt == "python":
             for name, fn in (
@@ -763,7 +792,13 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
                     patched.append(name)
 
         _save_state(run_id, {"step": "build_patched"})
-        return _ok(f"Patched {len(patched)} build file(s)", patched=patched, build_tool=bt)
+        return _ok(
+            f"Patched {len(patched)} build file(s)",
+            patched=patched,
+            build_tool=bt,
+            pip_include_dir=pip_inc or "(none)",
+            pip_lib_dir=pip_lib or "(none)",
+        )
 
     @mcp.tool()
     def session_annotation_report(run_id: str) -> str:
@@ -1026,9 +1061,10 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         ws = _ws(run_id)
         state = _load_state(run_id)
         info = state.get("detection") or _detect_info(ws / "source")
-        bt = info.get("build_tool", "unknown")
 
-        # Always use pip mode — cmake mode is fragile across autobuild.sh versions
+        # cmake mode — produces libdftracer_core.so + headers under install_ann/.
+        # (pip mode only installs Python bindings; the C shared library is absent.)
+        # autobuild.sh v2.0.3 does not accept --quiet, which has been removed.
         install_dir = ws / "install_ann"
         install_dir.mkdir(exist_ok=True)
         result = _install_dftracer_autobuild(
@@ -1036,20 +1072,33 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             install_prefix=install_dir,
             dftracer_ref=dftracer_ref,
             jobs=jobs,
-            install_mode="pip",
+            install_mode="cmake",
             features=info.get("features", {}),
             python_exe=sys.executable,
         )
         if not result["success"]:
             return _err(
-                "dftracer autobuild (pip mode) failed",
+                "dftracer autobuild (cmake mode) failed",
                 ref=dftracer_ref,
                 steps=result["steps"],
             )
-        _save_state(run_id, {"dftracer_install_prefix": str(install_dir)})
+
+        # Locate include/lib dirs — check cmake prefix first, then site-packages.
+        dirs = _find_dftracer_dirs(
+            python_exe=sys.executable,
+            cmake_prefix=install_dir,
+        ) or {}
+        _save_state(run_id, {
+            "dftracer_install_prefix":  str(install_dir),
+            "dftracer_pip_include_dir": dirs.get("include_dir", ""),
+            "dftracer_pip_lib_dir":     dirs.get("lib_dir", ""),
+        })
         return _ok(
-            "dftracer installed via autobuild.sh (pip mode)",
+            "dftracer installed via autobuild.sh (cmake mode)",
             ref=dftracer_ref,
+            include_dir=dirs.get("include_dir", "(not found)"),
+            lib_dir=dirs.get("lib_dir", "(not found)"),
+            lib_name=dirs.get("lib_name", "libdftracer_core.so"),
             steps=result["steps"],
         )
 
@@ -1213,16 +1262,30 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
                 return _err("make install failed for annotated source", **r_ins)
 
         elif bt == "autotools":
+            # Clean stale .deps dirs — these cause config.status to fail
+            for deps_dir in ann.rglob(".deps"):
+                if deps_dir.is_dir():
+                    shutil.rmtree(deps_dir, ignore_errors=True)
+            for deps_dir in build_ann.rglob(".deps"):
+                if deps_dir.is_dir():
+                    shutil.rmtree(deps_dir, ignore_errors=True)
             if (ann / "configure.ac").exists() and not (ann / "configure").exists():
                 _run(["autoreconf", "-fi"], cwd=ann, timeout=120)
+
             env: Dict[str, str] = {}
             if dft_prefix:
-                pkg_cfg = f"{dft_prefix}/lib/pkgconfig"
-                env["PKG_CONFIG_PATH"] = pkg_cfg
+                # Prefer the .pc file path saved by session_generate_dftracer_pc;
+                # fall back to the cmake prefix's conventional pkgconfig dir.
+                pc_path = state.get("dftracer_pkg_config_path", "")
+                if not pc_path:
+                    pc_path = f"{dft_prefix}/lib/pkgconfig"
+                env["PKG_CONFIG_PATH"] = pc_path
                 env["CPPFLAGS"] = f"-I{dft_prefix}/include"
-                env["LDFLAGS"] = f"-L{dft_prefix}/lib -Wl,-rpath,{dft_prefix}/lib"
+                env["LDFLAGS"]  = f"-L{dft_prefix}/lib -Wl,-rpath,{dft_prefix}/lib"
+
             r_cfg = _run(
-                [str(ann / "configure"), f"--prefix={install_ann}"],
+                [str(ann / "configure"), f"--prefix={install_ann}",
+                 "--disable-dependency-tracking"],
                 cwd=build_ann,
                 env=env if env else None,
                 timeout=300,
@@ -1230,10 +1293,15 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             steps["configure"] = r_cfg
             if not r_cfg["success"]:
                 return _err("configure failed for annotated source", **r_cfg)
-            r_bld = _run(["make", f"-j{jobs}"], cwd=build_ann, env=env if env else None, timeout=600)
+
+            r_bld = _run(
+                ["make", f"-j{jobs}"],
+                cwd=build_ann, env=env if env else None, timeout=600,
+            )
             steps["build"] = r_bld
             if not r_bld["success"]:
                 return _err("make failed for annotated source", **r_bld)
+
             r_ins = _run(["make", "install"], cwd=build_ann, timeout=300)
             steps["install"] = r_ins
 
@@ -2207,4 +2275,216 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             papers_file=str(papers_file),
             topics_searched=topics_searched,
             papers=all_papers,
+        )
+
+    @mcp.tool()
+    def session_extract_functions(run_id: str, filepath: str) -> str:
+        """Extract function definitions with exact line numbers from a source file.
+
+        Uses clang ``-ast-dump=json`` for C/C++ files and Python's ``ast`` module
+        for ``.py`` files.  Falls back to ``ctags`` then regex-based brace counting
+        if clang is not available.
+
+        Each returned function record has:
+
+        * ``name``            — function name
+        * ``start_line``      — first line of the return type / signature
+        * ``open_brace_line`` — line number of the opening ``{``
+        * ``body_first_line`` — ``open_brace_line + 1`` — insert DFTRACER_*_START here
+        * ``close_brace_line``— line number of the closing ``}``
+        * ``exit_lines``      — list of ``{"line": N, "type": "return"|"exit"|…}``
+                                 indicating where END macros are needed
+        * ``is_entry_point``  — ``True`` for ``main`` / ``__main__``
+        * ``source``          — which extractor was used (``"clang"``, ``"ctags"``,
+                                ``"regex"``, or ``"ast"``)
+
+        This tool is called by the annotation sub-recipes *before* any macro is
+        written so the agent has the authoritative function map and does not need to
+        manually scan the file for exit paths.
+
+        Args:
+            run_id:   Session identifier returned by ``session_create``.
+            filepath: Path to the file relative to the ``annotated/`` sub-folder.
+
+        Returns:
+            JSON string with keys:
+                * ``status``    — ``"ok"`` or ``"error"``.
+                * ``message``   — human-readable summary.
+                * ``filepath``  — echoed input path.
+                * ``functions`` — list of function-info dicts.
+                * ``count``     — number of functions found.
+                * ``extractor`` — which backend produced the result.
+        """
+        from .source_parser import extract_functions  # local import keeps startup lean
+
+        ws = _ws(run_id)
+        abs_path = ws / "annotated" / filepath
+        if not abs_path.exists():
+            return _err(f"File not found in annotated/: {filepath}")
+
+        functions = extract_functions(str(abs_path))
+        extractor = functions[0].get("source", "unknown") if functions else "none"
+
+        return _ok(
+            f"Extracted {len(functions)} function(s) from {filepath} "
+            f"using {extractor}.",
+            filepath=filepath,
+            functions=functions,
+            count=len(functions),
+            extractor=extractor,
+        )
+
+    @mcp.tool()
+    def session_add_braces(run_id: str, filepath: str) -> str:
+        """Add ``{`` / ``}`` around braceless ``if`` / ``for`` / ``while`` bodies.
+
+        Rewrites *filepath* inside the ``annotated/`` subfolder so that every
+        braceless single-statement body gains an explicit ``CompoundStmt``
+        block.  Run this **before** annotation so that inserting a
+        ``DFTRACER_C_FUNCTION_END()`` before a ``return`` never creates a
+        dangling-else or mismatched-brace syntax error.
+
+        Uses clang ``-ast-dump=json`` for precise AST-level detection; falls
+        back to a regex line scanner when clang is unavailable.
+
+        Examples of patterns fixed::
+
+            if (err)                     if (err) {
+                return -1;       →           return -1;
+                                         }
+
+            for (i = 0; i < n; i++)      for (i = 0; i < n; i++) {
+                process(i);      →           process(i);
+                                         }
+
+        The file is rewritten in place inside ``annotated/``.  The original
+        ``source/`` tree is never touched.
+
+        Args:
+            run_id:   Session identifier returned by ``session_create``.
+            filepath: Path relative to the ``annotated/`` subfolder.
+
+        Returns:
+            JSON string with keys:
+                * ``status``     — ``"ok"`` or ``"error"``.
+                * ``modified``   — ``True`` if the file was changed.
+                * ``insertions`` — number of brace pairs added.
+                * ``method``     — ``"clang"`` or ``"regex"`` (which backend ran).
+        """
+        from .source_parser import add_braces_c
+
+        ws = _ws(run_id)
+        abs_path = ws / "annotated" / filepath
+        if not abs_path.exists():
+            return _err(f"File not found in annotated/: {filepath}")
+
+        result = add_braces_c(abs_path)
+        if "error" in result:
+            return _err(result["error"], filepath=filepath)
+
+        return _ok(
+            f"Brace insertion complete: {result['insertions']} pair(s) added "
+            f"via {result['method']}.",
+            filepath=filepath,
+            modified=result["modified"],
+            insertions=result["insertions"],
+            method=result["method"],
+        )
+
+    @mcp.tool()
+    def session_generate_dftracer_pc(run_id: str) -> str:
+        """Generate a pkg-config ``.pc`` file for dftracer and save it under install_ann/.
+
+        dftracer is a CMake-only project and does not always install a
+        ``dftracer.pc`` file.  This tool locates ``libdftracer_core.so`` —
+        first in ``<workspace>/install_ann/lib[64]/``, then in the pip-installed
+        site-packages layout — and writes a conforming ``dftracer.pc`` to
+        ``<workspace>/install_ann/lib/pkgconfig/dftracer.pc``.
+
+        After this tool runs, ``pkg-config --cflags dftracer`` and
+        ``pkg-config --libs dftracer`` work correctly when
+        ``PKG_CONFIG_PATH`` includes the returned *pkg_config_path*.
+        ``session_build_annotated`` sets ``PKG_CONFIG_PATH`` automatically, so
+        the typical call order for autotools projects is::
+
+            session_install_dftracer → session_generate_dftracer_pc
+              → session_patch_build → session_build_annotated
+
+        Side effects:
+            * Creates ``<workspace>/install_ann/lib/pkgconfig/`` if absent.
+            * Writes ``dftracer.pc`` (overwriting any existing file).
+            * Persists ``{"dftracer_pc_file": …, "dftracer_pkg_config_path": …}``
+              to ``session.json``.
+
+        Args:
+            run_id: Session identifier returned by ``session_create``.
+
+        Returns:
+            JSON string with keys:
+                * ``status``           — ``"ok"`` or ``"error"``.
+                * ``message``          — path of the written file.
+                * ``pc_file``          — absolute path to the generated ``.pc``.
+                * ``pkg_config_path``  — directory to add to ``PKG_CONFIG_PATH``.
+                * ``lib_dir``          — directory containing ``libdftracer_core.so``.
+                * ``include_dir``      — directory containing ``dftracer/dftracer.h``.
+        """
+        ws = _ws(run_id)
+        install_ann = ws / "install_ann"
+
+        dirs = _find_dftracer_dirs(
+            python_exe=sys.executable,
+            cmake_prefix=install_ann if install_ann.exists() else None,
+        )
+        if not dirs:
+            return _err(
+                "libdftracer_core.so not found in install_ann/ or site-packages. "
+                "Run session_install_dftracer first."
+            )
+
+        lib_dir     = Path(dirs["lib_dir"])
+        include_dir = Path(dirs["include_dir"])
+        prefix      = lib_dir.parent   # <prefix>/lib → <prefix>
+
+        # Determine version from soname if possible
+        version = "2.0.3"
+        for f in lib_dir.glob("libdftracer_core.so.*"):
+            parts = f.name.split(".")
+            # libdftracer_core.so.4.1.0 → "4.1.0"
+            if len(parts) >= 4:
+                version = ".".join(parts[3:])
+                break
+
+        pc_content = (
+            f"prefix={prefix}\n"
+            f"exec_prefix=${{prefix}}\n"
+            f"libdir=${{exec_prefix}}/lib\n"
+            f"includedir=${{prefix}}/include\n"
+            f"\n"
+            f"Name: dftracer\n"
+            f"Description: DFTracer I/O tracing library\n"
+            f"Version: {version}\n"
+            f"Libs: -L${{libdir}} -ldftracer_core -Wl,-rpath,${{libdir}}\n"
+            f"Cflags: -I${{includedir}}\n"
+        )
+
+        pc_dir  = install_ann / "lib" / "pkgconfig"
+        pc_dir.mkdir(parents=True, exist_ok=True)
+        pc_file = pc_dir / "dftracer.pc"
+        pc_file.write_text(pc_content)
+
+        _save_state(run_id, {
+            "dftracer_pc_file":          str(pc_file),
+            "dftracer_pkg_config_path":  str(pc_dir),
+        })
+        return _ok(
+            f"Generated {pc_file}",
+            pc_file=str(pc_file),
+            pkg_config_path=str(pc_dir),
+            lib_dir=str(lib_dir),
+            include_dir=str(include_dir),
+            version=version,
+            hint=(
+                f"Export: PKG_CONFIG_PATH={pc_dir}:$PKG_CONFIG_PATH "
+                f"before calling ./configure or make"
+            ),
         )

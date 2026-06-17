@@ -6,20 +6,30 @@ In this goose session tools use double-underscore namespacing, NOT dot notation.
 Calling a tool with the wrong name returns -32002 "Tool not found" — recover by
 using the correct name below.
 
-  WRONG                    CORRECT
-  todo.todoWrite           todo__todo_write
-  read_file                load              (developer extension read tool)
-  write_file               write
-  run_shell / bash         shell
-  session_read_file        dftracer__session_read_file
-  session_write_file       dftracer__session_write_file
-  session_annotation_report  dftracer__session_annotation_report
-  docs_search              dftracer__docs_search
-  docs_fetch_page          dftracer__docs_fetch_page
+  WRONG                        CORRECT
+  todo.todoWrite               todo__todo_write
+  read_file                    load              (developer extension read tool)
+  write_file                   write
+  run_shell / bash             shell
+  session_read_file            dftracer__session_read_file
+  session_write_file           dftracer__session_write_file
+  session_add_braces           dftracer__session_add_braces
+  session_extract_functions    dftracer__session_extract_functions
+  session_annotation_report    dftracer__session_annotation_report
+  docs_search                  dftracer__docs_search
+  docs_fetch_page              dftracer__docs_fetch_page
 
 Rule: MCP tools from the dftracer extension are always prefixed dftracer__.
       Built-in developer tools (load, write, edit, shell, tree) have no prefix.
       Platform extension tools use their extension name + __ (e.g. todo__todo_write).
+
+AUTONOMY RULE: This sub-recipe runs as a sub-agent. NEVER ask the user for input.
+      All errors must be handled autonomously per these instructions:
+        • Syntax errors   → fix the affected function, re-check (max 2 retries)
+        • Unresolvable    → strip macros from that function, mark PENDING, continue
+        • Tool failures   → report in the return status, do not block annotation of
+                            remaining functions
+      Only the orchestrator (pipeline.yaml) interacts with the user.
 
 ══════════════════════════════════════════════════════
 STEP 0 — LOAD LESSONS LEARNED (do this first)

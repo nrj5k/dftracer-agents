@@ -54,7 +54,15 @@
       "Bash(pkg-config --libs dftracer)",
       "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\({k:v for k,v in d.items\\(\\) if 'dftracer' in k.lower\\(\\) or 'prefix' in k.lower\\(\\) or 'ann' in k.lower\\(\\)}, indent=2\\)\\)\")",
       "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(list\\(d.keys\\(\\)\\)\\)\")",
-      "mcp__dftracer__session_build_annotated"
+      "mcp__dftracer__session_build_annotated",
+      "mcp__dftracer__session_create",
+      "mcp__dftracer__session_configure",
+      "mcp__dftracer__session_build_install",
+      "mcp__dftracer__session_autobuild_dftracer",
+      "Bash(bash autobuild.sh --enable-mpi --install-mode cmake --install-prefix /workspaces/dftracer-agents/workspaces/ior/clean-20260617/install_ann --jobs 4)",
+      "mcp__dftracer__session_list_files",
+      "mcp__dftracer__session_read_file",
+      "mcp__dftracer__session_extract_functions"
     ],
     "additionalDirectories": [
       "/tmp/test-merge-empty"

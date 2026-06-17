@@ -39,6 +39,8 @@ extensions:
     available_tools:
       - session_read_file
       - session_write_file
+      - session_add_braces
+      - session_extract_functions
       - docs_search
       - docs_fetch_page
       - docs_search_key_pages
@@ -70,60 +72,133 @@ instructions: |
 
   Also fetch the C-specific docs before classifying functions:
 
-    docs_search(query="DFTRACER_C_FUNCTION_START DFTRACER_C_FUNCTION_END UPDATE_STR UPDATE_INT C API", source="dftracer", fetch_content=True)
+    dftracer__docs_search(query="DFTRACER_C_FUNCTION_START DFTRACER_C_FUNCTION_END UPDATE_STR UPDATE_INT C API", source="dftracer", fetch_content=True)
 
   Note the exact argument counts, the correct include path, and whether comp= uses UPDATE_STR or a different macro.
 
   ══════════════════════════════════════════════════════
-  STEP 2 — CLASSIFY EVERY FUNCTION
+  STEP 2 — PREPARE AND EXTRACT FUNCTION MAP
   ══════════════════════════════════════════════════════
 
-  Build a function inventory for C. C-specific definition markers:
-    • Has named parameters and a { ... } body
-    • Does NOT end the signature line with ";"
-    • Is NOT inside a #define body or a struct/union/enum definition
-    • Is NOT a forward declaration (those end with ";")
+  ── 2a. ADD BRACES (clang AST rewrite) ──────────────────────────────────────────
 
-  For any function name found twice:
-    grep -n "FUNC_NAME" <file.c> | grep -v ";$"   # shows only definitions
-  Annotate ONLY the definition, never the forward declaration.
+  Before extracting functions, ensure every if/for/while/do body has explicit {}:
+
+    dftracer__session_add_braces(run_id="{{ run_id }}", filepath="{{ filepath }}")
+
+  This rewrites the annotated copy so braceless bodies like:
+      if (err) return -1;
+  become:
+      if (err) { return -1; }
+
+  Why: DFTRACER_C_FUNCTION_END() must appear BEFORE every return. Without braces,
+  inserting END creates a dangling-else or orphaned macro that breaks compilation.
+
+  Check the result:
+    • modified=true, insertions>0  → file was rewritten; the extract step below reads
+                                     the updated file automatically (do NOT re-read)
+    • modified=false               → no braceless bodies; proceed as-is
+    • tool error                   → log it; the pre-scan grep in Step 1 showed which
+                                     lines need manual brace fixes before annotating
+
+  ── 2b. EXTRACT FUNCTION MAP (clang AST parse) ──────────────────────────────────
+
+  Call the function extractor on the now-braced file:
+
+    dftracer__session_extract_functions(run_id="{{ run_id }}", filepath="{{ filepath }}")
+
+  This returns a JSON list of all function definitions with exact line numbers:
+    • name            — function name
+    • start_line      — first line of the signature
+    • open_brace_line — line of the opening '{'
+    • body_first_line — FIRST line inside the body (insert START macro HERE)
+    • close_brace_line— line of the closing '}'
+    • exit_lines      — list of {line, type} for every return / exit() / abort()
+    • is_entry_point  — true for main()
+
+  Store this as FUNC_MAP.  You now know exactly:
+    • How many functions need annotation
+    • Where to insert START (body_first_line)
+    • Where to insert every END (each exit_lines[i].line — insert on the line BEFORE)
 
   comp= C-specific guidance:
-    • Xfer to/from a file (POSIX/MMAP/HDF5/NCMPI)    → "io"
-    • Xfer via network/MPI (MPIIO/S3/HDFS/RADOS/DFS)  → "comm"
-    • Xfer that is a memcpy into mmap region            → "mem"
+    • Xfer to/from a file (POSIX/MMAP/HDF5/NCMPI)     → "io"
+    • Xfer via network/MPI (MPIIO/S3/HDFS/RADOS/DFS)   → "comm"
+    • Xfer that is a memcpy into mmap region             → "mem"
     • Backend lifecycle (init/final/initialize/finalize) → "io"
 
-
-  ══════════════════════════════════════════════════════
-  STEP 3 — MAP ALL EXIT PATHS BEFORE WRITING
-  ══════════════════════════════════════════════════════
-
-  For each function, list every exit point BEFORE writing any macro:
-
-    • visible return statement        → DFTRACER_C_FUNCTION_END() immediately before,
-                                        same indentation as the return line
-    • void function, no explicit return → END as last statement before }
-    • goto label (done:/err:/out:)    → single END AT the label,
-                                        NOT before each individual goto
-    • MPI_CHECK / NCMPI_CHECK /       → these macros hide an internal return/goto;
-      HGOTO_ERROR / ERR_GOTO            do NOT add END before them —
-                                        only before visible returns that follow
-    • exit() / abort() in main        → END then DFTRACER_C_FINI() before the call
+  Forward declarations (those ending with ";") are already filtered out by clang.
+  If the same name appears as definition AND declaration, annotate only the definition.
 
 
   ══════════════════════════════════════════════════════
-  STEP 4 — APPLY ANNOTATION PATTERN (per-function incremental loop)
+  STEP 3 — REVIEW EXIT PATHS FROM FUNC_MAP
   ══════════════════════════════════════════════════════
 
-  Follow the PER-FUNCTION INCREMENTAL ANNOTATION LOOP from Step 1.5 above.
-  Syntax check command for C after each function write:
-  ```bash
-  WS=/workspaces/dftracer-agents/workspaces/{{ run_id }}
-  gcc -include /tmp/dftracer_stub.h -fsyntax-only -w \
-    -x c ${WS}/annotated/{{ filepath }} 2>&1
-  ```
-  A non-empty output means a syntax error — apply step d of the loop.
+  For each function in FUNC_MAP, verify the exit_lines list against the source:
+
+    • type="return"        → insert DFTRACER_C_FUNCTION_END() on the line BEFORE
+                              that return, same indentation as the return statement
+    • type="exit"/"abort"  → insert END + DFTRACER_C_FINI() before the call (main only)
+    • exit_lines is empty  → void function with no explicit return →
+                              insert END as the last statement before close_brace_line
+
+  Watch for goto-style exits (labels done:/err:/out:) — clang may report the goto
+  destination as a "return" if it compiles out to one.  Use a single END at the
+  label, NOT before each individual goto statement.
+
+  MPI_CHECK / NCMPI_CHECK / HGOTO_ERROR / ERR_GOTO — these macro calls hide an
+  internal return/goto.  Do NOT add END before them; only before visible returns
+  that follow in the source.
+
+
+  ══════════════════════════════════════════════════════
+  STEP 4 — APPLY ANNOTATION (per-function incremental loop)
+  ══════════════════════════════════════════════════════
+
+  Process FUNC_MAP ONE FUNCTION AT A TIME using the PER-FUNCTION INCREMENTAL
+  ANNOTATION LOOP from Step 1.5 above.
+
+  For each function in FUNC_MAP (in order, libraries before entry-points):
+
+    4a. Read the current file content (already in memory from Step 1).
+
+    4b. Using the EXACT LINE NUMBERS from FUNC_MAP:
+          • Insert DFTRACER_C_FUNCTION_START() at body_first_line
+            (first line inside the opening brace, same indentation as surrounding code)
+          • Insert DFTRACER_C_FUNCTION_UPDATE_STR("comp", "<type>") on the NEXT line
+          • For each {line, type} in exit_lines:
+              – Insert DFTRACER_C_FUNCTION_END() on the line IMMEDIATELY BEFORE
+                that exit line, matching indentation of the exit statement
+          • If exit_lines is empty: insert DFTRACER_C_FUNCTION_END() as the last
+            statement before close_brace_line
+
+        For main() additionally:
+          • Insert DFTRACER_C_INIT(NULL, NULL, NULL) as the VERY FIRST statement
+            (before START), or after MPI_Init(&argc, &argv) if MPI is used
+          • Insert DFTRACER_C_FINI() before MPI_Finalize() or before the final return
+
+    4c. Write the updated file:
+          dftracer__session_write_file(run_id="{{ run_id }}",
+            filepath="{{ filepath }}", content=<full updated file>,
+            subfolder="annotated")
+
+    4d. Syntax check after EVERY function write:
+        ```bash
+        WS=/workspaces/dftracer-agents/workspaces/{{ run_id }}
+        gcc -include /tmp/dftracer_stub.h -fsyntax-only -w \
+          -x c ${WS}/annotated/{{ filepath }} 2>&1
+        ```
+        Non-empty output = syntax error → apply step d of the PER-FUNCTION LOOP.
+
+  Absolute placement rules:
+    • START is the FIRST statement inside { — nothing before it (except INIT in main)
+    • START goes AFTER {, never before it
+    • START never inside if/for/while/switch blocks
+    • comp= UPDATE is the FIRST UPDATE immediately after START
+    • END indentation matches the return line it precedes; never at column 0
+    • Never place END after a return (dead code)
+    • Never annotate a .h header file
 
   Standard function:
   ```c

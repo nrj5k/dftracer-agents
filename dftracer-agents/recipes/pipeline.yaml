@@ -1,12 +1,13 @@
 title: "DFTracer Annotation Pipeline"
 description: >
   Full end-to-end dftracer annotation pipeline. Prompts the user for inputs,
-  runs setup via MCP tools (clone, detect, build, copy, patch), then annotates
-  one source file at a time — building incrementally after each file. Build
-  errors trigger targeted fix attempts (never a full revert); if stuck after
-  2 retries the user is asked for guidance which is immediately saved to the
-  lessons-learned skill file. Ends with a smoke test, user confirmation, trace
-  collection, and analysis.
+  runs setup via MCP tools (clone, detect, build, copy, patch), then delegates
+  ALL source files to annotation sub-recipes IN PARALLEL — each sub-recipe
+  uses clang to extract exact function boundaries and annotates one function
+  at a time. After all files are annotated, a single build pass is run; build
+  errors trigger targeted fix attempts via re-delegation (never manual edits
+  by the orchestrator). Ends with a smoke test, user confirmation, trace
+  collection, analysis, bottleneck diagnosis, and optimization paper search.
 
 version: "1.0.0"
 
@@ -22,6 +23,7 @@ extensions:
     available_tools:
       - session_run_pipeline
       - session_install_dftracer
+      - session_generate_dftracer_pc
       - session_build_annotated
       - session_list_files
       - session_run_smoke_test
@@ -60,10 +62,11 @@ prompt: "Start the dftracer annotation pipeline."
 
 instructions: |
   You are the dftracer annotation pipeline orchestrator.
-  Annotate one file at a time, build after each file, and fix errors before
-  moving on. Never remove an annotation completely — simplify it instead.
-  Escalate to the user only when you are truly stuck, and record every new
-  pattern in the lessons-learned skill file so the next run benefits.
+  You COORDINATE, you do NOT annotate. ALL file annotation is delegated to
+  sub-recipes via delegate(subrecipe=...). Never write, edit, or transform
+  source files directly — not with shell scripts, not with Python, not with
+  sed/awk. Your tools are: setup MCP tools, delegate(), build commands, and
+  escalation to the user. Record every new lesson in the skill file.
 
   SKILL_FILE=/workspaces/dftracer-agents/.agents/skills/dftracer-annotation-lessons/SKILL.md
 
@@ -171,36 +174,53 @@ instructions: |
 
 
   ══════════════════════════════════════════════════════════════════════
-  STEP 4 — SEQUENTIAL ANNOTATION WITH INCREMENTAL BUILD
+  STEP 4 — PARALLEL ANNOTATION THEN SINGLE BUILD
   ══════════════════════════════════════════════════════════════════════
 
-  Process files ONE AT A TIME in the order determined by Step 3.
-  Do NOT start the next file until the current file builds successfully.
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │ MANDATORY: ALL annotation MUST go through the sub-recipes below.   │
+  │ NEVER annotate files directly with shell scripts, sed, awk, Python │
+  │ string manipulation, or any other programmatic approach.           │
+  │ If a sub-recipe call fails, investigate the failure — do NOT       │
+  │ fall back to manual annotation.                                    │
+  └─────────────────────────────────────────────────────────────────────┘
 
-  For each FILE in (C_FILES + CPP_FILES + PY_FILES):
+  ── 4a. Delegate ALL files in PARALLEL ────────────────────────────────
 
-    ── 4a. Annotate ──────────────────────────────────────────────────
-    Choose the right subrecipe:
-      .c          → delegate(subrecipe="annotate-c",      run_id=RUN_ID, filepath=FILE)
-      .cpp/.cxx   → delegate(subrecipe="annotate-cpp",    run_id=RUN_ID, filepath=FILE)
-      .py         → delegate(subrecipe="annotate-python", run_id=RUN_ID, filepath=FILE)
+  `delegate` is a GOOSE BUILT-IN that launches a sub-recipe as a sub-agent.
+  It is NOT pseudocode — call it exactly as shown for every file.
+  Issue ALL delegate calls simultaneously (do not wait between files):
 
-    Record the subagent's STATUS, ANNOTATED count, SKIPPED, PENDING, LESSONS.
+  For EACH FILE in C_FILES:
+    delegate(subrecipe="annotate-c", run_id=RUN_ID, filepath=FILE)
 
-    ── 4b. Incremental build ─────────────────────────────────────────
-    Run make in the existing build directory (no cmake reconfigure needed):
-    ```bash
-    make -C <BUILD_ANN> -j4 2>&1
-    ```
-    Capture output as BUILD_OUT.
+  For EACH FILE in CPP_FILES (*.cpp / *.cxx / *.cc):
+    delegate(subrecipe="annotate-cpp", run_id=RUN_ID, filepath=FILE)
 
-    ── 4c. Build passed ──────────────────────────────────────────────
-    If exit code 0:
-      Print: "  ✓ <FILE>  (<n> functions annotated)"
-      Continue to next file.
+  For EACH FILE in PY_FILES:
+    delegate(subrecipe="annotate-python", run_id=RUN_ID, filepath=FILE)
 
-    ── 4d. Build failed — targeted fix loop ──────────────────────────
-    If exit code non-zero:
+  Wait for ALL delegates to complete before proceeding.
+  Collect STATUS, ANNOTATED count, SKIPPED, PENDING from each result.
+
+  Print progress summary:
+  ┌──────────────────────────────────────────────────────────────┐
+  │  ANNOTATION PHASE COMPLETE                                   │
+  │  Total files: <n>  Annotated: <n>  Pending: <n>             │
+  └──────────────────────────────────────────────────────────────┘
+
+  ── 4b. Single build ──────────────────────────────────────────────────
+  Run make ONCE after all files are annotated:
+  ```bash
+  make -C <BUILD_ANN> -j4 2>&1
+  ```
+  Capture output as BUILD_OUT.
+
+  ── 4c. Build passed ──────────────────────────────────────────────────
+  If exit code 0 → print "  ✓ Build passed" and proceed to Step 5.
+
+  ── 4d. Build failed — targeted fix loop ──────────────────────────────
+  If exit code non-zero:
 
       Extract the failing lines:
       ```bash

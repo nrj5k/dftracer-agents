@@ -41,6 +41,107 @@ from typing import Any, Dict, Optional
 from .workspace import _run
 
 
+_CORE_LIB_NAMES = ("libdftracer_core.so", "libdftracer_core.so.4",
+                    "libdftracer_core.dylib")
+_CORE_HEADER    = Path("dftracer") / "dftracer.h"
+
+
+def _find_dftracer_dirs(
+    python_exe: Optional[str] = None,
+    cmake_prefix: Optional[Path] = None,
+) -> Optional[Dict[str, str]]:
+    """Locate dftracer include and lib directories, checking every known layout.
+
+    Search order (stops at the first lib dir that contains ``libdftracer_core.so``):
+
+    1. **cmake prefix** — ``<cmake_prefix>/lib/`` and ``<cmake_prefix>/lib64/``
+       (produced by ``autobuild.sh --install-mode cmake``).
+    2. **site-packages pkg dir** — ``<pkg>/lib/`` and ``<pkg>/lib64/``
+       (pip wheel layout when the core lib is bundled there).
+    3. **site-packages parent** — ``<site-packages>/lib/`` and ``<site-packages>/lib64/``
+       (some wheels install the shared lib one level above the package dir).
+
+    The include dir paired with each lib candidate is resolved by looking for
+    ``dftracer/dftracer.h`` relative to the same prefix (``<prefix>/include/``).
+
+    Args:
+        python_exe: Path to the Python interpreter used to locate the dftracer
+            package directory.  Defaults to the current interpreter.
+        cmake_prefix: Optional workspace cmake install prefix (``install_ann/``).
+            When supplied it is tried first so that cmake-mode installs win.
+
+    Returns:
+        Dict with ``include_dir``, ``lib_dir``, and ``lib_name`` on success, or
+        ``None`` when no dir containing ``libdftracer_core.so`` is found.
+    """
+    import json as _json
+
+    def _has_core(d: Path) -> bool:
+        return d.is_dir() and any((d / n).exists() for n in _CORE_LIB_NAMES)
+
+    def _include_for(prefix: Path) -> str:
+        inc = prefix / "include"
+        return str(inc) if (inc / _CORE_HEADER).exists() else str(inc)
+
+    def _lib_name(d: Path) -> str:
+        for n in _CORE_LIB_NAMES:
+            if (d / n).exists():
+                return n
+        return "libdftracer_core.so"
+
+    candidates: list[Path] = []
+
+    # 1. cmake prefix (install_ann) — highest priority
+    if cmake_prefix:
+        candidates += [cmake_prefix / "lib", cmake_prefix / "lib64"]
+
+    # 2. site-packages package dir  (pip wheel: <pkg>/lib, <pkg>/lib64)
+    py = python_exe or sys.executable
+    script = (
+        "import dftracer, os, json; "
+        "base = os.path.dirname(os.path.abspath(dftracer.__file__)); "
+        "parent = os.path.dirname(base); "
+        "print(json.dumps({'pkg': base, 'parent': parent}))"
+    )
+    try:
+        proc = subprocess.run([py, "-c", script],
+                              capture_output=True, text=True, timeout=30)
+        if proc.returncode == 0 and proc.stdout.strip():
+            info = _json.loads(proc.stdout.strip())
+            pkg    = Path(info["pkg"])
+            parent = Path(info["parent"])
+            candidates += [
+                pkg    / "lib",  pkg    / "lib64",
+                parent / "lib",  parent / "lib64",
+            ]
+    except Exception:
+        pass
+
+    for lib_dir in candidates:
+        if _has_core(lib_dir):
+            prefix = lib_dir.parent
+            return {
+                "include_dir": _include_for(prefix),
+                "lib_dir":     str(lib_dir),
+                "lib_name":    _lib_name(lib_dir),
+            }
+
+    # Nothing found — return the cmake prefix dirs anyway so callers can still
+    # set RPATH; the build will fail with a clear linker error rather than a
+    # silent wrong-path error.
+    if cmake_prefix and (cmake_prefix / "lib").is_dir():
+        return {
+            "include_dir": str(cmake_prefix / "include"),
+            "lib_dir":     str(cmake_prefix / "lib"),
+            "lib_name":    "libdftracer_core.so",
+        }
+    return None
+
+
+# Keep old name as alias so existing callers don't break
+_find_dftracer_pip_dirs = _find_dftracer_dirs
+
+
 #: Absolute path to the ``dftracer_utils_service.py`` module located in the
 #: sibling ``dftracer/`` package directory.  Resolved at import time so that
 #: :func:`_load_dftracer_utils_service` can use it without re-computing the
@@ -274,13 +375,15 @@ def _install_dftracer_autobuild(
 
     cmd = [
         "/bin/bash", str(autobuild),
-        "--install-prefix", str(install_prefix),
         "--install-mode", install_mode,
         "--build-type", "RelWithDebInfo",
         "--jobs", str(jobs),
-        "--quiet",
         "--skip-smoke-test",
     ]
+
+    # cmake mode uses an explicit install prefix; pip mode lets pip choose
+    if install_mode != "pip":
+        cmd += ["--install-prefix", str(install_prefix)]
 
     # Feature flags — mirror what autobuild.sh exposes
     if python_exe:

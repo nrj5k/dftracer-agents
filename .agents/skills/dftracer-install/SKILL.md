@@ -1,7 +1,37 @@
 ---
 name: dftracer-install
-description: Install and privilege rules for dftracer sessions — never use sudo, always install to userspace paths
+description: Install and privilege rules for dftracer sessions — never use sudo, always install to userspace paths; autotools pkg-config integration
 ---
+
+## Autotools + dftracer Integration
+
+dftracer is **CMake-only** — no `dftracer.pc` ships by default.
+
+### Call order for autotools projects
+
+```
+session_install_dftracer       # cmake mode → libdftracer_core.so in install_ann/lib/
+session_generate_dftracer_pc   # generates install_ann/lib/pkgconfig/dftracer.pc
+session_patch_build            # injects pkg-config lines into Makefile/Makefile.am
+session_build_annotated        # auto-sets PKG_CONFIG_PATH and --disable-dependency-tracking
+```
+
+### Never do this in bash
+
+```bash
+# WRONG — Make := syntax is not bash
+DFTRACER_INC := /path/to/include   # → "DFTRACER_INC: command not found"
+```
+
+Use `PKG_CONFIG_PATH` + the generated `.pc` file instead.
+
+### configure failures
+
+- Add `--disable-dependency-tracking` to every `./configure` call.
+- Clean stale `.deps` before reconfiguring:
+  ```bash
+  find <dir> -name ".deps" -type d -exec rm -rf {} + 2>/dev/null
+  ```
 
 ## Install and Privilege Rules
 

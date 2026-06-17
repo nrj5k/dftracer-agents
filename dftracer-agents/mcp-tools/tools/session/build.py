@@ -47,40 +47,66 @@ from typing import List, Optional
 # Build-system patch helpers
 # ---------------------------------------------------------------------------
 
-def _patch_cmake(path: Path) -> str:
+def _patch_cmake(path: Path, pip_include_dir: str = "", pip_lib_dir: str = "") -> str:
     """Return CMakeLists.txt content with dftracer ``find_package`` and link blocks injected.
 
-    The injection strategy places ``find_package(dftracer QUIET)`` immediately
-    before the first ``add_executable`` or ``add_library`` call so that the
-    package is found before any targets are defined.  A second block appended
-    at the end of the file iterates over all build-system targets in the
-    current directory and calls ``target_link_libraries`` for each executable
-    or library target, guarded by ``if(dftracer_FOUND)`` so the build remains
-    functional on systems without dftracer installed.
+    Tries ``find_package(dftracer QUIET)`` first (works when dftracer was built
+    with CMake and installed to a prefix on ``CMAKE_PREFIX_PATH``).  When that
+    fails at configure time it falls back to explicit include/lib paths derived
+    from the pip-installed package directory (passed via *pip_include_dir* /
+    *pip_lib_dir*, or discovered at configure time via a Python snippet).
 
-    If no ``add_executable`` or ``add_library`` directive is found, the
-    ``find_package`` preamble is prepended to the very top of the file instead.
-
-    This function is idempotent: if the string ``"dftracer"`` (case-insensitive)
-    already appears anywhere in the file, the original content is returned
-    unchanged.
+    This function is idempotent: if the string ``"dftracer"`` already appears
+    anywhere in the file, the original content is returned unchanged.
 
     Args:
         path: Absolute path to the ``CMakeLists.txt`` file to patch.
+        pip_include_dir: Absolute path to dftracer's include directory when
+            installed via pip.  If empty, a ``execute_process`` call to Python
+            is embedded in the CMake snippet to discover it at configure time.
+        pip_lib_dir: Absolute path to dftracer's lib directory (pip install).
 
     Returns:
-        str: Modified file content as a string.  The caller is responsible for
-            writing this back to disk if the modification is desired.
+        str: Modified file content as a string.
     """
     content = path.read_text()
     if "dftracer" in content.lower():
         return content
 
+    # Embed known paths if we already discovered them; otherwise fall back to
+    # a cmake-time python probe so the generated CMakeLists.txt still works on
+    # machines where the prefix isn't known at patch time.
+    if pip_include_dir and pip_lib_dir:
+        pip_fallback = textwrap.dedent(f"""\
+          set(DFTRACER_PIP_INC  "{pip_include_dir}")
+          set(DFTRACER_PIP_LIB  "{pip_lib_dir}")
+        """)
+    else:
+        pip_fallback = textwrap.dedent("""\
+          execute_process(
+            COMMAND "${{CMAKE_COMMAND}}" -E env
+              python3 -c "import dftracer,os; d=os.path.dirname(os.path.abspath(dftracer.__file__)); print(d)"
+            OUTPUT_VARIABLE _DFT_PKG_DIR OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+          )
+          if(_DFT_PKG_DIR)
+            set(DFTRACER_PIP_INC  "${{_DFT_PKG_DIR}}/include")
+            set(DFTRACER_PIP_LIB  "${{_DFT_PKG_DIR}}/lib")
+          endif()
+        """)
+
     preamble = textwrap.dedent("""\
         # --- dftracer (auto-injected) ---
         find_package(dftracer QUIET)
-        if(dftracer_FOUND)
-          message(STATUS "dftracer found — tracing enabled")
+        if(NOT dftracer_FOUND)
+          # Fallback: pip-installed dftracer (no CMake config file)
+        """) + textwrap.indent(pip_fallback, "  ") + textwrap.dedent("""\
+          if(DFTRACER_PIP_INC AND EXISTS "${DFTRACER_PIP_INC}")
+            set(dftracer_INCLUDE_DIRS "${DFTRACER_PIP_INC}")
+            set(dftracer_LIB_DIR      "${DFTRACER_PIP_LIB}")
+            set(dftracer_FOUND TRUE)
+            message(STATUS "dftracer found via pip: ${DFTRACER_PIP_INC}")
+          endif()
         endif()
         # ---------------------------------
     """)
@@ -94,9 +120,15 @@ def _patch_cmake(path: Path) -> str:
           foreach(_t ${_dft_targets})
             get_target_property(_t_type ${_t} TYPE)
             if(_t_type MATCHES "EXECUTABLE|LIBRARY")
-              target_link_libraries(${_t} PRIVATE dftracer::dftracer)
               target_include_directories(${_t} PRIVATE ${dftracer_INCLUDE_DIRS})
               target_compile_definitions(${_t} PRIVATE DFTRACER_ENABLE)
+              if(TARGET dftracer::dftracer)
+                target_link_libraries(${_t} PRIVATE dftracer::dftracer)
+              elseif(dftracer_LIB_DIR)
+                target_link_libraries(${_t} PRIVATE
+                  "-L${dftracer_LIB_DIR}" "-ldftracer"
+                  "-Wl,-rpath,${dftracer_LIB_DIR}")
+              endif()
             endif()
           endforeach()
         endif()
@@ -166,38 +198,49 @@ def _patch_pyproject(path: Path) -> str:
     )
 
 
-def _patch_autotools_makefile(path: Path) -> str:
-    """Return ``Makefile`` content with dftracer ``pkg-config`` flags prepended.
+def _patch_autotools_makefile(
+    path: Path,
+    pip_include_dir: str = "",
+    pip_lib_dir: str = "",
+) -> str:
+    """Return ``Makefile`` content with dftracer pkg-config flags prepended.
 
-    Prepends a block that uses ``pkg-config`` to query dftracer's compiler and
-    linker flags and appends them to ``CFLAGS``, ``CXXFLAGS``, and ``LDFLAGS``
-    via ``+=``.  The ``-DDFTRACER_ENABLE`` preprocessor macro is also added so
-    that source code can use ``#ifdef DFTRACER_ENABLE`` guards.
+    Uses ``pkg-config --cflags/--libs dftracer`` which works when
+    ``PKG_CONFIG_PATH`` includes the dftracer install prefix's
+    ``lib/pkgconfig/`` directory.  Call ``session_generate_dftracer_pc``
+    before ``session_build_annotated`` to ensure the ``.pc`` file exists;
+    ``session_build_annotated`` sets ``PKG_CONFIG_PATH`` automatically.
 
-    The injected block is guarded with ``2>/dev/null`` so that builds on
-    systems without dftracer installed do not fail with a ``pkg-config`` error.
+    *pip_include_dir* and *pip_lib_dir* are accepted for API compatibility
+    but are no longer embedded in the Makefile — the ``PKG_CONFIG_PATH``
+    environment variable approach is simpler and avoids Make-syntax variables
+    being misinterpreted as shell commands.
 
-    This function is idempotent: if the string ``"dftracer"`` already appears
-    anywhere in the file, the original content is returned unchanged.
+    This function is idempotent: if ``"dftracer"`` already appears in the
+    file, the original content is returned unchanged.
 
     Args:
-        path: Absolute path to the ``Makefile`` (or ``GNUmakefile``) to patch.
+        path: Absolute path to the ``Makefile`` or ``Makefile.am`` to patch.
+        pip_include_dir: Ignored (kept for API compatibility).
+        pip_lib_dir: Ignored (kept for API compatibility).
 
     Returns:
-        str: Modified file content as a string.  The caller is responsible for
-            writing this back to disk if the modification is desired.
+        str: Modified file content.
     """
     content = path.read_text()
     if "dftracer" in content:
         return content
+
     injection = textwrap.dedent("""\
-        # --- dftracer (auto-injected) ---
+        # --- dftracer (auto-injected via pkg-config) ---
+        # PKG_CONFIG_PATH must include install_ann/lib/pkgconfig — set by
+        # session_build_annotated; ensure session_generate_dftracer_pc was run first.
         DFTRACER_CFLAGS  := $(shell pkg-config --cflags dftracer 2>/dev/null)
         DFTRACER_LDFLAGS := $(shell pkg-config --libs   dftracer 2>/dev/null)
         CFLAGS   += $(DFTRACER_CFLAGS)   -DDFTRACER_ENABLE
         CXXFLAGS += $(DFTRACER_CFLAGS)   -DDFTRACER_ENABLE
         LDFLAGS  += $(DFTRACER_LDFLAGS)
-        # ----------------------------------
+        # ------------------------------------------------
     """)
     return injection + "\n" + content
 

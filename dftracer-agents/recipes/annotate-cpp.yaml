@@ -38,6 +38,8 @@ extensions:
     available_tools:
       - session_read_file
       - session_write_file
+      - session_add_braces
+      - session_extract_functions
       - docs_search
       - docs_fetch_page
       - docs_search_key_pages
@@ -69,19 +71,57 @@ instructions: |
 
   Also fetch the C++-specific docs before classifying functions:
 
-    docs_search(query="DFTRACER_CPP_FUNCTION RAII REGION_START REGION_END INIT FINI C++ API", source="dftracer", fetch_content=True)
+    dftracer__docs_search(query="DFTRACER_CPP_FUNCTION RAII REGION_START REGION_END INIT FINI C++ API", source="dftracer", fetch_content=True)
 
   Note whether UPDATE_INT exists in the C++ API, the exact REGION macro names and signatures, and the correct include path.
 
   ══════════════════════════════════════════════════════
-  STEP 2 — CLASSIFY EVERY FUNCTION
+  STEP 2 — PREPARE AND EXTRACT FUNCTION MAP
   ══════════════════════════════════════════════════════
 
-  Build a function/method inventory. C++-specific notes:
-    • Annotate class member functions and free functions
+  ── 2a. ADD BRACES (clang AST rewrite) ──────────────────────────────────────────
+
+  Before extracting functions, ensure every if/for/while/do body has explicit {}:
+
+    dftracer__session_add_braces(run_id="{{ run_id }}", filepath="{{ filepath }}")
+
+  This rewrites the annotated copy so braceless bodies like:
+      if (err) return -1;
+  become:
+      if (err) { return -1; }
+
+  Why: DFTRACER_CPP_FUNCTION() RAII destructor fires on scope exit. Without braces
+  around a one-liner, the scope is ambiguous and macro insertion can break the AST.
+
+  Check the result:
+    • modified=true, insertions>0  → file was rewritten; the extract step below reads
+                                     the updated file automatically (do NOT re-read)
+    • modified=false               → no braceless bodies; proceed as-is
+    • tool error                   → log it; the pre-scan grep in Step 1 showed which
+                                     lines need manual brace fixes before annotating
+
+  ── 2b. EXTRACT FUNCTION MAP (clang AST parse) ──────────────────────────────────
+
+  Call the function extractor on the now-braced file:
+
+    dftracer__session_extract_functions(run_id="{{ run_id }}", filepath="{{ filepath }}")
+
+  This returns a JSON list of all function/method definitions with exact line numbers:
+    • name             — function or method name
+    • start_line       — first line of the signature / return type
+    • open_brace_line  — line of the opening '{'
+    • body_first_line  — FIRST line inside the body (insert DFTRACER_CPP_FUNCTION here)
+    • close_brace_line — line of the closing '}'
+    • exit_lines       — list of {line, type} for returns in main(); empty for most functions
+    • is_entry_point   — true for main()
+
+  Store as FUNC_MAP.
+
+  C++-specific classification notes from FUNC_MAP:
+    • Annotate class member functions, free functions, constructors, destructors
     • Constructors/destructors that open/close resources → ANNOTATE
     • Operator overloads with I/O (operator<<) → ANNOTATE
-    • Template function definitions (not just declarations) → ANNOTATE eligible
+    • Template function *definitions* (not just declarations) → ANNOTATE eligible
     • Inline functions in .hpp → SKIP (annotate in .cpp source instead)
 
   For comp= classification, use the general table (above) plus:
@@ -90,29 +130,63 @@ instructions: |
 
 
   ══════════════════════════════════════════════════════
-  STEP 3 — MAP ALL EXIT PATHS BEFORE WRITING
+  STEP 3 — REVIEW EXIT PATHS FOR main() FROM FUNC_MAP
   ══════════════════════════════════════════════════════
 
   C++ RAII guard fires automatically on scope exit — NO manual END needed for
-  regular functions. Exit path mapping is only needed for main():
+  regular functions. Exit path mapping from FUNC_MAP is only needed for main():
 
-    • main() early return   → DFTRACER_CPP_REGION_END(region) before every return
-    • main() exit()/abort() → REGION_END then DFTRACER_CPP_FINI() before the call
-    • Regular functions     → no exit mapping needed; RAII destructor handles it
+    • main() exit_lines with type="return" →
+        insert DFTRACER_CPP_REGION_END(main_region) on the line BEFORE
+    • main() exit_lines with type="exit"/"abort" →
+        insert REGION_END then DFTRACER_CPP_FINI() before the call
+    • Regular functions: exit_lines are informational only — RAII handles cleanup
 
 
   ══════════════════════════════════════════════════════
-  STEP 4 — APPLY ANNOTATION PATTERN (per-function incremental loop)
+  STEP 4 — APPLY ANNOTATION (per-function incremental loop)
   ══════════════════════════════════════════════════════
 
-  Follow the PER-FUNCTION INCREMENTAL ANNOTATION LOOP from Step 1.5 above.
-  Syntax check command for C++ after each function write:
-  ```bash
-  WS=/workspaces/dftracer-agents/workspaces/{{ run_id }}
-  g++ -include /tmp/dftracer_stub.h -fsyntax-only -w -std=c++14 \
-    ${WS}/annotated/{{ filepath }} 2>&1
-  ```
-  A non-empty output means a syntax error — apply step d of the loop.
+  Process FUNC_MAP ONE FUNCTION AT A TIME using the PER-FUNCTION INCREMENTAL
+  ANNOTATION LOOP from Step 1.5 above.
+
+  For each function in FUNC_MAP (libraries before entry-points):
+
+    4a. Using EXACT LINE NUMBERS from FUNC_MAP:
+
+        Regular functions (all except main):
+          • Insert DFTRACER_CPP_FUNCTION() at body_first_line (first statement inside {)
+          • Insert DFTRACER_CPP_FUNCTION_UPDATE("comp", "<type>") on the NEXT line
+          • No manual END needed — RAII destructor fires automatically
+
+        main() (REGION — not FUNCTION):
+          • Insert DFTRACER_CPP_INIT(nullptr, nullptr, nullptr) as very first statement
+            (or after MPI_Init if MPI is used)
+          • Insert DFTRACER_CPP_REGION_START(main_region) on the NEXT line
+          • For each exit_lines entry: insert DFTRACER_CPP_REGION_END(main_region)
+            on the line BEFORE the exit, then DFTRACER_CPP_FINI() before MPI_Finalize
+
+    4b. Write the updated file after EACH function:
+          dftracer__session_write_file(run_id="{{ run_id }}",
+            filepath="{{ filepath }}", content=<full updated file>,
+            subfolder="annotated")
+
+    4c. Syntax check after EVERY function write:
+        ```bash
+        WS=/workspaces/dftracer-agents/workspaces/{{ run_id }}
+        g++ -include /tmp/dftracer_stub.h -fsyntax-only -w -std=c++14 \
+          ${WS}/annotated/{{ filepath }} 2>&1
+        ```
+        Non-empty output = syntax error → apply step d of the PER-FUNCTION LOOP.
+
+  Absolute rules:
+    • DFTRACER_CPP_FUNCTION() is the FIRST statement inside { for regular functions
+    • Never use DFTRACER_C_* macros in .cpp/.cxx files
+    • Never use DFTRACER_CPP_REGION_* in non-main functions
+    • Never use DFTRACER_CPP_FUNCTION() in main() — use REGION there
+    • Never add include to .h/.hpp header files
+    • DFTRACER_CPP_FUNCTION_UPDATE takes string values only (const char *)
+      For numeric params, convert to string or omit — there is no UPDATE_INT in C++
 
   Regular C++ function (RAII — no manual END):
   ```cpp
