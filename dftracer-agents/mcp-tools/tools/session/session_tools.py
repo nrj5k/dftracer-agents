@@ -40,7 +40,9 @@ make decisions, and recover from failures before proceeding.
         * ``session_build_annotated``        — build the annotated source with dftracer linked
 
     Trace collection & analysis
-        * ``session_run_with_dftracer``  — run a command with DFTRACER_* env vars set
+        * ``session_service_start``      — start dftracer_service background daemon (in dftracer_service.py)
+        * ``session_run_with_dftracer``  — run a command with DFTRACER_* env vars set (DFTRACER_DATA_DIR=all)
+        * ``session_service_stop``       — stop dftracer_service background daemon (in dftracer_service.py)
         * ``session_split_traces``       — compact raw .pfw traces via dftracer-utils split
         * ``session_analyze_traces``     — summarise traces with dftracer_info
 
@@ -1255,7 +1257,7 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         run_id: str,
         command: str,
         subfolder: str = "build_ann",
-        data_dir: Optional[str] = None,
+        data_dir: str = "all",
         timeout: int = 600,
         env_extra: Optional[str] = None,
     ) -> str:
@@ -1273,10 +1275,13 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         * ``DFTRACER_INC_METADATA=1``   — records process/thread metadata.
         * ``DFTRACER_LOG_FILE=<workspace>/traces/<run_id>`` — trace file
           prefix; dftracer appends ``.<pid>.pfw``.
-        * ``DFTRACER_DATA_DIR=<data_dir or source/>`` — directory to monitor
-          for I/O tracing.
-        * ``DFTRACER_INIT=1``           — auto-initialises dftracer without an
-          explicit API call.
+        * ``DFTRACER_DATA_DIR=all``     — captures I/O on *any* file path.
+          Pass an explicit path via *data_dir* only to restrict monitoring
+          to a subtree.
+
+        ``DFTRACER_INIT`` is intentionally **not** set here.  Pass it via
+        *env_extra* only when the annotated source has no explicit
+        ``DFTRACER_C_INIT`` / ``DFTRACER_CPP_INIT`` calls.
 
         Additional variables can be merged/overridden via *env_extra*.
 
@@ -1296,8 +1301,9 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             subfolder: Working-directory sub-folder relative to the workspace
                 root.  Defaults to ``"build_ann"``.  Falls back to ``"build"``
                 then ``"source"`` if the requested subfolder does not exist.
-            data_dir: Absolute path passed to ``DFTRACER_DATA_DIR``.  Defaults
-                to ``<workspace>/source/`` when not provided.
+            data_dir: Value passed to ``DFTRACER_DATA_DIR``.  Defaults to
+                ``"all"`` which captures I/O on any file path.  Pass an
+                absolute directory path to restrict monitoring to a subtree.
             timeout: Seconds before the subprocess is killed.
                 Defaults to ``600``.
             env_extra: Optional JSON object string (``'{"VAR": "val"}'``) of
@@ -1317,8 +1323,11 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             Returns ``{"status": "error"}`` when the command exits non-zero.
 
         Note:
-            Must be called after ``session_build_annotated``.  Follow with
-            ``session_split_traces`` to compact the raw ``.pfw`` files.
+            Must be called after ``session_build_annotated``.  Surround with
+            ``session_service_start`` / ``session_service_stop`` to also
+            capture system-level daemon traces alongside inline annotation spans.
+            Follow with ``session_split_traces`` to compact the raw ``.pfw``
+            files.
         """
         ws = _ws(run_id)
         traces_dir = ws / "traces"   # always the canonical trace directory
@@ -1339,8 +1348,7 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             "DFTRACER_ENABLE": "1",
             "DFTRACER_INC_METADATA": "1",
             "DFTRACER_LOG_FILE": log_file_prefix,
-            "DFTRACER_DATA_DIR": data_dir or str(ws / "source"),
-            "DFTRACER_INIT": "1",
+            "DFTRACER_DATA_DIR": data_dir,
         }
         if env_extra:
             env.update(json.loads(env_extra))
@@ -1539,3 +1547,664 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         # Drop keys that we pass explicitly to avoid duplicate-keyword errors
         extra = {k: v for k, v in state.items() if k not in {"workspace"}}
         return _ok("Session status", workspace=str(ws), subdirs=subdirs, **extra)
+
+    @mcp.tool()
+    def session_collect_system_info(run_id: str) -> str:
+        """Collect a system configuration snapshot for the current node.
+
+        Gathers CPU, memory, network, and filesystem information from the
+        running host and saves the result to
+        ``<workspace>/system_config.json``.  This snapshot is typically
+        captured immediately after the dftracer trace run so that analysis
+        tools can correlate I/O behaviour with the hardware environment in
+        which the benchmark was executed.
+
+        Information collected:
+
+        **CPU**
+            Architecture, model name, socket/core/thread counts, min/max
+            frequency (MHz), NUMA topology, L1/L2/L3 cache sizes.
+            Source: ``lscpu --json`` with ``/proc/cpuinfo`` as fallback.
+
+        **Memory**
+            Total, available, and swap capacity; buffer and cache sizes.
+            Source: ``/proc/meminfo``.
+
+        **Network**
+            Per-interface name, link type, MTU, operational state, MAC
+            address, and (where ``ethtool`` is available) negotiated speed
+            and duplex.
+            Source: ``ip -j link show`` with ``/proc/net/dev`` as fallback.
+
+        **Filesystems**
+            All mounted filesystems: device, type, total/used/available
+            capacity, use percentage, and mount point.
+            Source: ``df -Th``.
+
+        **Host / OS**
+            Fully-qualified hostname, kernel release, and ``/etc/os-release``
+            fields (``NAME``, ``VERSION``, ``ID``, etc.).
+
+        Missing commands (e.g. ``ethtool``, ``lscpu``) are silently skipped
+        rather than failing the tool — every section degrades independently.
+
+        Side effects:
+            * Writes ``<workspace>/system_config.json``.
+            * Persists ``{"step": "system_info_collected", "system_config":
+              "<path>"}`` to ``session.json``.
+            * Writes an artifact log at step 14.
+
+        Args:
+            run_id: Session identifier returned by ``session_create``.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"`` or ``"error"``).
+                * ``message`` — ``"System configuration collected"``.
+                * ``config_file`` — absolute path to ``system_config.json``.
+                * ``hostname`` — fully-qualified hostname.
+                * ``cpu`` — CPU info dict.
+                * ``memory_total`` — human-readable total RAM string.
+                * ``network_interfaces`` — count of network interfaces found.
+                * ``filesystem_mounts`` — count of mounted filesystems found.
+
+        Raises:
+            Returns ``{"status": "error"}`` when the session workspace does
+            not exist.
+        """
+        ws = _ws(run_id)
+        if not ws.exists():
+            return _err(f"Session {run_id} not found")
+
+        def _human(kb: int) -> str:
+            n = kb * 1024
+            for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+                if n < 1024:
+                    return f"{n:.1f} {unit}"
+                n //= 1024
+            return f"{n:.1f} PiB"
+
+        def _cmd(args: List[str], t: int = 10) -> str:
+            r = _run(args, timeout=t)
+            return r["stdout"] if r["success"] else ""
+
+        # ── CPU ──────────────────────────────────────────────────────────
+        cpu: Dict[str, Any] = {}
+        lscpu_raw = _cmd(["lscpu", "--json"])
+        if lscpu_raw:
+            try:
+                fields = {
+                    item["field"].rstrip(":"): item["data"]
+                    for item in json.loads(lscpu_raw).get("lscpu", [])
+                }
+                cpu = {
+                    "architecture":    fields.get("Architecture"),
+                    "model_name":      fields.get("Model name"),
+                    "vendor":          fields.get("Vendor ID"),
+                    "sockets":         fields.get("Socket(s)"),
+                    "cores_per_socket":fields.get("Core(s) per socket"),
+                    "threads_per_core":fields.get("Thread(s) per core"),
+                    "logical_cpus":    fields.get("CPU(s)"),
+                    "min_mhz":         fields.get("CPU min MHz"),
+                    "max_mhz":         fields.get("CPU max MHz"),
+                    "numa_nodes":      fields.get("NUMA node(s)"),
+                    "l1d_cache":       fields.get("L1d cache"),
+                    "l1i_cache":       fields.get("L1i cache"),
+                    "l2_cache":        fields.get("L2 cache"),
+                    "l3_cache":        fields.get("L3 cache"),
+                }
+            except Exception:
+                pass
+        if not cpu:
+            cpuinfo = _cmd(["cat", "/proc/cpuinfo"])
+            models = [l.split(":", 1)[1].strip() for l in cpuinfo.splitlines()
+                      if l.startswith("model name")]
+            mhz = [l.split(":", 1)[1].strip() for l in cpuinfo.splitlines()
+                   if l.startswith("cpu MHz")]
+            cpu = {
+                "model_name":   models[0] if models else None,
+                "logical_cpus": str(len(models)),
+                "mhz_samples":  mhz[:8],
+            }
+
+        # ── Memory ───────────────────────────────────────────────────────
+        memory: Dict[str, Any] = {}
+        for line in _cmd(["cat", "/proc/meminfo"]).splitlines():
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            key = parts[0].rstrip(":")
+            try:
+                val_kb = int(parts[1])
+            except ValueError:
+                continue
+            if key == "MemTotal":
+                memory["total_kb"] = val_kb
+                memory["total"] = _human(val_kb)
+            elif key == "MemAvailable":
+                memory["available_kb"] = val_kb
+                memory["available"] = _human(val_kb)
+            elif key == "MemFree":
+                memory["free_kb"] = val_kb
+            elif key == "Buffers":
+                memory["buffers_kb"] = val_kb
+            elif key == "Cached":
+                memory["cached_kb"] = val_kb
+            elif key == "SwapTotal":
+                memory["swap_total_kb"] = val_kb
+                memory["swap_total"] = _human(val_kb)
+            elif key == "SwapFree":
+                memory["swap_free_kb"] = val_kb
+
+        # ── Network ──────────────────────────────────────────────────────
+        interfaces: List[Dict[str, Any]] = []
+        link_json = _cmd(["ip", "-j", "link", "show"])
+        if link_json:
+            try:
+                for iface in json.loads(link_json):
+                    entry: Dict[str, Any] = {
+                        "name":  iface.get("ifname"),
+                        "type":  iface.get("link_type"),
+                        "flags": iface.get("flags", []),
+                        "mtu":   iface.get("mtu"),
+                        "state": iface.get("operstate"),
+                        "mac":   iface.get("address"),
+                    }
+                    # Optional: ethtool for speed/duplex (may be missing or require root)
+                    eth = _cmd(["ethtool", iface.get("ifname", "")], t=5)
+                    for eth_line in eth.splitlines():
+                        if "Speed:" in eth_line:
+                            entry["speed"] = eth_line.split(":", 1)[1].strip()
+                        elif "Duplex:" in eth_line:
+                            entry["duplex"] = eth_line.split(":", 1)[1].strip()
+                        elif "Port:" in eth_line:
+                            entry["port_type"] = eth_line.split(":", 1)[1].strip()
+                    interfaces.append(entry)
+            except Exception:
+                pass
+        if not interfaces:
+            for line in _cmd(["cat", "/proc/net/dev"]).splitlines()[2:]:
+                if ":" in line:
+                    interfaces.append({"name": line.split(":")[0].strip()})
+
+        # ── Filesystems ───────────────────────────────────────────────────
+        mounts: List[Dict[str, Any]] = []
+        for line in _cmd(["df", "-Th"]).splitlines()[1:]:
+            parts = line.split()
+            if len(parts) >= 7:
+                mounts.append({
+                    "filesystem": parts[0],
+                    "type":       parts[1],
+                    "size":       parts[2],
+                    "used":       parts[3],
+                    "avail":      parts[4],
+                    "use_pct":    parts[5],
+                    "mount":      parts[6],
+                })
+
+        # ── Host / OS ────────────────────────────────────────────────────
+        hostname = _cmd(["hostname", "-f"]).strip() or _cmd(["hostname"]).strip()
+        kernel   = _cmd(["uname", "-r"]).strip()
+        os_release: Dict[str, str] = {}
+        for line in _cmd(["cat", "/etc/os-release"]).splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                os_release[k] = v.strip('"')
+
+        info: Dict[str, Any] = {
+            "hostname":    hostname,
+            "kernel":      kernel,
+            "os_release":  os_release,
+            "cpu":         cpu,
+            "memory":      memory,
+            "network":     {"interfaces": interfaces},
+            "filesystems": {"mounts": mounts},
+        }
+
+        config_path = ws / "system_config.json"
+        config_path.write_text(json.dumps(info, indent=2))
+
+        _save_state(run_id, {
+            "step": "system_info_collected",
+            "system_config": str(config_path),
+        })
+        _write_artifact_log(ws, 14, "session_collect_system_info", {
+            "hostname":    hostname,
+            "cpu_model":   cpu.get("model_name"),
+            "memory_total":memory.get("total"),
+            "interfaces":  len(interfaces),
+            "mounts":      len(mounts),
+        }, run_id)
+
+        return _ok(
+            "System configuration collected",
+            config_file=str(config_path),
+            hostname=hostname,
+            cpu=cpu,
+            memory_total=memory.get("total"),
+            network_interfaces=len(interfaces),
+            filesystem_mounts=len(mounts),
+        )
+
+    @mcp.tool()
+    def session_diagnose_bottlenecks(
+        run_id: str,
+        analyzer_preset: str = "posix",
+        view_types: Optional[str] = "time_range",
+        metric_boundaries: Optional[str] = None,
+        timeout: int = 600,
+    ) -> str:
+        """Diagnose I/O bottlenecks by running DFAnalyzer + DFDiagnoser on session traces.
+
+        Two-phase pipeline:
+
+        **Phase 1 — DFAnalyzer checkpoint**
+            Runs ``dfanalyzer`` with ``analyzer.checkpoint=True`` on the split
+            traces in ``<workspace>/traces_split/``, writing checkpoint files
+            (``_flat_view_*.parquet``, ``_raw_stats_*.json``) to
+            ``<workspace>/dfanalyzer_checkpoint/``.
+
+        **Phase 2 — DFDiagnoser**
+            Loads the checkpoint and scores every metric against severity
+            thresholds (trivial → critical).  Scored views are written to
+            ``<workspace>/diagnosis/scored/`` and a bottleneck summary is
+            saved to ``<workspace>/diagnosis.json``.
+
+        Severity levels (DFDiagnoser convention):
+            * ``trivial`` — metric below 25 % of threshold
+            * ``low``     — 25–50 %
+            * ``medium``  — 50–75 %
+            * ``high``    — 75–90 %  ← surfaces as a bottleneck
+            * ``critical``— above 90 % ← surfaces as a bottleneck
+
+        Side effects:
+            * Creates ``<workspace>/dfanalyzer_checkpoint/``.
+            * Creates ``<workspace>/diagnosis/scored/``.
+            * Writes ``<workspace>/diagnosis.json`` with the bottleneck summary.
+            * Persists ``{"step": "bottlenecks_diagnosed", ...}`` to ``session.json``.
+            * Writes an artifact log at step 15.
+
+        Args:
+            run_id: Session identifier returned by ``session_create``.
+            analyzer_preset: DFAnalyzer preset to use.  ``"posix"`` covers
+                POSIX file I/O; ``"dlio"`` covers deep-learning I/O workloads.
+                Defaults to ``"posix"``.
+            view_types: Comma-separated DFAnalyzer view type(s) to generate.
+                Defaults to ``"time_range"``.  Use ``"file_name,time_range"``
+                for per-file breakdowns.
+            metric_boundaries: Optional JSON object string mapping metric names
+                to hardware peak values for bandwidth/IOPS normalisation
+                (e.g. ``'{"bw_mean": 10000000000}'``).  Passed through to
+                DFDiagnoser.  Defaults to ``None``.
+            timeout: Seconds before each subprocess phase is killed.
+                Defaults to ``600``.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"`` or ``"error"``).
+                * ``message`` — outcome description.
+                * ``diagnosis_file`` — path to ``diagnosis.json``.
+                * ``checkpoint_dir`` — dfanalyzer checkpoint directory.
+                * ``severity_counts`` — per-severity metric observation counts.
+                * ``bottlenecks`` — list of high/critical findings (up to 50),
+                  each with ``metric``, ``severity``, ``scope``, ``view``,
+                  ``description``, and raw ``value``.
+                * ``phases`` — dict with ``dfanalyzer`` and ``dfdiagnoser``
+                  subprocess result dicts for debugging.
+
+        Raises:
+            Returns ``{"status": "error"}`` when:
+                * ``traces_split/`` does not exist (run ``session_split_traces``
+                  first).
+                * dfanalyzer fails to produce checkpoint files.
+                * DFDiagnoser is not installed and no ``dfdiagnoser`` binary
+                  is found in ``PATH``.
+        """
+        ws = _ws(run_id)
+        traces_split = ws / "traces_split"
+        if not traces_split.exists():
+            return _err(
+                "traces_split/ not found — run session_split_traces first",
+                run_id=run_id,
+            )
+
+        checkpoint_dir = ws / "dfanalyzer_checkpoint"
+        diagnosis_dir  = ws / "diagnosis"
+        scored_dir     = diagnosis_dir / "scored"
+        checkpoint_dir.mkdir(exist_ok=True)
+        diagnosis_dir.mkdir(exist_ok=True)
+        scored_dir.mkdir(exist_ok=True)
+
+        phases: Dict[str, Any] = {}
+
+        # ── Phase 1: dfanalyzer with checkpoint ──────────────────────────
+        vt_list = [v.strip() for v in (view_types or "time_range").split(",") if v.strip()]
+        vt_str  = "[" + ",".join(vt_list) + "]"
+        dfanalyzer_cmd = [
+            "dfanalyzer",
+            f"trace_path={traces_split}",
+            "analyzer.checkpoint=True",
+            f"analyzer.checkpoint_dir={checkpoint_dir}",
+            f"analyzer/preset={analyzer_preset}",
+            f"view_types={vt_str}",
+        ]
+        ana_r = _run(dfanalyzer_cmd, timeout=timeout)
+        phases["dfanalyzer"] = ana_r
+        if not ana_r["success"]:
+            return _err(
+                f"dfanalyzer failed (exit {ana_r['returncode']})",
+                phases=phases,
+                hint="Ensure dfanalyzer is installed: pip install dfanalyzer-utils",
+                stderr=ana_r["stderr"],
+            )
+
+        flat_views = list(checkpoint_dir.glob("_flat_view_*.parquet"))
+        if not flat_views:
+            return _err(
+                f"dfanalyzer ran but produced no _flat_view_*.parquet in {checkpoint_dir}",
+                phases=phases,
+                dfanalyzer_stdout=ana_r["stdout"],
+            )
+
+        # ── Phase 2: dfdiagnoser ─────────────────────────────────────────
+        # Try Python API first, fall back to CLI.
+        boundaries = json.loads(metric_boundaries) if metric_boundaries else {}
+        diag_r: Optional[Dict[str, Any]] = None
+        try:
+            from dfdiagnoser.diagnoser import Diagnoser   # type: ignore
+            from dfdiagnoser.output import FileOutput     # type: ignore
+            diagnoser = Diagnoser()
+            result = diagnoser.diagnose_checkpoint(
+                checkpoint_dir=str(checkpoint_dir),
+                metric_boundaries=boundaries,
+            )
+            FileOutput(output_dir=str(scored_dir), output_format="json").handle_result(result)
+            diag_r = {
+                "returncode": 0,
+                "stdout": f"Scored {len(result.scored_flat_views)} view(s) via Python API",
+                "stderr": "",
+                "success": True,
+            }
+        except ImportError:
+            # CLI fallback
+            cli_cmd = [
+                "dfdiagnoser",
+                "input=checkpoint",
+                f"input.checkpoint_dir={checkpoint_dir}",
+                "output=file",
+                f"output.output_dir={scored_dir}",
+                "output.output_format=json",
+            ]
+            diag_r = _run(cli_cmd, timeout=timeout)
+            if not diag_r["success"] and "not found" in diag_r.get("stderr", "").lower():
+                diag_r["stderr"] += " — install with: pip install dfdiagnoser"
+        except Exception as exc:
+            diag_r = {"returncode": -1, "stdout": "", "stderr": str(exc), "success": False}
+
+        phases["dfdiagnoser"] = diag_r
+
+        # ── Parse scored outputs and build bottleneck summary ─────────────
+        # Import helper functions from dfdiagnoser_service if available;
+        # otherwise use inline equivalents.
+        severity_counts: Dict[str, int] = {
+            "critical": 0, "high": 0, "medium": 0, "low": 0, "trivial": 0
+        }
+        score_labels = {1: "trivial", 2: "low", 3: "medium", 4: "high", 5: "critical"}
+        bottlenecks: List[Dict[str, Any]] = []
+
+        for scored_path in sorted(scored_dir.glob("*_scored.json")):
+            try:
+                with open(scored_path) as f:
+                    rows = json.load(f)
+                view_name = scored_path.stem
+                for row_key, row in (rows.items() if isinstance(rows, dict) else []):
+                    for col, val in row.items():
+                        if not col.endswith("_score") or val is None:
+                            continue
+                        metric = col[:-6]  # strip "_score"
+                        try:
+                            score = int(val)
+                        except (TypeError, ValueError):
+                            continue
+                        label = score_labels.get(score, "unknown")
+                        if label in severity_counts:
+                            severity_counts[label] += 1
+                        if score >= 4:
+                            bottlenecks.append({
+                                "view":        view_name,
+                                "scope":       str(row_key),
+                                "metric":      metric,
+                                "score":       score,
+                                "severity":    label,
+                                "value":       row.get(metric),
+                            })
+            except Exception:
+                pass
+
+        bottlenecks.sort(key=lambda x: x["score"], reverse=True)
+
+        # ── Load raw stats for context ────────────────────────────────────
+        raw_stats: Optional[Dict[str, Any]] = None
+        for p in checkpoint_dir.glob("_raw_stats_*.json"):
+            try:
+                with open(p) as f:
+                    raw_stats = json.load(f)
+                break
+            except Exception:
+                pass
+
+        # ── Persist summary ───────────────────────────────────────────────
+        total_issues = sum(severity_counts.values())
+        critical_high = severity_counts["critical"] + severity_counts["high"]
+        summary = {
+            "run_id":          run_id,
+            "checkpoint_dir":  str(checkpoint_dir),
+            "diagnosis_dir":   str(diagnosis_dir),
+            "severity_counts": severity_counts,
+            "bottlenecks":     bottlenecks[:50],
+            "raw_stats":       raw_stats,
+            "phases":          phases,
+        }
+        diagnosis_file = ws / "diagnosis.json"
+        diagnosis_file.write_text(json.dumps(summary, indent=2))
+
+        _save_state(run_id, {
+            "step":             "bottlenecks_diagnosed",
+            "diagnosis_file":   str(diagnosis_file),
+            "checkpoint_dir":   str(checkpoint_dir),
+            "severity_counts":  severity_counts,
+        })
+        _write_artifact_log(ws, 15, "session_diagnose_bottlenecks", {
+            "total_metrics_scored": total_issues,
+            "high_critical":        critical_high,
+            "severity_counts":      severity_counts,
+        }, run_id)
+
+        msg = (
+            f"Bottleneck diagnosis complete: {total_issues} metric observations, "
+            f"{critical_high} high/critical issue(s) identified."
+        )
+        if not diag_r.get("success") and not bottlenecks:
+            msg = f"DFDiagnoser did not run successfully: {diag_r.get('stderr', '')}"
+
+        return _ok(
+            msg,
+            diagnosis_file=str(diagnosis_file),
+            checkpoint_dir=str(checkpoint_dir),
+            severity_counts=severity_counts,
+            bottlenecks=bottlenecks[:50],
+            phases=phases,
+        )
+
+    @mcp.tool()
+    def session_search_optimization_papers(
+        run_id: str,
+        max_results_per_topic: int = 3,
+        extra_query: Optional[str] = None,
+    ) -> str:
+        """Search arXiv for optimization papers relevant to the diagnosed bottlenecks.
+
+        Reads ``<workspace>/diagnosis.json`` (produced by
+        ``session_diagnose_bottlenecks``) and maps each high/critical bottleneck
+        metric to a targeted arXiv search query.  Results are saved as
+        ``<workspace>/optimization_papers.json`` and returned as a structured
+        summary for the agent to interpret.
+
+        Metric → query mapping examples:
+
+        * ``small_io``   → "small I/O aggregation buffering optimization HPC"
+        * ``rand``       → "random access sequential I/O prefetching optimization"
+        * ``read_time``  → "parallel I/O read throughput optimization filesystem"
+        * ``write_time`` → "parallel I/O write throughput checkpoint optimization"
+        * ``metadata``   → "metadata operation overhead reduction parallel filesystem"
+
+        Args:
+            run_id: Session identifier returned by ``session_create``.
+            max_results_per_topic: Papers to fetch per unique bottleneck topic
+                (1-10, default 3).
+            extra_query: Optional additional search terms appended to every query
+                (e.g. the application name or storage system name).
+
+        Returns:
+            JSON with keys:
+
+            * ``status``         — ``"ok"`` or ``"error"``.
+            * ``topics_searched``— list of search queries issued.
+            * ``papers``         — flat list of unique papers (deduplicated by title),
+              each with ``title``, ``authors``, ``published``, ``abstract`` (truncated),
+              ``url``, and ``topic``.
+            * ``papers_file``    — path to the saved ``optimization_papers.json``.
+        """
+        ws = _ws(run_id)
+        diagnosis_file = ws / "diagnosis.json"
+        if not diagnosis_file.exists():
+            return _err(
+                "diagnosis.json not found — run session_diagnose_bottlenecks first",
+                run_id=run_id,
+            )
+
+        try:
+            diagnosis = json.loads(diagnosis_file.read_text())
+        except Exception as exc:
+            return _err(f"Could not read diagnosis.json: {exc}", run_id=run_id)
+
+        bottlenecks: List[Dict[str, Any]] = diagnosis.get("bottlenecks", [])
+
+        # Map metric name fragments to human-readable search queries
+        _METRIC_QUERIES: Dict[str, str] = {
+            "small_io":        "small I/O aggregation buffering optimization HPC parallel filesystem",
+            "small_read":      "small read aggregation optimization parallel I/O",
+            "small_write":     "small write buffering optimization parallel I/O",
+            "rand":            "random I/O access pattern optimization sequential prefetching HPC",
+            "seq":             "sequential I/O access pattern fragmentation optimization",
+            "read_time":       "parallel I/O read throughput optimization high performance computing",
+            "write_time":      "parallel I/O write throughput checkpoint optimization",
+            "metadata":        "metadata operation overhead reduction parallel filesystem POSIX",
+            "fetch_pressure":  "data loader prefetching pipeline deep learning I/O optimization",
+            "epoch_straggler": "stragglers load imbalance distributed training I/O optimization",
+            "checkpoint":      "checkpoint I/O optimization deep learning distributed training",
+            "intensity":       "I/O intensity compute I/O overlap optimization",
+            "imbalance":       "I/O load imbalance optimization distributed HPC",
+            "bw":              "bandwidth utilization optimization parallel I/O filesystem",
+        }
+
+        # Collect unique topics from high/critical bottlenecks
+        seen_topics: Dict[str, str] = {}  # query → representative metric name
+        for bn in bottlenecks:
+            metric = bn.get("metric", "")
+            for fragment, query in _METRIC_QUERIES.items():
+                if fragment in metric and query not in seen_topics:
+                    seen_topics[query] = metric
+                    break
+
+        # If no bottlenecks mapped, fall back to a general I/O performance query
+        if not seen_topics:
+            seen_topics["I/O performance optimization parallel filesystem HPC"] = "general"
+
+        if extra_query:
+            seen_topics = {f"{q} {extra_query}": m for q, m in seen_topics.items()}
+
+        # Search arXiv for each topic (synchronous wrapper around async HTTP)
+        try:
+            import httpx as _httpx  # noqa: F401 — presence check
+            import xml.etree.ElementTree as _ET
+            import urllib.parse
+
+            _ARXIV = "https://export.arxiv.org/api/query"
+            _NS    = {"atom": "http://www.w3.org/2005/Atom",
+                      "arxiv": "http://arxiv.org/schemas/atom"}
+
+            def _fetch_arxiv(query: str, n: int) -> List[Dict[str, Any]]:
+                params = {
+                    "search_query": f"all:{query}",
+                    "max_results":  n,
+                    "sortBy":       "relevance",
+                    "sortOrder":    "descending",
+                }
+                qs = urllib.parse.urlencode(params)
+                url = f"{_ARXIV}?{qs}"
+                r = _run(["curl", "-s", "--max-time", "30", url], timeout=45)
+                if not r["success"] or not r["stdout"]:
+                    return []
+                try:
+                    root = _ET.fromstring(r["stdout"])
+                    papers = []
+                    for entry in root.findall("atom:entry", _NS):
+                        def _t(tag):
+                            el = entry.find(tag, _NS)
+                            return el.text.strip() if el is not None and el.text else ""
+                        arxiv_id = _t("atom:id").split("/abs/")[-1]
+                        authors  = [
+                            a.find("atom:name", _NS).text.strip()
+                            for a in entry.findall("atom:author", _NS)
+                            if a.find("atom:name", _NS) is not None
+                        ]
+                        papers.append({
+                            "title":     _t("atom:title").replace("\n", " "),
+                            "authors":   authors,
+                            "published": _t("atom:published")[:10],
+                            "abstract":  _t("atom:summary").replace("\n", " ")[:400],
+                            "url":       f"https://arxiv.org/abs/{arxiv_id}",
+                            "pdf_url":   f"https://arxiv.org/pdf/{arxiv_id}",
+                        })
+                    return papers
+                except Exception:
+                    return []
+
+            max_results_per_topic = max(1, min(10, max_results_per_topic))
+            all_papers: List[Dict[str, Any]] = []
+            seen_titles: set = set()
+            topics_searched: List[str] = []
+
+            for query, metric in seen_topics.items():
+                topics_searched.append(query)
+                for p in _fetch_arxiv(query, max_results_per_topic):
+                    title_key = p["title"].lower()[:80]
+                    if title_key not in seen_titles:
+                        seen_titles.add(title_key)
+                        all_papers.append({**p, "topic": metric})
+
+        except Exception as exc:
+            return _err(f"Paper search failed: {exc}", run_id=run_id)
+
+        result = {
+            "run_id":          run_id,
+            "topics_searched": topics_searched,
+            "papers":          all_papers,
+        }
+        papers_file = ws / "optimization_papers.json"
+        papers_file.write_text(json.dumps(result, indent=2))
+        result["papers_file"] = str(papers_file)
+
+        _write_artifact_log(ws, 16, "session_search_optimization_papers", {
+            "topics":       len(topics_searched),
+            "papers_found": len(all_papers),
+        }, run_id)
+
+        return _ok(
+            f"Found {len(all_papers)} unique optimization papers across "
+            f"{len(topics_searched)} bottleneck topic(s).",
+            papers_file=str(papers_file),
+            topics_searched=topics_searched,
+            papers=all_papers,
+        )

@@ -1,3 +1,14 @@
+## I/O Optimization Key Papers
+
+When suggesting optimizations or interpreting bottleneck diagnosis results, consult:
+
+- **WisIO** (Yildirim et al., ICS 2025) — maps dfdiagnoser metric names
+  (small_io_pct, rand_pct, fetch_pressure, etc.) to three-level optimizations.
+  Full mapping: `.agents/skills/dftracer-io-optimization/SKILL.md`
+- **Drishti** (Bez et al., PDSW 2022) — application/library/system tier guidance
+  matching the optimize.yaml sub-recipe structure (L1/L2/L3).
+  Full guidance: `.goose/hints/10-io-optimization-papers.md`
+
 ## DFTracer References
 
 Use these links when implementing DFTracer behavior:

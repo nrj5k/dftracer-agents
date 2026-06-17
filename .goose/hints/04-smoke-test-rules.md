@@ -96,3 +96,90 @@ The split tool reads all `*.pfw` / `*.pfw.gz` files from the traces directory.
 If dftracer creates files in a subfolder (e.g., `traces/ior/`), you may need to
 move them to `traces/` root before splitting, or configure the tool to look in
 the correct subdirectory.
+
+## OpenMPI in Root Containers
+
+When running smoke tests inside a Docker/Singularity container as root (uid=0),
+OpenMPI refuses to launch by default:
+
+```
+There are open-mpi components that should not be run as root.
+```
+
+Fix: pass `--allow-run-as-root` and the two confirm env vars to mpirun:
+
+```bash
+OMPI_ALLOW_RUN_AS_ROOT=1 OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1 \
+  mpirun -np 1 --allow-run-as-root ./src/ior -a MPIIO ...
+```
+
+The MCP `session_run_smoke_test` and `session_run_with_dftracer` tools strip
+the mpirun launcher. For single-rank MPI tests that MUST use mpirun (e.g., the
+binary unconditionally calls MPI_Init), prepend the env vars to the command
+or add them to `env_extra`:
+```json
+{"OMPI_ALLOW_RUN_AS_ROOT": "1", "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM": "1"}
+```
+
+## DFTRACER_DATA_DIR=all (standard for pipeline trace runs)
+
+The pipeline always sets `DFTRACER_DATA_DIR=all` when running `session_run_with_dftracer`
+via the `data_dir="all"` parameter. This captures I/O on **any** file path, not just
+paths under the workspace source directory.
+
+This is the default because benchmark I/O often lands in `/tmp`, `/scratch`, or other
+directories outside the workspace. Using `all` ensures no I/O events are silently dropped.
+
+```bash
+# How the pipeline passes it:
+session_run_with_dftracer(run_id=RUN_ID, ..., data_dir="all", ...)
+# Which sets: DFTRACER_DATA_DIR=all
+```
+
+## dftracer_service — Separate Per-Node Background Daemon
+
+`dftracer_service` is an **independent** background daemon, separate from the
+application's dftracer instrumentation. It runs per-node and writes its own trace
+files to a **different** `DFTRACER_LOG_FILE` prefix than the application.
+
+Pipeline sequence (Step 7) — all via MCP tools:
+```
+session_service_start(run_id=RUN_ID)
+session_run_with_dftracer(run_id=RUN_ID, ..., data_dir="all", ...)
+session_service_stop(run_id=RUN_ID)
+```
+
+`session_service_start` automatically:
+- Locates the binary at `<WS>/install_ann/bin/dftracer_service` or via PATH
+- Creates state dir at `<WS>/traces/dftracer_service/<hostname>/`
+- Sets `DFTRACER_LOG_FILE=<WS>/traces/service_<hostname>` (its OWN log prefix)
+- Sets `DFTRACER_TRACE_INTERVAL_MS=1000` and `DFTRACER_LIBUV_THREADS=1`
+- Saves state_dir to `session.json` so `session_service_stop` can find it
+
+`session_service_stop` reads `session.json` for the state_dir and binary path —
+no arguments needed beyond `run_id`. A non-zero exit is treated as a warning
+(daemon may have already exited cleanly).
+
+Key points:
+- If the binary is not found, `session_service_start` returns an error — continue anyway
+- Service writes to `traces/service_<hostname>.*` — separate from app traces
+- Application writes to `traces/<run_id>.*` — set by `session_run_with_dftracer`
+- Both sets land in the same `traces/` directory, picked up by `session_split_traces`
+
+## MPI-IO and HDF5 I/O Appear as POSIX Events in Traces
+
+dftracer's POSIX/STDIO hooks (via brahma/gotcha) intercept at the kernel syscall
+boundary. MPI-IO and HDF5 both ultimately call POSIX `open`/`read`/`write`/`close`
+under the hood. This means:
+
+- **POSIX backend**: annotated `POSIX_Create`, `POSIX_Open` etc. appear in trace
+- **MPIIO backend**: `MPIIO_Access`, `MPIIO_Create` etc. appear (manual annotations)
+  PLUS many `open`, `close`, `fopen64`, `opendir` from the POSIX hook layer
+- **HDF5 backend**: `HDF5_Create`, `HDF5_Open` etc. appear PLUS POSIX hook events
+
+There are **no separate** `MPI_File_*` or `H5*` hook events in the current dftracer
+version — those APIs are not intercepted at the library level. The manual annotations
+you insert via macros are the only source of MPI-IO/HDF5 spans by name.
+
+This is expected and correct. When reviewing traces for MPI-IO or HDF5 benchmarks,
+expect a mix of named annotated spans (from macros) and POSIX category events (from hooks).

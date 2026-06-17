@@ -93,6 +93,21 @@ dftracer__session_read_file(run_id="{{ run_id }}", filepath="{{ filepath }}",
 
 Record the original line count — the written file must have MORE lines.
 
+For C/C++ files — run this pre-scan before writing any macros:
+```bash
+WS=/workspaces/dftracer-agents/workspaces/{{ run_id }}
+F=${WS}/annotated/{{ filepath }}
+
+echo "=== Braceless early-exit lines (must add braces before inserting END) ==="
+grep -n "if.*return\|if.*continue\|if.*break" "$F" | grep -v "{" | grep -v "//"
+
+echo "=== Forward declarations (do NOT annotate these) ==="
+grep -n "^[a-zA-Z_].*(.*);" "$F" | grep -v "^\s*//"
+```
+For every braceless line in the first check: add `{` / `}` around the body FIRST,
+then annotate. Skipping this step caused build failures in the IOR session (POSIX_Create,
+POSIX_Open, HDF5_GetFileSize, HDF5_Access — all had braceless dryRun returns).
+
 ══════════════════════════════════════════════════════
 STEP 1.5 — PREPARE SYNTAX CHECK (runs once per file)
 ══════════════════════════════════════════════════════

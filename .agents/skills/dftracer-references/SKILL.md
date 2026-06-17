@@ -3,6 +3,18 @@ name: dftracer-references
 description: DFTracer documentation links, artifact log locations, step numbering, and how to read session logs
 ---
 
+## Key I/O Optimization Papers
+
+Use these two papers when diagnosing bottlenecks and proposing optimizations
+(see also `.agents/skills/dftracer-io-optimization/SKILL.md` for the full mapping table):
+
+- **WisIO** — Yildirim et al., ICS 2025: multi-perspective bottleneck detection;
+  maps metric names (small_io_pct, rand_pct, fetch_pressure …) to root causes and
+  L1/L2/L3 fixes.
+- **Drishti** — Bez et al., PDSW 2022: user-facing optimization journey guide;
+  organizes suggestions into application / library / system tiers matching the
+  optimize.yaml sub-recipe levels.
+
 ## DFTracer References
 
 Use these links when implementing DFTracer behavior:

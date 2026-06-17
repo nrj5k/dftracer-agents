@@ -684,3 +684,56 @@ fix: |
     find <workspace>/traces -name "*.pfw*" -type f
 tags: [dftracer, trace-file, naming, log-file, prefix]
 ---
+
+---
+context: Inserting DFTRACER_C_FUNCTION_END into a braceless single-line if body
+error: |
+  annotated/src/aiori-POSIX.c:312: error: expected ';' before 'DFTRACER_C_FUNCTION_END'
+  — or the END made the early return unconditional, silently skipping actual work
+root_cause: |
+  C allows braceless single-line if bodies:
+    if (dryRun) return NULL;
+  Inserting END on its own line turns the return into the if body and END into
+  a statement after the if — now always executed. Alternatively, gcc treats the
+  END expansion as a compound statement which requires braces.
+fix: |
+  Before inserting any macro near a braceless if body, add explicit braces first:
+    // Before:  if (dryRun) return NULL;
+    // After:
+    if (dryRun) {
+      DFTRACER_C_FUNCTION_END();
+      return NULL;
+    }
+  Grep for the pattern before annotating each file:
+    grep -n "if.*return\|if.*continue\|if.*break" <file.c> | grep -v "{" | grep -v "//"
+  Any hit is a braceless body that needs braces before you can insert a macro near it.
+tags: [c, annotation, braceless, if-body, dryRun, build-error]
+
+---
+context: DFTRACER_C_FINI placed before the top-level benchmark call inside main — all traces empty
+error: |
+  Trace files created but contain only the main span; no backend-specific spans
+  (POSIX_Create, MPIIO_Open, HDF5_Close, etc.) appear in the trace output.
+root_cause: |
+  main() called DFTRACER_C_FINI() before the top-level benchmark function
+  (e.g. ior_main(), run_benchmark(), do_test()) executed. dftracer finalized and
+  stopped recording before any backend I/O ran. The macros inside backend functions
+  were never reached while dftracer was active.
+fix: |
+  DFTRACER_C_FINI() must come AFTER the last meaningful work call, not before it.
+  For programs where main() delegates to a top-level function:
+    int main(...) {
+      MPI_Init(...);
+      DFTRACER_C_INIT(NULL, NULL, NULL);
+      DFTRACER_C_FUNCTION_START();
+      ...
+      ior_main(opts);          // ← all real I/O happens here
+      ...
+      DFTRACER_C_FUNCTION_END();
+      DFTRACER_C_FINI();       // ← AFTER ior_main returns, not before
+      MPI_Finalize();
+      return 0;
+    }
+  Rule: scan main() for the "real work" call (typically the only call with IOR/HDF5/MPI
+  semantics) and ensure FINI appears AFTER it, not before the final return only.
+tags: [c, annotation, fini, main, empty-trace, benchmark-wrapper]

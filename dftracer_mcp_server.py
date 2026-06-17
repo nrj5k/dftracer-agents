@@ -68,6 +68,9 @@ def _bootstrap_package_context() -> None:
     session_pkg = types.ModuleType("dftracer_agents.mcp_tools.tools.session")
     session_pkg.__path__ = [str(tools_dir / "session")]
 
+    papers_pkg = types.ModuleType("dftracer_agents.mcp_tools.tools.papers")
+    papers_pkg.__path__ = [str(tools_dir / "papers")]
+
     # Real MCPServiceFactory from disk
     factory_path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "mcp_service_factory.py"
     factory_mod = types.ModuleType("dftracer_agents.mcp_service_factory")
@@ -86,6 +89,7 @@ def _bootstrap_package_context() -> None:
     sys.modules["dftracer_agents.mcp_tools.tools"] = tools_pkg
     sys.modules["dftracer_agents.mcp_tools.tools.dftracer"] = dftracer_pkg
     sys.modules["dftracer_agents.mcp_tools.tools.session"] = session_pkg
+    sys.modules["dftracer_agents.mcp_tools.tools.papers"] = papers_pkg
 
 
 def _load_module(name: str, path: Path):
@@ -158,6 +162,28 @@ def _build_docs_server() -> FastMCP:
     return server
 
 
+def _build_diagnoser_server() -> FastMCP:
+    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "dfdiagnoser_service.py"
+    mod = _load_module("dftracer.dfdiagnoser_service", path)
+    service = mod.DFDiagnoserService()
+
+    server = FastMCP("DFDiagnoser")
+    for tool in asyncio.run(service.diagnoser_subservice.list_tools()):
+        server.add_tool(tool)
+    return server
+
+
+def _build_papers_server() -> FastMCP:
+    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "papers" / "academic_service.py"
+    mod = _load_module("papers.academic_service", path)
+    service = mod.AcademicPapersService()
+
+    server = FastMCP("AcademicPapers")
+    for tool in asyncio.run(service.papers_subservice.list_tools()):
+        server.add_tool(tool)
+    return server
+
+
 def _build_session_server() -> FastMCP:
     session_dir = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "session"
     # Load session submodules in dependency order so relative imports resolve
@@ -170,7 +196,7 @@ def _build_session_server() -> FastMCP:
     service = mod.DFTracerSessionService()
 
     server = FastMCP("DFTracerSession")
-    for sub_name in ("session_subservice", "pipeline_subservice"):
+    for sub_name in ("session_subservice", "pipeline_subservice", "daemon_subservice"):
         sub = getattr(service, sub_name, None)
         if sub is None:
             continue
@@ -187,11 +213,17 @@ def build_server(service: str) -> FastMCP:
         return _build_utils_server()
 
     if service == "analyzer":
-        combined = FastMCP("DFAnalyzer+Plot")
-        for srv in (_build_analyzer_server(), _build_plot_server()):
+        combined = FastMCP("DFAnalyzer+Plot+Diagnoser")
+        for srv in (_build_analyzer_server(), _build_plot_server(), _build_diagnoser_server()):
             for tool in asyncio.run(srv.list_tools()):
                 combined.add_tool(tool)
         return combined
+
+    if service == "diagnoser":
+        return _build_diagnoser_server()
+
+    if service == "papers":
+        return _build_papers_server()
 
     if service == "session":
         return _build_session_server()
@@ -205,8 +237,10 @@ def build_server(service: str) -> FastMCP:
         _build_utils_server(),
         _build_analyzer_server(),
         _build_plot_server(),
+        _build_diagnoser_server(),
         _build_session_server(),
         _build_docs_server(),
+        _build_papers_server(),
     ):
         for tool in asyncio.run(srv.list_tools()):
             combined.add_tool(tool)
@@ -223,7 +257,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--service",
-        choices=["utils", "analyzer", "session", "docs", "both"],
+        choices=["utils", "analyzer", "session", "docs", "diagnoser", "papers", "both"],
         default="both",
         help="Which service(s) to expose (default: both)",
     )

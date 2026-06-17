@@ -16,12 +16,34 @@ extensions:
     cmd: dftracer-mcp-server
     args: []
     timeout: 300
+    # Hub-and-spoke tier 1: orchestrator only gets session-management and
+    # analysis tools. Read/write/docs are scoped to annotate-* sub-recipes.
+    # 52 → 13 tools = ~75% schema overhead reduction per inference call.
+    available_tools:
+      - session_run_pipeline
+      - session_install_dftracer
+      - session_build_annotated
+      - session_list_files
+      - session_run_smoke_test
+      - session_service_start
+      - session_run_with_dftracer
+      - session_service_stop
+      - session_collect_system_info
+      - session_split_traces
+      - session_analyze_traces
+      - session_diagnose_bottlenecks
+      - session_search_optimization_papers
+      - session_annotation_report
   - name: developer
     type: platform
     bundled: true
 
 settings:
   max_turns: 200
+  # Model cascade: orchestrator coordinates and routes; it doesn't mutate code.
+  # Use a lighter model here; annotate-* sub-recipes use the full code model.
+  # Set GOOSE_MODEL env var before launching to activate the lighter model.
+  # e.g.: GOOSE_MODEL=qwen3.6:35b-a3b goose run --recipe pipeline.yaml
 
 sub_recipes:
   - name: annotate-c
@@ -88,6 +110,27 @@ instructions: |
 
     dftracer__session_install_dftracer(run_id=RUN_ID)
     On failure → print error and stop.
+
+  Verify dftracer backend support (IOR lesson: default build lacks MPI/HDF5):
+  ```bash
+  CONFIG_HPP=$(find <WS>/install_ann -name dftracer_config.hpp 2>/dev/null | head -1)
+  if [[ -n "$CONFIG_HPP" ]]; then
+    MPI_ENABLED=$(grep -m1 DFTRACER_MPI_ENABLE "$CONFIG_HPP" | awk '{print $3}')
+    echo "DFTRACER_MPI_ENABLE = $MPI_ENABLED"
+  fi
+  ```
+  If LANGUAGES contains "mpi" or "hdf5" AND MPI_ENABLED is 0 or missing:
+    → Rebuild dftracer with MPI/HDF5 support before continuing:
+      ```bash
+      cmake -DCMAKE_INSTALL_PREFIX=<WS>/install_ann \
+            -DDFTRACER_ENABLE_MPI=ON \
+            -DDFTRACER_ENABLE_HDF5=ON \
+            -DDFTRACER_ENABLE_FTRACING=ON \
+            <WS>/dftracer_src/
+      make -j4 install
+      ```
+    → Print: "Rebuilt dftracer with MPI/HDF5 support."
+  If LANGUAGES is POSIX-only, skip this check.
 
   Baseline build (empty annotations, just verifies the patched build system):
 
@@ -290,14 +333,69 @@ instructions: |
   STEP 7 — TRACE COLLECTION AND ANALYSIS
   ══════════════════════════════════════════════════════════════════════
 
+  The trace run has two independent components:
+    • session_service_start/stop — per-node background daemon; writes its own traces
+    • session_run_with_dftracer  — runs the application with DFTRACER_DATA_DIR=all
+
+  7a. Start the dftracer_service background daemon (independent from the app):
+  dftracer__session_service_start(run_id=RUN_ID)
+  Note: if the binary is not found, the tool returns an error — continue to 7b anyway.
+  The daemon writes to traces/service_<hostname>.* independent of the app traces.
+
+  7b. Run the application with dftracer (inline annotations + POSIX/STDIO hooks):
   dftracer__session_run_with_dftracer(
     run_id=RUN_ID, command=SMOKE_CMD,
-    subfolder="build_ann", env_extra=DFTRACER_INIT_ENV,
+    subfolder="build_ann",
+    data_dir="all",
+    env_extra=DFTRACER_INIT_ENV,
   )
+  Note: data_dir="all" → DFTRACER_DATA_DIR=all captures I/O on any path.
 
+  7c. Stop the dftracer_service daemon (non-fatal if it already exited):
+  dftracer__session_service_stop(run_id=RUN_ID)
+
+  7d. Collect system configuration snapshot for this node:
+  dftracer__session_collect_system_info(run_id=RUN_ID)
+  This captures CPU (cores, speeds, cache), memory (total/available/swap),
+  network interfaces (type, speed, duplex), and mounted filesystems (type, size).
+  Saved to <WS>/system_config.json for later correlation with trace analysis.
+
+  7e. Split and analyze all traces (app + service traces are both in traces/):
   APP_NAME = first component of RUN_ID (before "/")
   dftracer__session_split_traces(run_id=RUN_ID, app_name=APP_NAME)
   dftracer__session_analyze_traces(run_id=RUN_ID, query_type="summary")
+
+  7f. Diagnose bottlenecks (dfanalyzer checkpoint → dfdiagnoser scoring):
+  dftracer__session_diagnose_bottlenecks(run_id=RUN_ID, analyzer_preset="posix")
+  This runs dfanalyzer with checkpoint output, then pipes the checkpoint through
+  dfdiagnoser to score every metric (trivial/low/medium/high/critical).
+  High and critical findings are surfaced with metric name, scope, and value.
+  Output: <WS>/diagnosis.json  (also <WS>/dfanalyzer_checkpoint/ and <WS>/diagnosis/scored/)
+  If dfanalyzer or dfdiagnoser are not installed, print the error and continue — non-fatal.
+
+  7g. Search for optimization papers relevant to the diagnosed bottlenecks:
+  dftracer__session_search_optimization_papers(run_id=RUN_ID)
+  Reads diagnosis.json, maps each high/critical metric to a targeted arXiv query,
+  and fetches relevant papers (parallel I/O, small I/O, random access, metadata, etc.).
+  Output: <WS>/optimization_papers.json
+  Include the top 2-3 papers per bottleneck in the final report with titles and URLs.
+  Non-fatal: if no papers are found or arXiv is unreachable, skip and continue.
+
+  BUILT-IN REFERENCES (always use these when interpreting diagnosis.json output):
+
+  WisIO (Yildirim et al., ICS 2025) — "WisIO: Automated I/O Bottleneck Detection
+  with Multi-Perspective Views for HPC Workflows"
+    Use to map metric names (small_io_pct, rand_pct, fetch_pressure, etc.) to root
+    causes and three-level (app/software/system) optimization strategies.
+
+  Drishti (Bez et al., PDSW 2022) — "Drishti: Guiding end-users in the I/O
+  optimization journey"
+    Use to structure per-category optimization suggestions in the final report.
+    Categories: small-io, metadata, sequentiality, shared-file.
+
+  In the final report (Step 9), for each high/critical bottleneck found, include
+  one sentence from WisIO or Drishti explaining the root cause and the recommended
+  next step — then direct the user to run: goose run --recipe optimize.yaml
 
 
   ══════════════════════════════════════════════════════════════════════
@@ -348,4 +446,7 @@ instructions: |
   ║  Annotated source: <WS>/annotated/                        ║
   ║  Trace files:      <WS>/traces/                           ║
   ║  Split traces:     <WS>/traces_split/                     ║
+  ║  System config:    <WS>/system_config.json                ║
+  ║  Bottleneck diag:  <WS>/diagnosis.json                    ║
+  ║  Opt. papers:      <WS>/optimization_papers.json          ║
   ╚═══════════════════════════════════════════════════════════╝

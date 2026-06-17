@@ -33,12 +33,25 @@ extensions:
     cmd: dftracer-mcp-server
     args: []
     timeout: 300
+    # Hub-and-spoke tier 2: annotation agent only gets read/write/docs tools.
+    # Session setup and analysis tools live in the orchestrator (pipeline.yaml).
+    # 52 → 6 tools = ~88% schema overhead reduction per inference call.
+    available_tools:
+      - session_read_file
+      - session_write_file
+      - docs_search
+      - docs_fetch_page
+      - docs_search_key_pages
+      - docs_list_sources
   - name: developer
     type: platform
     bundled: true
 
 settings:
   max_turns: 30
+  # Model cascade: annotation agents mutate source code and require deep code
+  # understanding — use the full code model here (e.g. kimi-k2.7-code).
+  # The orchestrator (pipeline.yaml) can use a lighter routing model instead.
 
 instructions: |
   You are a dftracer annotation specialist — Python (per file).
