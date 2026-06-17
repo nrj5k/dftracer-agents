@@ -38,8 +38,8 @@ extensions:
     available_tools:
       - session_read_file
       - session_write_file
-      - session_add_braces
-      - session_extract_functions
+      - clang_add_braces
+      - clang_extract_functions
       - docs_search
       - docs_fetch_page
       - docs_search_key_pages
@@ -83,7 +83,7 @@ instructions: |
 
   Before extracting functions, ensure every if/for/while/do body has explicit {}:
 
-    dftracer__session_add_braces(run_id="{{ run_id }}", filepath="{{ filepath }}")
+    dftracer__clang_add_braces(run_id="{{ run_id }}", filepath="{{ filepath }}")
 
   This rewrites the annotated copy so braceless bodies like:
       if (err) return -1;
@@ -104,7 +104,7 @@ instructions: |
 
   Call the function extractor on the now-braced file:
 
-    dftracer__session_extract_functions(run_id="{{ run_id }}", filepath="{{ filepath }}")
+    dftracer__clang_extract_functions(run_id="{{ run_id }}", filepath="{{ filepath }}")
 
   This returns a JSON list of all function/method definitions with exact line numbers:
     • name             — function or method name

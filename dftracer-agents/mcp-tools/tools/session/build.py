@@ -233,13 +233,16 @@ def _patch_autotools_makefile(
 
     injection = textwrap.dedent("""\
         # --- dftracer (auto-injected via pkg-config) ---
-        # PKG_CONFIG_PATH must include install_ann/lib/pkgconfig — set by
-        # session_build_annotated; ensure session_generate_dftracer_pc was run first.
+        # AM_CPPFLAGS / AM_LDFLAGS are the correct autotools hooks;
+        # they are accumulated by automake and not overridden by configure.
+        # PKG_CONFIG_PATH must include install_ann/lib/pkgconfig.
+        # Do NOT pass -DDFTRACER_ENABLE: dftracer.h defines it as a string
+        # and redefining it on the command line causes a compiler warning.
         DFTRACER_CFLAGS  := $(shell pkg-config --cflags dftracer 2>/dev/null)
         DFTRACER_LDFLAGS := $(shell pkg-config --libs   dftracer 2>/dev/null)
-        CFLAGS   += $(DFTRACER_CFLAGS)   -DDFTRACER_ENABLE
-        CXXFLAGS += $(DFTRACER_CFLAGS)   -DDFTRACER_ENABLE
-        LDFLAGS  += $(DFTRACER_LDFLAGS)
+        AM_CPPFLAGS += $(DFTRACER_CFLAGS)
+        AM_CXXFLAGS += $(DFTRACER_CFLAGS)
+        AM_LDFLAGS  += $(DFTRACER_LDFLAGS)
         # ------------------------------------------------
     """)
     return injection + "\n" + content

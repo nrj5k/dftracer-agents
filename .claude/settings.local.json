@@ -63,7 +63,24 @@
       "mcp__dftracer__session_list_files",
       "mcp__dftracer__session_read_file",
       "mcp__dftracer__session_extract_functions",
-      "Bash(gcc -include /tmp/dftracer_stub.h -fsyntax-only -w -x c /workspaces/dftracer-agents/workspaces/ior/clean-20260617/annotated/src/aiori-POSIX.c)"
+      "Bash(gcc -include /tmp/dftracer_stub.h -fsyntax-only -w -x c /workspaces/dftracer-agents/workspaces/ior/clean-20260617/annotated/src/aiori-POSIX.c)",
+      "mcp__dftracer__dftracer_get_init_fini",
+      "mcp__dftracer__dftracer_get_function_annotations",
+      "mcp__dftracer__clang_add_braces",
+      "mcp__dftracer__clang_extract_functions",
+      "Bash(/bin/bash /workspaces/dftracer-agents/workspaces/ior/20260617_185032/dftracer_src/autobuild.sh --install-mode cmake --build-type RelWithDebInfo --install-prefix /workspaces/dftracer-agents/workspaces/ior/20260617_185032/install_ann --enable-mpi --jobs 4)",
+      "mcp__dftracer__session_generate_dftracer_pc",
+      "Bash(PKG_CONFIG_PATH=/workspaces/dftracer-agents/workspaces/ior/20260617_185032/install_ann/lib/pkgconfig pkg-config --cflags --libs dftracer)",
+      "Bash(PKG_CONFIG_PATH=/workspaces/dftracer-agents/workspaces/ior/20260617_185032/install_ann/lib/pkgconfig make -C /workspaces/dftracer-agents/workspaces/ior/20260617_185032/build_ann/src -n ior-ior-main.o)",
+      "Bash(PKG_CONFIG_PATH=/workspaces/dftracer-agents/workspaces/ior/20260617_185032/install_ann/lib/pkgconfig make -C /workspaces/dftracer-agents/workspaces/ior/20260617_185032/build_ann/src -p)",
+      "Bash(make -C /workspaces/dftracer-agents/workspaces/ior/20260617_185032/build_ann -j4 'CPPFLAGS=-I/workspaces/dftracer-agents/workspaces/ior/20260617_185032/install_ann/include -DDFTRACER_ENABLE' 'LDFLAGS=-L/workspaces/dftracer-agents/workspaces/ior/20260617_185032/install_ann/lib -Wl,-rpath,/workspaces/dftracer-agents/workspaces/ior/20260617_185032/install_ann/lib' LIBS=-ldftracer_core)",
+      "Bash(make -C /workspaces/dftracer-agents/workspaces/ior/20260617_185032/build_ann -j4 CPPFLAGS=-I/workspaces/dftracer-agents/workspaces/ior/20260617_185032/install_ann/include 'LDFLAGS=-L/workspaces/dftracer-agents/workspaces/ior/20260617_185032/install_ann/lib -Wl,-rpath,/workspaces/dftracer-agents/workspaces/ior/20260617_185032/install_ann/lib' LIBS=-ldftracer_core)",
+      "Bash(python3)",
+      "Bash(make -C /workspaces/dftracer-agents/workspaces/ior/20260617_185032/build_ann -j1 CPPFLAGS=-I/workspaces/dftracer-agents/workspaces/ior/20260617_185032/install_ann/include 'LDFLAGS=-L/workspaces/dftracer-agents/workspaces/ior/20260617_185032/install_ann/lib -Wl,-rpath,/workspaces/dftracer-agents/workspaces/ior/20260617_185032/install_ann/lib' LIBS=-ldftracer_core)",
+      "Bash(make -C /workspaces/dftracer-agents/workspaces/ior/20260617_185032/build_ann -j4 CPPFLAGS=-I/workspaces/dftracer-agents/workspaces/ior/20260617_185032/install_ann/include 'LDFLAGS=-L/workspaces/dftracer-agents/workspaces/ior/20260617_185032/install_ann/lib -Wl,-rpath,/workspaces/dftracer-agents/workspaces/ior/20260617_185032/install_ann/lib' 'LIBS=-ldftracer_core -lm')",
+      "Bash(make -C /workspaces/dftracer-agents/workspaces/ior/20260617_185032/build_ann -j1 CPPFLAGS=-I/workspaces/dftracer-agents/workspaces/ior/20260617_185032/install_ann/include 'LDFLAGS=-L/workspaces/dftracer-agents/workspaces/ior/20260617_185032/install_ann/lib -Wl,-rpath,/workspaces/dftracer-agents/workspaces/ior/20260617_185032/install_ann/lib' 'LIBS=-ldftracer_core -lm')",
+      "Bash(make -C /workspaces/dftracer-agents/workspaces/ior/20260617_185032/build_ann clean)",
+      "Bash(grep -E \"^/.*error:|warning: implicit|Error [0-9]|Leaving|: ior$|: mdtest$\")"
     ],
     "additionalDirectories": [
       "/tmp/test-merge-empty"

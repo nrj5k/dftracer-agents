@@ -188,7 +188,7 @@ def _build_session_server() -> FastMCP:
     session_dir = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "session"
     # Load session submodules in dependency order so relative imports resolve
     for submod in ("workspace", "detection", "annotation", "build", "install",
-                   "session_tools", "pipeline_tools"):
+                   "session_tools", "annotation_clang", "pipeline_tools"):
         _load_module(f"session.{submod}", session_dir / f"{submod}.py")
 
     path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "dftracer_service.py"
@@ -196,7 +196,13 @@ def _build_session_server() -> FastMCP:
     service = mod.DFTracerSessionService()
 
     server = FastMCP("DFTracerSession")
-    for sub_name in ("session_subservice", "pipeline_subservice", "daemon_subservice"):
+    for sub_name in (
+        "session_subservice",
+        "pipeline_subservice",
+        "daemon_subservice",
+        "clang_subservice",
+        "annotation_api_subservice",
+    ):
         sub = getattr(service, sub_name, None)
         if sub is None:
             continue

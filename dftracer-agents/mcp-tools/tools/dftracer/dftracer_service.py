@@ -37,7 +37,313 @@ from fastmcp import FastMCP
 from ...mcp_service_factory import MCPService, MCPServiceFactory
 from ..session.session_tools import register_session_tools
 from ..session.pipeline_tools import register_pipeline_tools, register_run_tools
+from ..session.annotation_clang import register_clang_tools
+from ..session.annotation_python import register_python_tools
+from ..session.annotation_ai import register_ai_tools
 from ..session.workspace import _ws, _load_state, _save_state, _ok, _err, _run
+
+
+def register_annotation_api_tools(mcp: FastMCP) -> None:
+    """Register dftracer annotation API reference tools on *mcp*.
+
+    These four tools return the correct macro names, signatures, and doc URL
+    for a given source language so that annotation agents always use the right
+    API without having to search the documentation from scratch.
+    """
+
+    _DOCS_BASE = "https://dftracer.readthedocs.io/en/latest"
+    _PYDOCS_BASE = "https://dftracer.readthedocs.io/projects/pydftracer/en/latest"
+
+    @mcp.tool()
+    def dftracer_get_init_fini(language: str) -> str:
+        """Return the correct dftracer init/fini macros and API doc URL for a language.
+
+        Provides the exact initialization and finalization macro signatures so the
+        annotation agent inserts the right calls in ``main()`` (or the equivalent
+        module-level setup) without guessing.
+
+        Args:
+            language: ``"c"``, ``"cpp"``, or ``"python"`` (case-insensitive).
+
+        Returns:
+            JSON string with keys:
+                * ``status``   — ``"ok"`` or ``"error"``.
+                * ``language`` — normalized language name.
+                * ``init``     — init macro / call signature.
+                * ``fini``     — fini macro / call signature.
+                * ``notes``    — placement guidance.
+                * ``doc_url``  — URL of the relevant API doc page.
+        """
+        lang = language.strip().lower()
+        if lang == "c":
+            return _ok(
+                "C init/fini macros",
+                language="c",
+                init="DFTRACER_C_INIT(log_file, data_dirs, process_id)",
+                fini="DFTRACER_C_FINI()",
+                notes=(
+                    "Insert DFTRACER_C_INIT as the FIRST statement in main() "
+                    "(or after MPI_Init if MPI is used). "
+                    "IMPORTANT: DFTRACER_C_INIT must come BEFORE DFTRACER_C_FUNCTION_START "
+                    "when both are present in the same function. "
+                    "Insert DFTRACER_C_FINI before MPI_Finalize (if present), "
+                    "and DFTRACER_C_FUNCTION_END before every return/exit in main(). "
+                    "Pass NULL for unused args: DFTRACER_C_INIT(NULL, NULL, NULL)."
+                ),
+                doc_url=f"{_DOCS_BASE}/c-api.html",
+            )
+        if lang in ("cpp", "c++"):
+            return _ok(
+                "C++ init/fini macros",
+                language="cpp",
+                init="DFTRACER_CPP_INIT(log_file, data_dirs, process_id)",
+                fini="DFTRACER_CPP_FINI()",
+                notes=(
+                    "Insert DFTRACER_CPP_INIT as the FIRST statement in main() "
+                    "(or after MPI_Init). "
+                    "IMPORTANT: DFTRACER_CPP_INIT must come BEFORE DFTRACER_CPP_FUNCTION() "
+                    "when both are present in the same function. "
+                    "Insert DFTRACER_CPP_FINI before MPI_Finalize / before the final return. "
+                    "Use DFTRACER_CPP_REGION_START/END to bracket main() body "
+                    "instead of DFTRACER_CPP_FUNCTION(). "
+                    "Pass nullptr for unused args: DFTRACER_CPP_INIT(nullptr, nullptr, nullptr)."
+                ),
+                doc_url=f"{_DOCS_BASE}/c-api.html",
+            )
+        if lang == "python":
+            return _ok(
+                "Python init/fini API",
+                language="python",
+                init=(
+                    "from dftracer.python import dftracer, dft_fn as DFTracerFn\n"
+                    "_dft = DFTracerFn(\"<category>\")\n"
+                    "_dft_log = dftracer.initialize_log("
+                    "logfile=None, data_dir=None, process_id=-1)"
+                ),
+                fini="_dft_log.finalize()",
+                notes=(
+                    "dft_fn is a CLASS, not a function — instantiate it with a category string: "
+                    "_dft = DFTracerFn(\"mymodule\"). "
+                    "Call dftracer.initialize_log() at module top-level (entry-point files only). "
+                    "Note: data_dir (singular), not data_dirs. "
+                    "Call _dft_log.finalize() before every return in main(), not at module level. "
+                    "Use @_dft.log / @_dft.log_init / @_dft.log_static decorators — "
+                    "NOT @dft_fn.log. See python_annotate_file tool for automated insertion."
+                ),
+                doc_url=f"{_PYDOCS_BASE}/api.html",
+            )
+        return _err(
+            f"Unknown language '{language}'. Supported: 'c', 'cpp', 'python'.",
+            supported=["c", "cpp", "python"],
+        )
+
+    @mcp.tool()
+    def dftracer_get_function_annotations(language: str) -> str:
+        """Return the correct function-level annotation macros for a language.
+
+        Provides the exact macro (or decorator) to annotate individual functions
+        so that dftracer records per-function timing spans.
+
+        Args:
+            language: ``"c"``, ``"cpp"``, or ``"python"`` (case-insensitive).
+
+        Returns:
+            JSON string with keys:
+                * ``status``      — ``"ok"`` or ``"error"``.
+                * ``language``    — normalized language name.
+                * ``start``       — the opening macro / decorator.
+                * ``end``         — the closing macro, or ``null`` if RAII/decorator handles it.
+                * ``placement``   — where in the function to place the macros.
+                * ``doc_url``     — URL of the relevant API doc page.
+        """
+        lang = language.strip().lower()
+        if lang == "c":
+            return _ok(
+                "C function annotation macros",
+                language="c",
+                start="DFTRACER_C_FUNCTION_START()",
+                end="DFTRACER_C_FUNCTION_END()",
+                placement=(
+                    "START: first statement inside the opening brace of every function. "
+                    "EXCEPTION: when DFTRACER_C_INIT is also present (in main()), "
+                    "DFTRACER_C_INIT must come BEFORE DFTRACER_C_FUNCTION_START. "
+                    "END: immediately BEFORE every return / exit() / abort() call. "
+                    "For void functions with no explicit return: last statement before '}'."
+                ),
+                doc_url=f"{_DOCS_BASE}/c-api.html",
+            )
+        if lang in ("cpp", "c++"):
+            return _ok(
+                "C++ function annotation macros (RAII)",
+                language="cpp",
+                start="DFTRACER_CPP_FUNCTION()",
+                end=None,
+                placement=(
+                    "Place DFTRACER_CPP_FUNCTION() as the FIRST statement inside '{'."
+                    " EXCEPTION: when DFTRACER_CPP_INIT is also present (in main()), "
+                    "DFTRACER_CPP_INIT must come BEFORE DFTRACER_CPP_FUNCTION()."
+                    " RAII destructor fires automatically on scope exit — NO manual END needed."
+                    " For main(): use DFTRACER_CPP_REGION_START(name) / DFTRACER_CPP_REGION_END(name)"
+                    " instead of DFTRACER_CPP_FUNCTION()."
+                ),
+                doc_url=f"{_DOCS_BASE}/c-api.html",
+            )
+        if lang == "python":
+            return _ok(
+                "Python function annotation decorators",
+                language="python",
+                start="@_dft.log",
+                end=None,
+                variants={
+                    "regular": "@_dft.log",
+                    "__init__": "@_dft.log_init",
+                    "staticmethod": "@_dft.log_static",
+                },
+                placement=(
+                    "Apply the decorator immediately above every def (or above the first "
+                    "existing decorator on that function). "
+                    "_dft must be a DFTracerFn instance: _dft = DFTracerFn(\"category\"). "
+                    "Use @_dft.log_init for __init__, @_dft.log_static for @staticmethod methods, "
+                    "@_dft.log for everything else. "
+                    "For @staticmethod, the dftracer decorator goes ABOVE the @staticmethod line. "
+                    "No explicit END — the decorator wraps the whole function body."
+                ),
+                doc_url=f"{_PYDOCS_BASE}/api.html",
+            )
+        return _err(
+            f"Unknown language '{language}'. Supported: 'c', 'cpp', 'python'.",
+            supported=["c", "cpp", "python"],
+        )
+
+    @mcp.tool()
+    def dftracer_get_metadata_api(language: str) -> str:
+        """Return the dftracer per-process metadata macro for a language.
+
+        Metadata macros attach key-value pairs to the current process's trace
+        records so that traces can be filtered and correlated by application context.
+
+        Args:
+            language: ``"c"``, ``"cpp"``, or ``"python"`` (case-insensitive).
+
+        Returns:
+            JSON string with keys:
+                * ``status``   — ``"ok"`` or ``"error"``.
+                * ``language`` — normalized language name.
+                * ``macro``    — the metadata macro / call signature.
+                * ``notes``    — usage guidance.
+                * ``doc_url``  — URL of the relevant API doc page.
+        """
+        lang = language.strip().lower()
+        if lang == "c":
+            return _ok(
+                "C metadata macro",
+                language="c",
+                macro='DFTRACER_C_METADATA("key", "value")',
+                notes=(
+                    "Attach a string key-value pair to the current process trace. "
+                    "Call after DFTRACER_C_INIT(). "
+                    "Example: DFTRACER_C_METADATA(\"app\", \"IOR\");"
+                ),
+                doc_url=f"{_DOCS_BASE}/c-api.html",
+            )
+        if lang in ("cpp", "c++"):
+            return _ok(
+                "C++ metadata macro",
+                language="cpp",
+                macro='DFTRACER_CPP_METADATA("key", "value")',
+                notes=(
+                    "Attach a string key-value pair to the current process trace. "
+                    "Call after DFTRACER_CPP_INIT(). "
+                    "Example: DFTRACER_CPP_METADATA(\"app\", \"IOR\");"
+                ),
+                doc_url=f"{_DOCS_BASE}/c-api.html",
+            )
+        if lang == "python":
+            return _ok(
+                "Python metadata API",
+                language="python",
+                macro=None,
+                notes=(
+                    "The Python dftracer bindings do not expose a separate metadata API. "
+                    "Use the dft_fn.log decorator attributes or pass context via function arguments."
+                ),
+                doc_url=f"{_PYDOCS_BASE}/api.html",
+            )
+        return _err(
+            f"Unknown language '{language}'. Supported: 'c', 'cpp', 'python'.",
+            supported=["c", "cpp", "python"],
+        )
+
+    @mcp.tool()
+    def dftracer_get_function_update_api(language: str) -> str:
+        """Return the dftracer per-function metadata update macros for a language.
+
+        Function update macros attach key-value pairs to an *individual function
+        span* so that each traced call carries its own context (e.g. ``comp=io``,
+        file path, byte count).
+
+        Args:
+            language: ``"c"``, ``"cpp"``, or ``"python"`` (case-insensitive).
+
+        Returns:
+            JSON string with keys:
+                * ``status``     — ``"ok"`` or ``"error"``.
+                * ``language``   — normalized language name.
+                * ``str_update`` — macro for string values.
+                * ``int_update`` — macro for integer values, or ``null`` if unavailable.
+                * ``notes``      — usage and placement guidance.
+                * ``doc_url``    — URL of the relevant API doc page.
+        """
+        lang = language.strip().lower()
+        if lang == "c":
+            return _ok(
+                "C function update macros",
+                language="c",
+                str_update='DFTRACER_C_FUNCTION_UPDATE_STR("key", char_ptr_value)',
+                int_update='DFTRACER_C_FUNCTION_UPDATE_INT("key", (int)value)',
+                notes=(
+                    "Place immediately after DFTRACER_C_FUNCTION_START(). "
+                    "comp= is mandatory first UPDATE: "
+                    "DFTRACER_C_FUNCTION_UPDATE_STR(\"comp\", \"io\"). "
+                    "String params (paths, names): use UPDATE_STR. "
+                    "Numeric params (counts, sizes, handles): use UPDATE_INT with (int) cast. "
+                    "Opaque handles (MPI_File, hid_t): UPDATE_INT(\"handle\", (int)fh)."
+                ),
+                doc_url=f"{_DOCS_BASE}/c-api.html",
+            )
+        if lang in ("cpp", "c++"):
+            return _ok(
+                "C++ function update macro",
+                language="cpp",
+                str_update='DFTRACER_CPP_FUNCTION_UPDATE("key", string_value)',
+                int_update=None,
+                notes=(
+                    "Place immediately after DFTRACER_CPP_FUNCTION(). "
+                    "comp= is mandatory first UPDATE: "
+                    "DFTRACER_CPP_FUNCTION_UPDATE(\"comp\", \"io\"). "
+                    "C++ UPDATE accepts string values only (const char *). "
+                    "For numeric params: convert to string or omit — "
+                    "there is NO UPDATE_INT variant in the C++ API."
+                ),
+                doc_url=f"{_DOCS_BASE}/c-api.html",
+            )
+        if lang == "python":
+            return _ok(
+                "Python function update API",
+                language="python",
+                str_update=None,
+                int_update=None,
+                notes=(
+                    "The Python dftracer bindings do not expose per-call UPDATE macros. "
+                    "Pass context via function arguments; the @dft_fn.log decorator "
+                    "records function name and timing automatically."
+                ),
+                doc_url=f"{_PYDOCS_BASE}/api.html",
+            )
+        return _err(
+            f"Unknown language '{language}'. Supported: 'c', 'cpp', 'python'.",
+            supported=["c", "cpp", "python"],
+        )
 
 
 def register_daemon_tools(mcp: FastMCP) -> None:
@@ -226,60 +532,54 @@ class DFTracerSessionService(MCPService):
     """MCP service that orchestrates dftracer annotation and smoke-test sessions.
 
     This service is the central entry point for the dftracer workflow.  It owns
-    two :class:`fastmcp.FastMCP` sub-servers and delegates tool registration to
-    specialised helper functions so that each concern (session lifecycle vs.
-    pipeline execution) is independently maintainable.
+    five :class:`fastmcp.FastMCP` sub-servers and delegates tool registration to
+    specialised helper functions so that each concern is independently maintainable.
 
     The service itself does not run a standalone HTTP server; it is mounted into
     the parent MCP gateway through :class:`~mcp_service_factory.MCPServiceFactory`.
 
     Attributes:
         session_subservice (FastMCP): Sub-server named ``"DFTracerSession"``.
-            Hosts the session-lifecycle MCP tools registered by
-            :func:`~tools.session.session_tools.register_session_tools`,
-            including tools for creating, querying, and terminating dftracer
-            annotation sessions.
+            Hosts session-lifecycle tools registered by
+            :func:`~tools.session.session_tools.register_session_tools`.
         pipeline_subservice (FastMCP): Sub-server named ``"DFTracerPipeline"``.
-            Hosts both the pipeline-management tools registered by
-            :func:`~tools.session.pipeline_tools.register_pipeline_tools` and
-            the run-execution tools registered by
-            :func:`~tools.session.pipeline_tools.register_run_tools`.  Together
-            these cover building annotation pipelines, triggering smoke-test
-            runs, and inspecting run results.
+            Hosts pipeline-management and run-execution tools.
         daemon_subservice (FastMCP): Sub-server named ``"DFTracerDaemon"``.
-            Hosts the ``session_service_start`` and ``session_service_stop``
-            tools registered by :func:`register_daemon_tools`.  These manage
-            the ``dftracer_service`` background daemon independently from the
-            application run.
+            Hosts ``session_service_start`` and ``session_service_stop``.
+        clang_subservice (FastMCP): Sub-server named ``"DFTracerClang"``.
+            Hosts C/C++ tools (``clang_add_braces``, ``clang_extract_functions``,
+            ``clang_insert_line``, ``clang_annotate_file``,
+            ``clang_write_annotated_file``, ``clang_estimate_function_cost``)
+            registered by :func:`~tools.session.annotation_clang.register_clang_tools`,
+            Python tools (``python_extract_functions``,
+            ``python_annotate_file``, ``python_write_annotated_file``)
+            registered by :func:`~tools.session.annotation_python.register_python_tools`,
+            and AI/ML tools (``find_source_files``, ``python_annotate_ai_file``,
+            ``python_write_ai_file``)
+            registered by :func:`~tools.session.annotation_ai.register_ai_tools`.
+        annotation_api_subservice (FastMCP): Sub-server named ``"DFTracerAnnotationAPI"``.
+            Hosts the four language-aware annotation API reference tools
+            (``dftracer_get_init_fini``, ``dftracer_get_function_annotations``,
+            ``dftracer_get_metadata_api``, ``dftracer_get_function_update_api``)
+            registered by :func:`register_annotation_api_tools`.
     """
 
     def __init__(self) -> None:
-        """Initialise the service and register all MCP tools on the sub-servers.
-
-        Side effects:
-            * Creates ``self.session_subservice`` (``FastMCP("DFTracerSession")``)
-              and populates it with session-lifecycle tools via
-              :func:`~tools.session.session_tools.register_session_tools`.
-            * Creates ``self.pipeline_subservice`` (``FastMCP("DFTracerPipeline")``)
-              and populates it with pipeline tools via
-              :func:`~tools.session.pipeline_tools.register_pipeline_tools` and
-              run tools via
-              :func:`~tools.session.pipeline_tools.register_run_tools`.
-            * Creates ``self.daemon_subservice`` (``FastMCP("DFTracerDaemon")``)
-              and populates it with daemon management tools via
-              :func:`register_daemon_tools`.
-
-        After ``__init__`` returns all three sub-servers are fully configured
-        and ready to be mounted by the parent gateway.
-        """
+        """Initialise the service and register all MCP tools on the sub-servers."""
         self.session_subservice = FastMCP("DFTracerSession")
         self.pipeline_subservice = FastMCP("DFTracerPipeline")
         self.daemon_subservice = FastMCP("DFTracerDaemon")
+        self.clang_subservice = FastMCP("DFTracerClang")
+        self.annotation_api_subservice = FastMCP("DFTracerAnnotationAPI")
 
         register_session_tools(self.session_subservice)
         register_pipeline_tools(self.pipeline_subservice)
         register_run_tools(self.pipeline_subservice)
         register_daemon_tools(self.daemon_subservice)
+        register_clang_tools(self.clang_subservice)
+        register_python_tools(self.clang_subservice)
+        register_ai_tools(self.clang_subservice)
+        register_annotation_api_tools(self.annotation_api_subservice)
 
     def execute(self, data: dict) -> Optional[str]:
         """Legacy compatibility entry-point required by the :class:`MCPService` ABC.

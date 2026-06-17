@@ -378,7 +378,6 @@ def _install_dftracer_autobuild(
         "--install-mode", install_mode,
         "--build-type", "RelWithDebInfo",
         "--jobs", str(jobs),
-        "--skip-smoke-test",
     ]
 
     # cmake mode uses an explicit install prefix; pip mode lets pip choose

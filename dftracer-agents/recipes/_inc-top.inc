@@ -13,8 +13,9 @@
     run_shell / bash             shell
     session_read_file            dftracer__session_read_file
     session_write_file           dftracer__session_write_file
-    session_add_braces           dftracer__session_add_braces
-    session_extract_functions    dftracer__session_extract_functions
+    clang_add_braces             dftracer__clang_add_braces
+    clang_extract_functions      dftracer__clang_extract_functions
+    clang_insert_line            dftracer__clang_insert_line
     session_annotation_report    dftracer__session_annotation_report
     docs_search                  dftracer__docs_search
     docs_fetch_page              dftracer__docs_fetch_page
