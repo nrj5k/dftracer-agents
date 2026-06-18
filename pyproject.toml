@@ -12,6 +12,7 @@ dependencies = [
     "dftracer-utils @ git+https://github.com/llnl/dftracer-utils.git@develop",
     "dftracer-analyzer @ git+https://github.com/llnl/dfanalyzer.git@develop",
     "dfdiagnoser @ git+https://github.com/llnl/DFDiagnoser.git@main",
+    "libclang>=18.1.0",
 ]
 
 [project.optional-dependencies]

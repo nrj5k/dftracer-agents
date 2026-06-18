@@ -283,6 +283,7 @@ def _install_dftracer_autobuild(
     install_mode: str = "cmake",
     features: Optional[Dict[str, Any]] = None,
     python_exe: Optional[str] = None,
+    cmake_flags: Optional[list] = None,
 ) -> Dict[str, Any]:
     """Clone dftracer and build and install it via the project's own ``autobuild.sh``.
 
@@ -297,10 +298,11 @@ def _install_dftracer_autobuild(
     workspace.  The CMake build directory is placed at ``<ws>/dftracer_build/``
     via the ``BUILD_DIR`` environment variable consumed by ``autobuild.sh``.
 
-    Feature flags detected by :func:`~detection._detect_info` (``mpi``,
-    ``hdf5``) are forwarded to ``autobuild.sh`` as ``--enable-mpi`` and
-    ``--enable-hdf5`` switches so that the installed dftracer library matches
-    the needs of the application being instrumented.
+    Feature flags detected by :func:`~detection._detect_info` are forwarded
+    to ``autobuild.sh`` as ``--enable-mpi`` when MPI is detected.  HDF5 is
+    intentionally not forwarded because dftracer does not require HDF5 as a
+    build dependency for C/C++ tracing (``--enable-hdf5`` is not a valid
+    ``autobuild.sh`` flag as of v2.0.3).
 
     Note:
         The build step may take up to 30 minutes on slow hardware.  The
@@ -324,12 +326,18 @@ def _install_dftracer_autobuild(
             CMake package config files); use ``"pip"`` for pure-Python projects
             (installs the dftracer Python package into the target interpreter).
         features: Detected project feature dict as returned by
-            :func:`~detection._detect_info`.  Relevant keys: ``"mpi"`` (bool)
-            and ``"hdf5"`` (bool).  When ``None`` no feature flags are passed.
+            :func:`~detection._detect_info`.  Relevant keys: ``"mpi"`` (bool),
+            ``"hdf5"`` (bool), ``"hdf5_system"`` (dict).  When ``None`` no
+            feature flags are passed.
         python_exe: Absolute path to the Python interpreter to use for Python
             bindings and pip-mode installation.  Forwarded as ``--python`` to
             ``autobuild.sh``.  When ``None`` Python support is not explicitly
             requested (though ``autobuild.sh`` may still auto-detect it).
+        cmake_flags: Extra cmake ``-D`` flags to forward to dftracer's cmake
+            build via the ``DFTRACER_CMAKE_ARGS`` env variable (semicolon-
+            separated, as expected by autobuild.sh).  Typical values come from
+            :func:`~detection._detect_info` ``dftracer_cmake_flags``.  For pip
+            mode these are ignored; feature env vars are set instead.
 
     Returns:
         Dict[str, Any]: A dict with the following keys:
@@ -384,15 +392,40 @@ def _install_dftracer_autobuild(
     if install_mode != "pip":
         cmd += ["--install-prefix", str(install_prefix)]
 
-    # Feature flags — mirror what autobuild.sh exposes
+    # Feature flags — mirror what autobuild.sh exposes.
+    # Note: --enable-hdf5 is NOT a valid autobuild.sh flag (as of v2.0.3);
+    # dftracer does not require HDF5 as a dependency for C/C++ tracing.
     if python_exe:
         cmd += ["--python", python_exe]
     if features.get("mpi"):
         cmd += ["--enable-mpi"]
-    if features.get("hdf5"):
-        cmd += ["--enable-hdf5"]
 
-    # BUILD_DIR via env so autobuild.sh places its build tree inside the workspace
-    r = _run(cmd, cwd=src, env={"BUILD_DIR": str(bld)}, timeout=1800)
+    # Build env for autobuild.sh.
+    # cmake mode: pass feature flags via DFTRACER_CMAKE_ARGS (semicolon-separated).
+    # pip mode:   set env vars that dftracer's setup.py / pip build respects.
+    build_env: Dict[str, str] = {"BUILD_DIR": str(bld)}
+
+    if install_mode == "cmake":
+        extra: list = list(cmake_flags or [])
+        if features.get("hdf5"):
+            if "-DDFTRACER_ENABLE_HDF5=ON" not in extra:
+                extra.append("-DDFTRACER_ENABLE_HDF5=ON")
+            hdf5_hint = (features.get("hdf5_system") or {}).get("cmake_hint", "")
+            if hdf5_hint and hdf5_hint not in extra:
+                extra.append(hdf5_hint)
+        if extra:
+            build_env["DFTRACER_CMAKE_ARGS"] = ";".join(extra)
+    else:
+        # pip mode: feature env vars
+        if features.get("mpi"):
+            build_env["DFTRACER_ENABLE_MPI"] = "ON"
+        if features.get("hdf5"):
+            build_env["DFTRACER_ENABLE_HDF5"] = "ON"
+            hdf5_prefix = (features.get("hdf5_system") or {}).get("prefix") or ""
+            if hdf5_prefix:
+                build_env["HDF5_ROOT"] = hdf5_prefix
+                build_env["HDF5_DIR"] = hdf5_prefix
+
+    r = _run(cmd, cwd=src, env=build_env, timeout=1800)
     steps["autobuild"] = r
     return {"success": r["success"], "steps": steps, "prefix": str(install_prefix)}

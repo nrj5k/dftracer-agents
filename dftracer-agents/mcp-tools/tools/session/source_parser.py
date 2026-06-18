@@ -1,7 +1,7 @@
 """Source-code parser for extracting function definitions with exact line numbers.
 
-Primary method: clang -ast-dump=json (C/C++) or Python's ast module (Python).
-Fallback: ctags, then regex-based brace counting.
+Primary method: clang -Xclang -ast-dump=json (C/C++) or Python's ast module (Python).
+Raises ClangNotFoundError if clang is not installed — no regex/ctags fallback.
 
 Returned dicts per function::
 
@@ -13,25 +13,62 @@ Returned dicts per function::
         "close_brace_line":  int,   # line of closing '}'
         "exit_lines":        [{"line": int, "type": str}],  # return/exit/abort
         "is_entry_point":    bool,  # True if name == "main" or __main__
-        "source":            str,   # "clang" | "ctags" | "regex" | "ast"
+        "source":            str,   # "clang" or "ast"
     }
 """
 from __future__ import annotations
 
 import ast
 import json
-import re
 import subprocess
 from pathlib import Path
 from typing import Optional
 
+
+class ClangNotFoundError(RuntimeError):
+    """Raised when the clang binary is not installed."""
+
+
+# ---------------------------------------------------------------------------
+# Cost-estimation constants (used by both C/C++ and Python estimators)
+# ---------------------------------------------------------------------------
+
+#: POSIX and stdio I/O syscalls — each hit adds a strong signal to annotate.
+_IO_CALLS: frozenset[str] = frozenset({
+    "open", "close", "read", "write", "pread", "pwrite",
+    "fopen", "fclose", "fread", "fwrite", "fputs", "fgets", "fgetc", "fputc",
+    "stat", "fstat", "lstat", "lseek", "lseek64",
+    "mmap", "munmap", "mmap2",
+    "fsync", "fdatasync", "fallocate", "posix_fallocate", "posix_fadvise",
+    "ioctl", "sendfile", "sendfile64",
+    "rename", "unlink", "mkdir", "rmdir", "creat", "openat",
+    "readdir", "opendir", "closedir",
+    "ftruncate", "truncate", "ftruncate64",
+    "pread64", "pwrite64",
+    "AIO_Read", "AIO_Write",
+})
+
+#: Heap / memory-management calls.
+_MEM_CALLS: frozenset[str] = frozenset({
+    "malloc", "calloc", "realloc", "free",
+    "memcpy", "memmove", "memset", "mmap",
+})
+
+#: Vendor filesystem function prefixes — always annotate.
+_VENDOR_PREFIXES: tuple[str, ...] = (
+    "gpfs_", "beegfs_", "llapi_", "cuFile",
+    "hdfs_", "daos_", "ceph_", "gfarm_",
+)
 
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
 def extract_functions(filepath: str | Path) -> list[dict]:
-    """Return a list of function-info dicts for *filepath*."""
+    """Return a list of function-info dicts for *filepath*.
+
+    Raises ClangNotFoundError for C/C++ files when clang is not installed.
+    """
     path = Path(filepath)
     suffix = path.suffix.lower()
     if suffix == ".py":
@@ -47,26 +84,61 @@ def extract_functions(filepath: str | Path) -> list[dict]:
 
 def _extract_c_cpp(path: Path) -> list[dict]:
     result = _try_clang(path)
-    if result is not None:
-        return result
-    result = _try_ctags(path)
-    if result is not None:
-        return result
-    return _regex_parse_c(path)
+    if result is None:
+        raise ClangNotFoundError(
+            "clang binary not found — install clang to enable C/C++ function extraction"
+        )
+    return result
 
 
 # ── clang -ast-dump=json ────────────────────────────────────────────────────
+
+def _build_line_offsets(path: Path) -> list[int]:
+    """Return a list of byte offsets where each line starts (0-based → 1-based line)."""
+    import bisect as _bisect
+    text = path.read_bytes()
+    offsets = [0]
+    for i, b in enumerate(text):
+        if b == 10:  # newline
+            offsets.append(i + 1)
+    return offsets
+
+
+def _resolve_line(loc: dict, line_offsets: list[int]) -> int:
+    """Return 1-based line number from a clang loc dict.
+
+    Clang's -ast-dump=json omits the ``line`` field when consecutive tokens
+    are on the same line (delta-compression).  When ``line`` is absent we fall
+    back to the ``offset`` field and binary-search the pre-built line-start
+    table to recover the correct line number.
+
+    For macro expansions, clang emits ``{"spellingLoc": ..., "expansionLoc": ...}``.
+    We use the *expansion* (call-site) location so that brace ranges refer to the
+    actual source file, not the macro definition header.
+    """
+    if "line" in loc:
+        return loc["line"]
+    if "offset" in loc and line_offsets:
+        import bisect as _bisect
+        return _bisect.bisect_right(line_offsets, loc["offset"])
+    # Macro expansion: use the call-site (expansionLoc), not the definition
+    if "expansionLoc" in loc:
+        return _resolve_line(loc["expansionLoc"], line_offsets)
+    return 0
+
 
 def _try_clang(path: Path) -> Optional[list[dict]]:
     lang = "c" if path.suffix.lower() == ".c" else "c++"
     try:
         proc = subprocess.run(
-            ["clang", f"-ast-dump=json", "-fsyntax-only", "-w",
+            ["clang", "-Xclang", "-ast-dump=json", "-fsyntax-only", "-w",
              f"-x{lang}", str(path)],
             capture_output=True, text=True, timeout=60,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except FileNotFoundError:
         return None
+    except subprocess.TimeoutExpired:
+        return []
 
     stdout = proc.stdout
     if not stdout:
@@ -82,15 +154,17 @@ def _try_clang(path: Path) -> Optional[list[dict]]:
     except json.JSONDecodeError:
         return None
 
+    line_offsets = _build_line_offsets(path)
     target = str(path)
     functions: list[dict] = []
-    _visit_tu(ast_root, functions, target)
+    _visit_tu(ast_root, functions, target, line_offsets)
     for fn in functions:
         fn["source"] = "clang"
     return functions
 
 
-def _visit_tu(ast_root: dict, functions: list[dict], target: str) -> None:
+def _visit_tu(ast_root: dict, functions: list[dict],
+              target: str, line_offsets: list[int]) -> None:
     """Walk TranslationUnitDecl children tracking current file context."""
     current_file: str = ""
     for node in ast_root.get("inner", []):
@@ -106,18 +180,18 @@ def _visit_tu(ast_root: dict, functions: list[dict], target: str) -> None:
         kind = node.get("kind", "")
         if kind in ("FunctionDecl", "CXXMethodDecl",
                     "CXXConstructorDecl", "CXXDestructorDecl"):
-            info = _extract_func_node(node)
+            info = _extract_func_node(node, line_offsets)
             if info:
                 functions.append(info)
         elif kind == "CXXRecordDecl":
-            # Recurse into class to find method definitions
-            _visit_class(node, functions, target, current_file)
+            _visit_class(node, functions, target, current_file, line_offsets)
         elif kind == "NamespaceDecl":
-            _visit_namespace(node, functions, target, current_file)
+            _visit_namespace(node, functions, target, current_file, line_offsets)
 
 
 def _visit_class(node: dict, functions: list[dict],
-                 target: str, current_file: str) -> None:
+                 target: str, current_file: str,
+                 line_offsets: list[int]) -> None:
     for child in node.get("inner", []):
         loc = child.get("loc", {})
         child_file = loc.get("file", current_file)
@@ -126,15 +200,17 @@ def _visit_class(node: dict, functions: list[dict],
         kind = child.get("kind", "")
         if kind in ("CXXMethodDecl", "CXXConstructorDecl", "CXXDestructorDecl",
                     "FunctionDecl"):
-            info = _extract_func_node(child)
+            info = _extract_func_node(child, line_offsets)
             if info:
                 functions.append(info)
         elif kind == "CXXRecordDecl":
-            _visit_class(child, functions, target, child_file or current_file)
+            _visit_class(child, functions, target,
+                         child_file or current_file, line_offsets)
 
 
 def _visit_namespace(node: dict, functions: list[dict],
-                     target: str, current_file: str) -> None:
+                     target: str, current_file: str,
+                     line_offsets: list[int]) -> None:
     for child in node.get("inner", []):
         loc = child.get("loc", {})
         child_file = loc.get("file", current_file)
@@ -143,14 +219,15 @@ def _visit_namespace(node: dict, functions: list[dict],
         kind = child.get("kind", "")
         if kind in ("FunctionDecl", "CXXMethodDecl",
                     "CXXConstructorDecl", "CXXDestructorDecl"):
-            info = _extract_func_node(child)
+            info = _extract_func_node(child, line_offsets)
             if info:
                 functions.append(info)
         elif kind in ("CXXRecordDecl", "NamespaceDecl"):
-            _visit_namespace(child, functions, target, child_file or current_file)
+            _visit_namespace(child, functions, target,
+                             child_file or current_file, line_offsets)
 
 
-def _extract_func_node(node: dict) -> Optional[dict]:
+def _extract_func_node(node: dict, line_offsets: list[int]) -> Optional[dict]:
     """Build a function-info dict from a FunctionDecl AST node."""
     inner = node.get("inner", [])
     body = next((c for c in inner if c.get("kind") == "CompoundStmt"), None)
@@ -158,36 +235,127 @@ def _extract_func_node(node: dict) -> Optional[dict]:
         return None  # declaration only, not definition
 
     rng = node.get("range", {})
-    begin_line = rng.get("begin", {}).get("line", 0)
-    end_line   = rng.get("end",   {}).get("line", 0)
+    begin_line = _resolve_line(rng.get("begin", {}), line_offsets)
+    # Prefer loc.line for start_line (always present on definition node)
+    loc_line = node.get("loc", {}).get("line", begin_line)
+    start_line = loc_line if loc_line else begin_line
 
     body_rng = body.get("range", {})
-    open_brace  = body_rng.get("begin", {}).get("line", begin_line)
-    close_brace = body_rng.get("end",   {}).get("line", end_line)
+    open_brace  = _resolve_line(body_rng.get("begin", {}), line_offsets)
+    close_brace = _resolve_line(body_rng.get("end",   {}), line_offsets)
+
+    # When open_brace is still 0, the { is on the same line as the signature
+    if open_brace == 0:
+        open_brace = start_line
 
     exits: list[dict] = []
-    _collect_exits(body, exits)
+    _collect_exits(body, exits, line_offsets)
     exits.sort(key=lambda x: x["line"])
 
     name = node.get("name", "")
     return {
         "name":            name,
-        "start_line":      begin_line,
+        "start_line":      start_line,
         "open_brace_line": open_brace,
         "body_first_line": open_brace + 1,
         "close_brace_line": close_brace,
         "exit_lines":      exits,
         "is_entry_point":  name == "main",
+        "cost_info":       _compute_cost_c_cpp(body),
     }
 
 
-def _collect_exits(node: dict, exits: list[dict]) -> None:
+# ---------------------------------------------------------------------------
+# AST-based cost estimation — C / C++
+# ---------------------------------------------------------------------------
+
+def _compute_cost_c_cpp(body_node: dict) -> dict:
+    """Walk a CompoundStmt AST node and compute runtime-cost metrics.
+
+    Uses the clang AST structure exclusively — no regex or text scanning.
+    Counts meaningful node kinds as proxies for I/O, MPI, memory, and
+    control-flow complexity.
+
+    Returns a dict with integer counters and a composite ``score``.
+    """
+    io_calls = 0
+    mpi_calls = 0
+    mem_calls = 0
+    vendor_calls = 0
+    loop_count = 0
+    branch_count = 0
+    call_count = 0
+    node_count = 0
+
+    def _walk(node: dict, depth: int) -> None:
+        nonlocal io_calls, mpi_calls, mem_calls, vendor_calls
+        nonlocal loop_count, branch_count, call_count, node_count
+
+        kind = node.get("kind", "")
+        node_count += 1
+
+        if kind == "CallExpr":
+            call_count += 1
+            callee = _callee_name(node)
+            if callee in _IO_CALLS:
+                io_calls += 1
+            elif callee.startswith("MPI_") or callee.startswith("NCMPI_"):
+                mpi_calls += 1
+            elif callee in _MEM_CALLS:
+                mem_calls += 1
+            elif any(callee.startswith(p) for p in _VENDOR_PREFIXES):
+                vendor_calls += 1
+
+        elif kind in ("ForStmt", "WhileStmt", "DoStmt"):
+            loop_count += 1
+
+        elif kind in ("IfStmt", "SwitchStmt"):
+            branch_count += 1
+
+        # Never recurse into nested function / lambda bodies
+        if depth > 0 and kind in (
+            "LambdaExpr", "FunctionDecl",
+            "CXXMethodDecl", "CXXConstructorDecl", "CXXDestructorDecl",
+        ):
+            return
+
+        for child in node.get("inner", []):
+            _walk(child, depth + 1)
+
+    _walk(body_node, depth=0)
+
+    score = (
+        io_calls     * 30
+        + mpi_calls  * 25
+        + mem_calls  * 15
+        + vendor_calls * 30
+        + loop_count * 10
+        + branch_count * 3
+        + call_count * 2
+        + min(node_count // 5, 20)   # body-size bonus, capped at 20
+    )
+
+    return {
+        "io_calls":     io_calls,
+        "mpi_calls":    mpi_calls,
+        "mem_calls":    mem_calls,
+        "vendor_calls": vendor_calls,
+        "loop_count":   loop_count,
+        "branch_count": branch_count,
+        "call_count":   call_count,
+        "node_count":   node_count,
+        "score":        score,
+    }
+
+
+def _collect_exits(node: dict, exits: list[dict],
+                   line_offsets: list[int]) -> None:
     """Recursively find ReturnStmt / exit() / abort() in a CompoundStmt."""
     kind = node.get("kind", "")
 
     if kind == "ReturnStmt":
         loc = node.get("loc") or node.get("range", {}).get("begin", {}) or {}
-        line = loc.get("line")
+        line = _resolve_line(loc, line_offsets)
         if line:
             exits.append({"line": line, "type": "return"})
         return  # don't recurse into return value (may contain lambdas)
@@ -196,7 +364,7 @@ def _collect_exits(node: dict, exits: list[dict]) -> None:
         callee = _callee_name(node)
         if callee in ("exit", "_exit", "abort", "quick_exit", "_Exit"):
             loc = node.get("loc") or node.get("range", {}).get("begin", {}) or {}
-            line = loc.get("line")
+            line = _resolve_line(loc, line_offsets)
             if line:
                 exits.append({"line": line, "type": callee})
 
@@ -206,7 +374,7 @@ def _collect_exits(node: dict, exits: list[dict]) -> None:
         return
 
     for child in node.get("inner", []):
-        _collect_exits(child, exits)
+        _collect_exits(child, exits, line_offsets)
 
 
 def _callee_name(call_expr: dict) -> str:
@@ -222,226 +390,65 @@ def _callee_name(call_expr: dict) -> str:
     return ""
 
 
-# ── ctags fallback ─────────────────────────────────────────────────────────
-
-def _try_ctags(path: Path) -> Optional[list[dict]]:
-    try:
-        proc = subprocess.run(
-            ["ctags", "--fields=+neK", "--output-format=json",
-             "--kinds-C=f", "--kinds-C++=f", str(path)],
-            capture_output=True, text=True, timeout=30,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-
-    if proc.returncode != 0 or not proc.stdout:
-        return None
-
-    lines = path.read_text(errors="replace").splitlines()
-    functions: list[dict] = []
-    for raw in proc.stdout.splitlines():
-        raw = raw.strip()
-        if not raw:
-            continue
-        try:
-            tag = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        if tag.get("kind") not in ("function", "prototype"):
-            continue
-        if tag.get("kind") == "prototype":
-            continue
-
-        start = tag.get("line", 0)
-        end   = tag.get("end", start + 1)
-        name  = tag.get("name", "")
-
-        # Find opening brace line
-        open_brace = _find_open_brace(lines, start - 1, end)
-        if open_brace is None:
-            continue
-
-        # Find return statements within function body
-        exits = _grep_returns_in_range(lines, open_brace, end - 1)
-
-        functions.append({
-            "name":            name,
-            "start_line":      start,
-            "open_brace_line": open_brace + 1,  # 1-based
-            "body_first_line": open_brace + 2,  # line after {
-            "close_brace_line": end,
-            "exit_lines":      exits,
-            "is_entry_point":  name == "main",
-            "source":          "ctags",
-        })
-
-    return functions if functions else None
-
-
-def _find_open_brace(lines: list[str], start_0: int, end_0: int) -> Optional[int]:
-    """Return 0-based line index of the opening '{' for a function starting at start_0."""
-    depth = 0
-    for i in range(start_0, min(end_0 + 1, len(lines))):
-        for ch in lines[i]:
-            if ch == "{":
-                if depth == 0:
-                    return i
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-    return None
-
-
-def _grep_returns_in_range(lines: list[str], open_0: int, close_0: int) -> list[dict]:
-    """Find return / exit() / abort() lines in [open_0, close_0] (0-based)."""
-    exits: list[dict] = []
-    depth = 0  # brace depth within this function
-    _TERM = re.compile(r"\b(return|exit|_exit|abort|quick_exit)\b")
-    _IN_STR = re.compile(r'"[^"\\]*(?:\\.[^"\\]*)*"')
-
-    for i in range(open_0, min(close_0 + 1, len(lines))):
-        stripped = _IN_STR.sub("", lines[i])  # remove string literals
-        stripped = re.sub(r"//.*", "", stripped)  # remove // comments
-
-        for ch in stripped:
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-
-        if depth <= 1:  # inside the outermost body only
-            m = _TERM.search(stripped)
-            if m:
-                kw = m.group(1)
-                if kw == "return":
-                    exits.append({"line": i + 1, "type": "return"})
-                elif kw in ("exit", "_exit", "abort", "quick_exit"):
-                    if "(" in stripped[m.end():]:
-                        exits.append({"line": i + 1, "type": kw})
-    return exits
-
-
-# ── regex fallback ──────────────────────────────────────────────────────────
-
-_FUNC_DEF = re.compile(
-    r"^(?![\s#/])"           # not a preprocessor/comment line
-    r"(?:(?:static|inline|extern|__attribute__\S+)\s+)*"
-    r"(?:\w[\w\s\*]+?)\s+"   # return type
-    r"(\w+)\s*\(",            # function name
-)
-
-
-def _regex_parse_c(path: Path) -> list[dict]:
-    lines = path.read_text(errors="replace").splitlines()
-    functions: list[dict] = []
-    i = 0
-    while i < len(lines):
-        m = _FUNC_DEF.match(lines[i])
-        if m:
-            # Look ahead for the opening '{'
-            open_idx = None
-            for j in range(i, min(i + 10, len(lines))):
-                if "{" in lines[j] and ";" not in lines[j][:lines[j].find("{")]:
-                    open_idx = j
-                    break
-            if open_idx is not None:
-                close_idx = _find_close_brace(lines, open_idx)
-                if close_idx is not None:
-                    name = m.group(1)
-                    exits = _grep_returns_in_range(lines, open_idx, close_idx)
-                    functions.append({
-                        "name":            name,
-                        "start_line":      i + 1,
-                        "open_brace_line": open_idx + 1,
-                        "body_first_line": open_idx + 2,
-                        "close_brace_line": close_idx + 1,
-                        "exit_lines":      exits,
-                        "is_entry_point":  name == "main",
-                        "source":          "regex",
-                    })
-                    i = close_idx + 1
-                    continue
-        i += 1
-    return functions
-
-
-def _find_close_brace(lines: list[str], open_0: int) -> Optional[int]:
-    depth = 0
-    for i in range(open_0, len(lines)):
-        for ch in lines[i]:
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    return i
-    return None
-
 
 # ---------------------------------------------------------------------------
 # Python extraction via ast module
 # ---------------------------------------------------------------------------
 
 def add_braces_c(path: Path) -> dict:
-    """Add ``{`` / ``}`` around braceless ``if`` / ``for`` / ``while`` / ``else`` bodies.
+    """Add ``{`` / ``}`` around braceless ``if`` / ``for`` / ``while`` bodies.
 
-    Uses clang ``-ast-dump=json`` to find ``IfStmt``, ``ForStmt``, ``WhileStmt``,
-    and ``DoStmt`` nodes whose body is **not** a ``CompoundStmt`` (braceless single
-    statement), then rewrites the file with braces inserted.  Falls back to a
-    regex-based line scanner when clang is unavailable.
-
-    This is run **before** annotation so that every ``if (...) return;`` pattern
-    already has braces, making it safe to insert ``DFTRACER_C_FUNCTION_END()``
-    on the line before the ``return`` without creating a syntax error.
+    Uses clang ``-Xclang -ast-dump=json`` for precise AST-level detection.
+    Raises ``ClangNotFoundError`` if clang is not installed — no regex fallback.
 
     Args:
         path: Absolute path to a C or C++ source file inside ``annotated/``.
 
     Returns:
         Dict with keys:
-            * ``modified`` (bool) — ``True`` if the file was rewritten.
-            * ``insertions`` (int) — number of brace pairs added.
-            * ``method`` (str)    — ``"clang"`` or ``"regex"``.
-            * ``error`` (str)     — set only when the operation failed.
+            * ``modified``   (bool) — ``True`` if the file was rewritten.
+            * ``insertions`` (int)  — number of brace pairs added.
+            * ``method``     (str)  — always ``"clang"``.
     """
     lang = "c" if path.suffix.lower() == ".c" else "c++"
-
-    # Try clang first
-    result = _add_braces_via_clang(path, lang)
-    if result is not None:
-        return result
-
-    # Fallback: regex scanner
-    return _add_braces_regex(path)
+    return _add_braces_via_clang(path, lang)
 
 
-def _add_braces_via_clang(path: Path, lang: str) -> Optional[dict]:
-    """Collect braceless control-flow bodies via clang AST then rewrite the file."""
+def _add_braces_via_clang(path: Path, lang: str) -> dict:
+    """Collect braceless control-flow bodies via clang AST then rewrite the file.
+
+    Raises ClangNotFoundError if the clang binary is missing.
+    """
     try:
         proc = subprocess.run(
-            ["clang", "-ast-dump=json", "-fsyntax-only", "-w", f"-x{lang}", str(path)],
+            ["clang", "-Xclang", "-ast-dump=json", "-fsyntax-only", "-w",
+             f"-x{lang}", str(path)],
             capture_output=True, text=True, timeout=60,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
+    except FileNotFoundError:
+        raise ClangNotFoundError(
+            "clang binary not found — install clang to enable brace insertion"
+        )
+    except subprocess.TimeoutExpired:
+        return {"modified": False, "insertions": 0, "method": "clang"}
 
     stdout = proc.stdout
     if not stdout:
-        return None
+        return {"modified": False, "insertions": 0, "method": "clang"}
 
     json_start = stdout.find("{")
     if json_start == -1:
-        return None
+        return {"modified": False, "insertions": 0, "method": "clang"}
     try:
         ast_root = json.loads(stdout[json_start:])
     except json.JSONDecodeError:
-        return None
+        return {"modified": False, "insertions": 0, "method": "clang"}
 
+    line_offsets = _build_line_offsets(path)
     target = str(path)
-    # Collect (body_start_line, body_end_line) for each braceless body
-    # These are 1-based lines from the clang AST.
     braceless: list[tuple[int, int]] = []
-    _collect_braceless(ast_root, braceless, target, current_file="")
+    _collect_braceless(ast_root, braceless, target, current_file="",
+                       line_offsets=line_offsets)
 
     if not braceless:
         return {"modified": False, "insertions": 0, "method": "clang"}
@@ -452,16 +459,13 @@ def _add_braces_via_clang(path: Path, lang: str) -> Optional[dict]:
     return {"modified": True, "insertions": len(braceless), "method": "clang"}
 
 
-_CTRL_KINDS = frozenset(
-    ("IfStmt", "ForStmt", "WhileStmt", "DoStmt", "ElseStmt")
-)
-
 
 def _collect_braceless(
     node: dict,
     result: list[tuple[int, int]],
     target: str,
     current_file: str,
+    line_offsets: list[int],
 ) -> None:
     kind = node.get("kind", "")
 
@@ -475,29 +479,46 @@ def _collect_braceless(
         if kind != "TranslationUnitDecl":
             return
 
-    if kind in ("IfStmt", "ForStmt", "WhileStmt", "DoStmt"):
-        inner = node.get("inner", [])
-        for child in inner:
-            ck = child.get("kind", "")
-            # The body of an if/for/while is the last child (or second-to-last
-            # for IfStmt which may have a condition var child).
-            # A braceless body is any non-CompoundStmt statement child.
-            if ck in (
-                "CompoundStmt", "IfStmt", "ForStmt", "WhileStmt", "DoStmt",
-                # skip non-statement children
-                "DeclRefExpr", "BinaryOperator", "UnaryOperator",
-                "IntegerLiteral", "ImplicitCastExpr", "ParenExpr",
-            ):
-                continue
-            # It's a statement but not a block → braceless
-            rng = child.get("range", {})
-            start = rng.get("begin", {}).get("line", 0)
-            end   = rng.get("end",   {}).get("line", 0)
-            if start and end:
-                result.append((start, end))
+    # Kinds that are already syntactically self-contained — never need wrapping.
+    # CompoundStmt already has braces; DoStmt (do { } while(0)) is self-contained.
+    _ALREADY_BRACED = {"CompoundStmt", "DoStmt"}
 
-    for child in node.get("inner", []):
-        _collect_braceless(child, result, target, current_file)
+    def _maybe_add(child: dict) -> None:
+        ck = child.get("kind", "")
+        if ck in _ALREADY_BRACED:
+            return
+        rng = child.get("range", {})
+        start = _resolve_line(rng.get("begin", {}), line_offsets)
+        end   = _resolve_line(rng.get("end",   {}), line_offsets)
+        if start and end:
+            result.append((start, end))
+
+    inner = node.get("inner", [])
+
+    if kind == "IfStmt":
+        # inner: [condition, then-body]  or  [condition, then-body, else-body]
+        # Always skip inner[0] (condition) regardless of its AST kind — using
+        # position-based indexing avoids false positives when the condition is
+        # reported as RecoveryExpr or any other un-listed kind.
+        for i, child in enumerate(inner):
+            if i == 0:
+                continue  # condition — never a body
+            _maybe_add(child)
+
+    elif kind in ("WhileStmt",):
+        # inner: [condition, body]
+        if len(inner) >= 2:
+            _maybe_add(inner[-1])
+
+    elif kind == "ForStmt":
+        # inner: [init?, cond?, incr?, body]  — body is always last
+        if inner:
+            _maybe_add(inner[-1])
+
+    # DoStmt body is always a CompoundStmt in well-formed C; skip.
+
+    for child in inner:
+        _collect_braceless(child, result, target, current_file, line_offsets)
 
 
 def _insert_braces(
@@ -530,59 +551,6 @@ def _insert_braces(
     return lines
 
 
-def _add_braces_regex(path: Path) -> dict:
-    """Regex-based braceless body fixer (clang fallback).
-
-    Scans line-by-line for the patterns:
-      ``if (...)``, ``else``, ``for (...)``, ``while (...)``
-    followed by a single statement (no ``{`` at end of the control line and
-    the next non-empty line does not start with ``{``).
-    """
-    text = path.read_text(errors="replace")
-    lines = text.splitlines(keepends=True)
-    _CTRL = re.compile(
-        r"^(\s*)"
-        r"(?:(?:if|else\s+if)\s*\(.*\)\s*"
-        r"|else\s*"
-        r"|for\s*\(.*\)\s*"
-        r"|while\s*\(.*\)\s*"
-        r")\s*$"
-    )
-    insertions = 0
-    i = 0
-    new_lines: list[str] = []
-
-    while i < len(lines):
-        line = lines[i]
-        m = _CTRL.match(line.rstrip("\n").rstrip("\r"))
-        if m:
-            indent = m.group(1)
-            # Find next non-blank line
-            j = i + 1
-            while j < len(lines) and not lines[j].strip():
-                j += 1
-            if j < len(lines) and not lines[j].lstrip().startswith("{"):
-                # Single-statement body — wrap with braces
-                new_lines.append(line)
-                new_lines.append(indent + "{\n")
-                i += 1
-                # Collect the body statement (one logical line, may end with `;`)
-                while i < len(lines):
-                    new_lines.append(lines[i])
-                    if lines[i].rstrip("\n").rstrip().endswith(";"):
-                        i += 1
-                        break
-                    i += 1
-                new_lines.append(indent + "}\n")
-                insertions += 1
-                continue
-        new_lines.append(line)
-        i += 1
-
-    if insertions:
-        path.write_text("".join(new_lines))
-    return {"modified": bool(insertions), "insertions": insertions, "method": "regex"}
-
 
 def _extract_python(path: Path) -> list[dict]:
     try:
@@ -614,6 +582,7 @@ def _visit_py_node(node: ast.AST, functions: list[dict],
                 "exit_lines":      exits,
                 "is_entry_point":  name == "main" or name == "__main__",
                 "parent_class":    parent_class,
+                "cost_info":       _compute_cost_python(child),
             })
             # Recurse into nested functions (but use the class name as parent)
             _visit_py_node(child, functions, lines, parent_class)
@@ -621,6 +590,88 @@ def _visit_py_node(node: ast.AST, functions: list[dict],
             _visit_py_node(child, functions, lines, parent_class=child.name)
         else:
             _visit_py_node(child, functions, lines, parent_class)
+
+
+# ---------------------------------------------------------------------------
+# AST-based cost estimation — Python
+# ---------------------------------------------------------------------------
+
+#: Python built-in / stdlib I/O names that indicate the function is non-trivial.
+_PY_IO_NAMES: frozenset[str] = frozenset({
+    "open", "read", "write", "close", "seek", "flush", "readline", "readlines",
+    "writelines", "stat", "rename", "unlink", "mkdir", "rmdir",
+    "listdir", "scandir", "glob", "walk",
+    "send", "recv", "sendall", "sendto", "recvfrom",
+})
+
+#: MPI method names (as attribute calls, e.g. ``comm.Send``).
+_PY_MPI_NAMES: frozenset[str] = frozenset({
+    "Send", "Recv", "Bcast", "Gather", "Scatter",
+    "Allreduce", "Reduce", "Allgather", "Alltoall",
+    "Barrier", "Sendrecv", "Isend", "Irecv", "Wait", "Waitall",
+})
+
+
+def _compute_cost_python(func_node: ast.AST) -> dict:
+    """Walk a Python ``FunctionDef`` AST subtree and compute cost metrics.
+
+    Uses ``ast.walk`` exclusively — no regex or text scanning.
+
+    Returns a dict with integer counters and a composite ``score``.
+    """
+    io_calls = 0
+    mpi_calls = 0
+    mem_calls = 0
+    loop_count = 0
+    branch_count = 0
+    call_count = 0
+    node_count = 0
+
+    for node in ast.walk(func_node):
+        node_count += 1
+
+        if isinstance(node, ast.Call):
+            call_count += 1
+            name = ""
+            if isinstance(node.func, ast.Name):
+                name = node.func.id
+            elif isinstance(node.func, ast.Attribute):
+                name = node.func.attr
+
+            if name in _PY_IO_NAMES:
+                io_calls += 1
+            elif name in _PY_MPI_NAMES or name.startswith("MPI_"):
+                mpi_calls += 1
+            elif name in _MEM_CALLS:
+                mem_calls += 1
+
+        elif isinstance(node, (ast.For, ast.While, ast.AsyncFor)):
+            loop_count += 1
+
+        elif isinstance(node, ast.If):
+            branch_count += 1
+
+    score = (
+        io_calls     * 30
+        + mpi_calls  * 25
+        + mem_calls  * 15
+        + loop_count * 10
+        + branch_count * 3
+        + call_count * 2
+        + min(node_count // 5, 20)
+    )
+
+    return {
+        "io_calls":     io_calls,
+        "mpi_calls":    mpi_calls,
+        "mem_calls":    mem_calls,
+        "vendor_calls": 0,           # Python has no vendor FS prefix heuristic
+        "loop_count":   loop_count,
+        "branch_count": branch_count,
+        "call_count":   call_count,
+        "node_count":   node_count,
+        "score":        score,
+    }
 
 
 def _py_exits(func_node: ast.FunctionDef) -> list[dict]:

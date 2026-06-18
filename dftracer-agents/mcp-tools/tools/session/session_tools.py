@@ -704,9 +704,11 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         * **cmake** — injects ``find_package(dftracer REQUIRED)`` and
           ``target_link_libraries(... dftracer::dftracer)`` into
           ``CMakeLists.txt`` (root and one level of sub-projects).
-        * **autotools** — prepends ``pkg-config --cflags dftracer`` and
-          ``pkg-config --libs dftracer`` flags to ``Makefile.am`` /
-          ``Makefile`` files found in ``annotated/``.
+        * **autotools** — prepends hardcoded dftracer include/lib flags to
+          ``Makefile.am`` / ``Makefile.in`` / ``Makefile`` files found in
+          ``annotated/``, and appends ``-ldftracer_core`` to the ``LIBS``
+          assignment in ``.in`` and generated ``Makefile`` files so the library
+          is linked *after* object files (required for correct symbol resolution).
         * **python** — adds ``"dftracer"`` to ``install_requires`` in
           ``setup.py`` and/or the ``dependencies`` table in
           ``pyproject.toml``.
@@ -963,8 +965,10 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         bt = info.get("build_tool", "unknown")
         features = info.get("features", {})
 
-        # Always use pip — cmake mode is fragile across autobuild.sh versions
-        install_mode = "pip"
+        # "auto" picks cmake for C/C++ projects, pip for Python projects.
+        if install_mode == "auto":
+            install_mode = "pip" if bt == "python" else "cmake"
+
         install_prefix = ws / "install_ann"
         install_prefix.mkdir(exist_ok=True)
         python_exe = sys.executable
@@ -977,6 +981,7 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             install_mode=install_mode,
             features=features,
             python_exe=python_exe,
+            cmake_flags=info.get("dftracer_cmake_flags", []),
         )
 
         if not result["success"]:
@@ -1061,10 +1066,12 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         ws = _ws(run_id)
         state = _load_state(run_id)
         info = state.get("detection") or _detect_info(ws / "source")
+        bt = info.get("build_tool", "unknown")
 
-        # cmake mode — produces libdftracer_core.so + headers under install_ann/.
-        # (pip mode only installs Python bindings; the C shared library is absent.)
-        # autobuild.sh v2.0.3 does not accept --quiet, which has been removed.
+        # autotools/cmake/make → cmake mode (builds libdftracer_core.so + headers)
+        # python → pip mode (installs Python package; C library not needed)
+        install_mode = "pip" if bt == "python" else "cmake"
+
         install_dir = ws / "install_ann"
         install_dir.mkdir(exist_ok=True)
         result = _install_dftracer_autobuild(
@@ -1072,13 +1079,22 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             install_prefix=install_dir,
             dftracer_ref=dftracer_ref,
             jobs=jobs,
-            install_mode="cmake",
+            install_mode=install_mode,
             features=info.get("features", {}),
             python_exe=sys.executable,
+            cmake_flags=info.get("dftracer_cmake_flags", []),
         )
         if not result["success"]:
             return _err(
-                "dftracer autobuild (cmake mode) failed",
+                f"dftracer autobuild ({install_mode} mode) failed",
+                ref=dftracer_ref,
+                steps=result["steps"],
+            )
+
+        if install_mode == "pip":
+            _save_state(run_id, {"dftracer_install_prefix": str(install_dir)})
+            return _ok(
+                "dftracer installed via pip (python project)",
                 ref=dftracer_ref,
                 steps=result["steps"],
             )
@@ -1094,7 +1110,7 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             "dftracer_pip_lib_dir":     dirs.get("lib_dir", ""),
         })
         return _ok(
-            "dftracer installed via autobuild.sh (cmake mode)",
+            f"dftracer installed via autobuild.sh (cmake mode, build_tool={bt})",
             ref=dftracer_ref,
             include_dir=dirs.get("include_dir", "(not found)"),
             lib_dir=dirs.get("lib_dir", "(not found)"),

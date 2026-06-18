@@ -47,6 +47,52 @@ from fastmcp import FastMCP
 from .workspace import _ws, _ok, _err
 
 # ---------------------------------------------------------------------------
+# Annotation-decision constants and helpers
+# ---------------------------------------------------------------------------
+
+#: Functions whose cost score is below this threshold are skipped unless they
+#: match a lifecycle or vendor-FS override rule.
+ANNOTATION_SCORE_THRESHOLD = 20
+
+#: Names / suffixes that identify lifecycle functions — always annotate
+#: regardless of cost score (Rule R6).
+_LIFECYCLE_RE = re.compile(
+    r"(_init|_final|_initialize|_finalize"
+    r"|_open|_close|_create|_destroy"
+    r"|_open_backend|_close_backend"
+    r"|_sync|_flush|_fsync"
+    r"|_delete|_rename|_stat|_mknod|_getFileSize)$",
+    re.IGNORECASE,
+)
+
+#: Vendor filesystem function-name prefixes — always annotate (Rule R7).
+_VENDOR_PREFIX_RE = re.compile(
+    r"^(gpfs_|beegfs_|llapi_|cuFile|hdfs_|daos_|ceph_|gfarm_)",
+    re.IGNORECASE,
+)
+
+
+def _should_annotate(fn: dict) -> bool:
+    """Return True if *fn* (a function-info dict) should receive dftracer macros.
+
+    Rules applied in order:
+    1. Lifecycle functions (*_init, *_final, …)    → always annotate (Rule R6)
+    2. Vendor FS calls present in body             → always annotate (Rule R7)
+    3. Cost score ≥ ANNOTATION_SCORE_THRESHOLD     → annotate
+    4. Otherwise                                   → skip
+    """
+    name = fn.get("name", "")
+    cost = fn.get("cost_info", {})
+
+    if _LIFECYCLE_RE.search(name):
+        return True
+    if _VENDOR_PREFIX_RE.match(name):
+        return True
+    if cost.get("vendor_calls", 0) > 0:
+        return True
+    return cost.get("score", 0) >= ANNOTATION_SCORE_THRESHOLD
+
+# ---------------------------------------------------------------------------
 # Module-level in-memory file cache
 # ---------------------------------------------------------------------------
 # Maps (run_id, filepath) → list[str] of lines (no trailing newline per line).
@@ -96,14 +142,17 @@ def register_clang_tools(mcp: FastMCP) -> None:
                 * ``insertions`` — number of brace pairs added.
                 * ``method``     — ``"clang"`` or ``"regex"`` (which backend ran).
         """
-        from .source_parser import add_braces_c
+        from .source_parser import add_braces_c, ClangNotFoundError
 
         ws = _ws(run_id)
         abs_path = ws / "annotated" / filepath
         if not abs_path.exists():
             return _err(f"File not found in annotated/: {filepath}")
 
-        result = add_braces_c(abs_path)
+        try:
+            result = add_braces_c(abs_path)
+        except ClangNotFoundError as exc:
+            return _err(str(exc), filepath=filepath)
         if "error" in result:
             return _err(result["error"], filepath=filepath)
 
@@ -154,15 +203,19 @@ def register_clang_tools(mcp: FastMCP) -> None:
                 * ``count``     — number of functions found.
                 * ``extractor`` — which backend produced the result.
         """
-        from .source_parser import extract_functions
+        from .source_parser import extract_functions, ClangNotFoundError
 
         ws = _ws(run_id)
         abs_path = ws / "annotated" / filepath
         if not abs_path.exists():
             return _err(f"File not found in annotated/: {filepath}")
 
-        functions = extract_functions(str(abs_path))
-        extractor = functions[0].get("source", "unknown") if functions else "none"
+        try:
+            functions = extract_functions(str(abs_path))
+        except ClangNotFoundError as exc:
+            return _err(str(exc), filepath=filepath)
+
+        extractor = functions[0].get("source", "unknown") if functions else "clang"
 
         return _ok(
             f"Extracted {len(functions)} function(s) from {filepath} "
@@ -315,33 +368,50 @@ def register_clang_tools(mcp: FastMCP) -> None:
                 * ``already_annotated`` — ``True`` if the file was skipped
                   because dftracer macros were already present.
         """
-        from .source_parser import extract_functions
+        from .source_parser import add_braces_c, extract_functions, ClangNotFoundError
 
         ws = _ws(run_id)
         abs_path = ws / "annotated" / filepath
         if not abs_path.exists():
             return _err(f"File not found in annotated/: {filepath}")
 
-        # Load from cache or disk
+        # Idempotency guard — read from cache or disk
         cache_key = (run_id, filepath)
         if cache_key in _FILE_CACHE:
-            lines = list(_FILE_CACHE[cache_key])
-            text = "\n".join(lines)
+            text = "\n".join(_FILE_CACHE[cache_key])
         else:
             text = abs_path.read_text(errors="replace")
-            lines = text.splitlines()
 
-        # Idempotency guard
         if "#include <dftracer/dftracer.h>" in text:
-            lines_count = len(lines)
             return _ok(
                 f"{filepath} is already annotated — skipped.",
                 filepath=filepath,
                 insertions=0,
                 functions=0,
-                total_lines=lines_count,
+                total_lines=len(text.splitlines()),
                 already_annotated=True,
+                braces_added=0,
             )
+
+        # ── Step 0: add braces to braceless control-flow bodies ──────────────
+        # Required before function extraction: inserting FUNCTION_END before a
+        # return inside a braceless if/for/while would otherwise create a
+        # dangling-else or brace-mismatch syntax error.
+        # Flush any in-memory cache to disk so add_braces_c sees current content.
+        if cache_key in _FILE_CACHE:
+            abs_path.write_text("\n".join(_FILE_CACHE[cache_key]) + "\n")
+            del _FILE_CACHE[cache_key]
+
+        try:
+            brace_result = add_braces_c(abs_path)
+        except ClangNotFoundError as exc:
+            return _err(str(exc), filepath=filepath)
+
+        braces_added = brace_result.get("insertions", 0)
+
+        # Reload from disk (brace insertion may have shifted line numbers)
+        text = abs_path.read_text(errors="replace")
+        lines = text.splitlines()
 
         is_cpp = language.lower() in ("cpp", "c++", "cxx")
         START = (
@@ -381,8 +451,12 @@ def register_clang_tools(mcp: FastMCP) -> None:
             tmp_path = tmp.name
         try:
             functions = extract_functions(tmp_path)
-        finally:
+        except ClangNotFoundError as exc:
             os.unlink(tmp_path)
+            return _err(str(exc), filepath=filepath)
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
         # ── Step 3: build insertion list (0-based indices, original line nums) ─
         # Each entry: (index_0based, text_to_insert)
@@ -394,6 +468,7 @@ def register_clang_tools(mcp: FastMCP) -> None:
             return " " * n if n > 0 else default
 
         insertions: list = [(include_insert_at, include_line)]
+        skipped_functions: list[str] = []
 
         for fn in functions:
             body_first = fn.get("body_first_line")
@@ -401,6 +476,13 @@ def register_clang_tools(mcp: FastMCP) -> None:
             exits       = fn.get("exit_lines", [])
             fn_name     = fn.get("name", "")
             if body_first is None or close is None:
+                continue
+
+            # ── Cost filter (Rule 0 / R6 / R7) ───────────────────────────────
+            # Skip trivial functions unless they are lifecycle or vendor-FS.
+            # entry-point main() is always annotated.
+            if fn_name != "main" and not _should_annotate(fn):
+                skipped_functions.append(fn_name)
                 continue
 
             body_idx = body_first - 1  # 0-based index of first body line
@@ -451,14 +533,19 @@ def register_clang_tools(mcp: FastMCP) -> None:
         _FILE_CACHE[cache_key] = list(lines)
         abs_path.write_text("\n".join(lines) + "\n")
 
+        annotated_count = len(functions) - len(skipped_functions)
         return _ok(
             f"Annotated {filepath}: {len(insertions)} line(s) inserted across "
-            f"{len(functions)} function(s).",
+            f"{annotated_count} function(s); {len(skipped_functions)} trivial "
+            f"function(s) skipped ({braces_added} brace pair(s) added).",
             filepath=filepath,
             insertions=len(insertions),
-            functions=len(functions),
+            functions=annotated_count,
+            skipped=len(skipped_functions),
+            skipped_names=skipped_functions,
             total_lines=len(lines),
             already_annotated=False,
+            braces_added=braces_added,
         )
 
     @mcp.tool()
@@ -505,65 +592,69 @@ def register_clang_tools(mcp: FastMCP) -> None:
         filepath: str,
         function_name: str,
     ) -> str:
-        """Estimate the instrumentation value of a C/C++ function.
+        """Estimate the instrumentation value of a C/C++/Python function.
 
-        Analyses the function body with heuristic pattern matching to decide
-        whether it is worth annotating with dftracer macros.  Functions that
-        do nothing of substance (simple getters, trivial wrappers, functions
-        with fewer than 3 real statements) are marked **skip**; functions that
-        perform I/O, MPI communication, memory allocation, or significant
-        computation are marked **annotate**.
+        Uses the clang ``-ast-dump=json`` AST (for C/C++) or Python's built-in
+        ``ast`` module (for ``.py`` files) to count meaningful structural
+        features — no regex or text scanning.
 
-        The analysis is purely textual (no clang AST required) but is
-        calibrated to the patterns that appear in HPC and I/O-intensive C code:
+        **What is measured (from the AST):**
 
-        * **I/O**: ``open``, ``close``, ``read``, ``write``, ``pread``,
-          ``pwrite``, ``fopen``, ``fclose``, ``fread``, ``fwrite``, ``stat``,
-          ``fstat``, ``lseek``, ``mmap``, ``munmap``, ``fsync``, ``fdatasync``,
-          ``fallocate``, ``ioctl``, ``sendfile``
-        * **MPI**: ``MPI_``
-        * **Memory**: ``malloc``, ``calloc``, ``realloc``, ``free``, ``mmap``,
-          ``memcpy``, ``memmove``, ``memset``
-        * **Computation**: loops (``for``, ``while``, ``do``), ``sqrt``,
-          ``pow``, ``log``, ``exp``, ``fabs``, ``floor``, ``ceil``
+        * **I/O syscalls** — ``CallExpr`` nodes whose callee is in the POSIX /
+          stdio I/O set (``open``, ``read``, ``write``, ``fopen``, ``stat``,
+          ``mmap``, …)
+        * **MPI calls** — ``CallExpr`` nodes starting with ``MPI_`` / ``NCMPI_``
+        * **Memory ops** — ``malloc``, ``calloc``, ``memcpy``, ``memset``, …
+        * **Vendor FS** — callee prefixed with ``gpfs_``, ``beegfs_``, ``llapi_``,
+          ``cuFile``, ``hdfs_``, ``daos_``, ``ceph_``, ``gfarm_``
+        * **Loops** — ``ForStmt`` / ``WhileStmt`` / ``DoStmt`` (C) or
+          ``ast.For`` / ``ast.While`` (Python)
+        * **Branches** — ``IfStmt`` / ``SwitchStmt`` (C) or ``ast.If`` (Python)
+        * **Call count** — total ``CallExpr`` / ``ast.Call`` nodes
+        * **Node count** — total AST nodes as a body-size proxy
 
-        Scoring: each matched category adds weight.  Functions scoring above
-        the threshold are recommended for annotation.
+        Scoring weights: io×30, mpi×25, vendor×30, mem×15, loop×10, branch×3,
+        call×2, body-size bonus (capped at 20).
+
+        **Annotation decision:**
+
+        * Lifecycle functions (``*_init``, ``*_final``, ``*_open``, …) →
+          always ``annotate`` regardless of score (Rule R6).
+        * Vendor FS calls present → always ``annotate`` (Rule R7).
+        * Score ≥ ``ANNOTATION_SCORE_THRESHOLD`` (default 20) → ``annotate``.
+        * Otherwise → ``skip``.
 
         Args:
-            run_id:        Session identifier.
+            run_id:        Session identifier returned by ``session_create``.
             filepath:      Path relative to ``annotated/``.
             function_name: Exact name of the function to evaluate.
 
         Returns:
             JSON string with keys:
-                * ``status``           — ``"ok"`` or ``"error"``.
-                * ``function``         — echoed function name.
-                * ``recommendation``   — ``"annotate"`` or ``"skip"``.
-                * ``score``            — numeric cost estimate (higher = more work).
-                * ``reasons``          — list of matched categories.
-                * ``statement_count``  — approximate number of non-blank, non-comment
-                                         statements found.
+
+            * ``status``         — ``"ok"`` or ``"error"``.
+            * ``function``       — echoed function name.
+            * ``recommendation`` — ``"annotate"`` or ``"skip"``.
+            * ``score``          — numeric cost estimate (higher = more work).
+            * ``threshold``      — the score threshold used.
+            * ``cost_info``      — full breakdown: ``io_calls``, ``mpi_calls``,
+              ``mem_calls``, ``vendor_calls``, ``loop_count``, ``branch_count``,
+              ``call_count``, ``node_count``.
+            * ``override_reason``— non-empty when lifecycle / vendor rule fired.
         """
-        from .source_parser import extract_functions
+        from .source_parser import extract_functions, ClangNotFoundError
 
         ws = _ws(run_id)
         abs_path = ws / "annotated" / filepath
         if not abs_path.exists():
             return _err(f"File not found in annotated/: {filepath}")
 
-        # Use cached content if available
-        cache_key = (run_id, filepath)
-        if cache_key in _FILE_CACHE:
-            all_lines = _FILE_CACHE[cache_key]
-        else:
-            all_lines = abs_path.read_text(errors="replace").splitlines()
+        try:
+            fns = extract_functions(str(abs_path))
+        except ClangNotFoundError as exc:
+            return _err(str(exc), filepath=filepath, function=function_name)
 
-        # Find function boundaries using extract_functions
-        fns = extract_functions(str(abs_path))
-        target = next(
-            (f for f in fns if f.get("name") == function_name), None
-        )
+        target = next((f for f in fns if f.get("name") == function_name), None)
         if target is None:
             return _err(
                 f"Function '{function_name}' not found in {filepath}.",
@@ -571,64 +662,231 @@ def register_clang_tools(mcp: FastMCP) -> None:
                 function=function_name,
             )
 
-        body_first = target.get("body_first_line", 1)
-        close       = target.get("close_brace_line", len(all_lines))
-        body_lines  = all_lines[body_first - 1 : close - 1]
+        cost = target.get("cost_info", {})
+        score = cost.get("score", 0)
 
-        # ── Heuristic scoring ────────────────────────────────────────────────
-        IO_RE   = re.compile(
-            r'\b(?:open|close|read|write|pread|pwrite|fopen|fclose|fread|fwrite'
-            r'|stat|fstat|lstat|lseek|mmap|munmap|fsync|fdatasync|fallocate'
-            r'|ioctl|sendfile|rename|unlink|mkdir|rmdir)\s*\('
-        )
-        MPI_RE  = re.compile(r'\bMPI_\w+\s*\(')
-        MEM_RE  = re.compile(
-            r'\b(?:malloc|calloc|realloc|free|mmap|memcpy|memmove|memset)\s*\('
-        )
-        LOOP_RE = re.compile(r'\b(?:for|while|do)\s*[({]')
-        MATH_RE = re.compile(
-            r'\b(?:sqrt|pow|log|exp|fabs|floor|ceil|cbrt|hypot|sin|cos|tan)\s*\('
-        )
-
-        body_text = "\n".join(body_lines)
-
-        score = 0
-        reasons = []
-        if IO_RE.search(body_text):
-            score += 30
-            reasons.append("io_syscall")
-        if MPI_RE.search(body_text):
-            score += 25
-            reasons.append("mpi_call")
-        if MEM_RE.search(body_text):
-            score += 15
-            reasons.append("memory_alloc")
-        if LOOP_RE.search(body_text):
-            score += 10
-            reasons.append("loop")
-        if MATH_RE.search(body_text):
-            score += 5
-            reasons.append("math")
-
-        # Count real statements (non-blank, non-comment, non-macro lines)
-        stmt_count = sum(
-            1 for ln in body_lines
-            if ln.strip()
-            and not ln.strip().startswith("//")
-            and not ln.strip().startswith("*")
-            and not ln.strip().startswith("/*")
-            and not ln.strip().startswith("DFTRACER")
-        )
-        score += min(stmt_count, 10)  # up to 10 pts for body size
-
-        recommendation = "annotate" if score >= 10 else "skip"
+        # Determine recommendation and any override reason
+        override_reason = ""
+        if _LIFECYCLE_RE.search(function_name):
+            recommendation = "annotate"
+            override_reason = "lifecycle function (Rule R6)"
+        elif _VENDOR_PREFIX_RE.match(function_name):
+            recommendation = "annotate"
+            override_reason = "vendor FS function (Rule R7)"
+        elif cost.get("vendor_calls", 0) > 0:
+            recommendation = "annotate"
+            override_reason = "vendor FS call in body (Rule R7)"
+        elif score >= ANNOTATION_SCORE_THRESHOLD:
+            recommendation = "annotate"
+        else:
+            recommendation = "skip"
 
         return _ok(
-            f"Function '{function_name}' scored {score} → {recommendation}.",
+            f"Function '{function_name}' scored {score} → {recommendation}"
+            + (f" [{override_reason}]" if override_reason else "") + ".",
             function=function_name,
             filepath=filepath,
             recommendation=recommendation,
             score=score,
-            reasons=reasons,
-            statement_count=stmt_count,
+            threshold=ANNOTATION_SCORE_THRESHOLD,
+            cost_info=cost,
+            override_reason=override_reason,
+        )
+
+    @mcp.tool()
+    def clang_syntax_check(
+        run_id: str,
+        filepath: str,
+        language: str = "auto",
+        extra_include_dirs: List[str] = None,
+    ) -> str:
+        """Check the syntax of an annotated source file using the real compiler front-end.
+
+        Uses the actual language toolchain — no regex or shell pattern matching:
+
+        * **C files**      — ``gcc -fsyntax-only`` (or ``clang -fsyntax-only``)
+        * **C++ files**    — ``g++ -fsyntax-only -std=c++14``
+        * **Python files** — Python's built-in ``ast.parse()`` (in-process, no
+          subprocess)
+
+        A dftracer macro stub header is automatically injected for C/C++ files
+        so that dftracer annotations (``DFTRACER_C_FUNCTION_START``, etc.) do not
+        block the syntax check before the real dftracer library is installed.
+
+        The session's dftracer ``include/`` directory is added to the include
+        path automatically when ``dftracer_install_prefix`` is recorded in
+        session state.  MPI include paths are detected via
+        ``mpicc --showme:incdirs``.
+
+        Args:
+            run_id:             Session identifier returned by ``session_create``.
+            filepath:           Path to the file relative to the ``annotated/``
+                                subfolder.
+            language:           ``"c"``, ``"cpp"``, ``"python"``, or ``"auto"``
+                                (default).  ``"auto"`` infers the language from
+                                the file extension.
+            extra_include_dirs: Optional additional ``-I`` paths injected into
+                                the C/C++ compiler invocation.
+
+        Returns:
+            JSON string with keys:
+
+            * ``status``   — always ``"ok"`` (errors are in ``passed``/``errors``).
+            * ``passed``   — ``True`` if no syntax errors were found.
+            * ``language`` — detected or supplied language string.
+            * ``errors``   — list of compiler error lines; empty on success.
+            * ``command``  — the compiler command that was run (C/C++ only).
+        """
+        import ast as _ast
+        import os
+        import subprocess
+        import tempfile
+        from .workspace import _load_state
+
+        ws = _ws(run_id)
+        abs_path = ws / "annotated" / filepath
+        if not abs_path.exists():
+            return _err(f"File not found in annotated/: {filepath}", filepath=filepath)
+
+        # ── Detect language ───────────────────────────────────────────────────
+        if language == "auto":
+            suffix = abs_path.suffix.lower()
+            if suffix == ".c":
+                lang = "c"
+            elif suffix in (".cpp", ".cxx", ".cc"):
+                lang = "cpp"
+            elif suffix == ".py":
+                lang = "python"
+            else:
+                return _err(
+                    f"Cannot auto-detect language for extension '{abs_path.suffix}'"
+                    " — supply language= explicitly.",
+                    filepath=filepath,
+                )
+        else:
+            lang = language.lower()
+            if lang in ("c++", "cxx"):
+                lang = "cpp"
+
+        # ── Python: ast.parse() in-process (no subprocess, no regex) ─────────
+        if lang == "python":
+            source = abs_path.read_text(errors="replace")
+            try:
+                _ast.parse(source, filename=str(abs_path))
+                return _ok(
+                    f"Python syntax OK: {filepath}",
+                    filepath=filepath,
+                    passed=True,
+                    language="python",
+                    errors=[],
+                    command="ast.parse()",
+                )
+            except SyntaxError as exc:
+                err_msg = f"{abs_path}:{exc.lineno}: SyntaxError: {exc.msg}"
+                return _ok(
+                    f"Python syntax error in {filepath}",
+                    filepath=filepath,
+                    passed=False,
+                    language="python",
+                    errors=[err_msg],
+                    command="ast.parse()",
+                )
+
+        # ── C / C++: clang/gcc -fsyntax-only ─────────────────────────────────
+        # Write a dftracer stub header to a temp file so that dftracer macros
+        # in the annotated file compile cleanly even without the real library.
+        DFTRACER_STUB = (
+            "#ifndef _DFTRACER_SYNTAX_STUB_H\n"
+            "#define _DFTRACER_SYNTAX_STUB_H\n"
+            "#define DFTRACER_C_INIT(a,b,c)              do{}while(0)\n"
+            "#define DFTRACER_C_FINI()                   do{}while(0)\n"
+            "#define DFTRACER_C_FUNCTION_START()         do{}while(0)\n"
+            "#define DFTRACER_C_FUNCTION_END()           do{}while(0)\n"
+            "#define DFTRACER_C_FUNCTION_UPDATE_STR(k,v) do{}while(0)\n"
+            "#define DFTRACER_C_FUNCTION_UPDATE_INT(k,v) do{}while(0)\n"
+            "#define DFTRACER_CPP_INIT(a,b,c)            do{}while(0)\n"
+            "#define DFTRACER_CPP_FINI()                 do{}while(0)\n"
+            "#define DFTRACER_CPP_FUNCTION()             do{}while(0)\n"
+            "#define DFTRACER_CPP_FUNCTION_UPDATE(k,v)   do{}while(0)\n"
+            "#define DFTRACER_CPP_REGION_START(n)        do{}while(0)\n"
+            "#define DFTRACER_CPP_REGION_END(n)          do{}while(0)\n"
+            "#endif\n"
+        )
+
+        compiler = "g++" if lang == "cpp" else "gcc"
+        lang_flag = ["-x", "c++" if lang == "cpp" else "c"]
+        std_flag  = ["-std=c++14"] if lang == "cpp" else []
+
+        # Collect include paths
+        include_dirs: List[str] = list(extra_include_dirs) if extra_include_dirs else []
+
+        # Inject dftracer include from session state
+        try:
+            state = _load_state(run_id)
+            prefix = state.get("dftracer_install_prefix", "")
+            if prefix:
+                inc = os.path.join(prefix, "include")
+                if os.path.isdir(inc):
+                    include_dirs.append(inc)
+        except Exception:
+            pass
+
+        # Auto-detect MPI include dir via mpicc --showme:incdirs (clang AST, not regex)
+        try:
+            mpi_r = subprocess.run(
+                ["mpicc", "--showme:incdirs"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if mpi_r.returncode == 0:
+                for d in mpi_r.stdout.strip().split():
+                    if os.path.isdir(d):
+                        include_dirs.append(d)
+        except Exception:
+            pass
+
+        inc_flags = [f"-I{d}" for d in include_dirs]
+
+        stub_fd, stub_path = tempfile.mkstemp(suffix=".h", prefix="dftracer_stub_")
+        try:
+            with os.fdopen(stub_fd, "w") as fh:
+                fh.write(DFTRACER_STUB)
+
+            cmd = (
+                [compiler]
+                + lang_flag
+                + ["-fsyntax-only", "-w"]
+                + std_flag
+                + ["-include", stub_path]
+                + inc_flags
+                + [str(abs_path)]
+            )
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30,
+            )
+        finally:
+            try:
+                os.unlink(stub_path)
+            except OSError:
+                pass
+
+        # Collect meaningful diagnostics; filter out stub-header noise
+        combined = "\n".join(filter(None, [result.stdout, result.stderr])).strip()
+        error_lines = [
+            ln for ln in combined.splitlines()
+            if ln.strip() and "dftracer_stub_" not in ln
+        ]
+
+        passed = result.returncode == 0
+        msg = (
+            f"{lang.upper()} syntax OK: {filepath}"
+            if passed
+            else f"{lang.upper()} syntax error(s) in {filepath}"
+        )
+        return _ok(
+            msg,
+            filepath=filepath,
+            passed=passed,
+            language=lang,
+            errors=error_lines,
+            command=" ".join(cmd),
         )

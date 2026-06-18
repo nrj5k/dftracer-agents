@@ -4,8 +4,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Base OS packages, Python toolchain, and common dev utilities.
 RUN apt-get update
-RUN apt-get install -y --no-install-recommends bash ca-certificates curl git less procps sudo iproute2
+RUN apt-get install -y --no-install-recommends bash ca-certificates curl git less procps sudo iproute2 jq vim
 RUN apt-get install -y --no-install-recommends python3 python3-pip python3-venv python3-dev build-essential
+RUN apt-get install -y --no-install-recommends clang
 RUN rm -rf /var/lib/apt/lists/*
 
 # Node.js 20.x (goose tui requires node >=20)

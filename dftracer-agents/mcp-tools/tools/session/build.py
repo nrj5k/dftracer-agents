@@ -22,8 +22,9 @@ Supported build systems:
   the end of the file.
 - Python ``setup.py`` — appends ``"dftracer"`` to ``install_requires``.
 - Python ``pyproject.toml`` — appends ``"dftracer"`` to ``[project.dependencies]``.
-- Autotools/Make ``Makefile`` — prepends ``pkg-config``-based ``CFLAGS`` and
-  ``LDFLAGS`` augmentation lines.
+- Autotools/Make ``Makefile`` — prepends hardcoded ``DFTRACER_PREFIX``/
+  ``AM_CPPFLAGS``/``AM_LDFLAGS`` lines and appends ``-ldftracer_core`` to
+  ``LIBS`` in ``.in`` and generated ``Makefile`` files.
 
 **Entry-point detection** (``_find_*`` functions):
 
@@ -203,26 +204,28 @@ def _patch_autotools_makefile(
     pip_include_dir: str = "",
     pip_lib_dir: str = "",
 ) -> str:
-    """Return ``Makefile`` content with dftracer pkg-config flags prepended.
+    """Return ``Makefile`` / ``Makefile.am`` / ``Makefile.in`` content with dftracer flags injected.
 
-    Uses ``pkg-config --cflags/--libs dftracer`` which works when
-    ``PKG_CONFIG_PATH`` includes the dftracer install prefix's
-    ``lib/pkgconfig/`` directory.  Call ``session_generate_dftracer_pc``
-    before ``session_build_annotated`` to ensure the ``.pc`` file exists;
-    ``session_build_annotated`` sets ``PKG_CONFIG_PATH`` automatically.
+    Strategy:
+    - Injects hardcoded ``DFTRACER_PREFIX``, ``AM_CPPFLAGS``, and ``AM_LDFLAGS``
+      at the top of the file using the known install paths (no ``pkg-config``
+      dependency at make time, which is unreliable when ``PKG_CONFIG_PATH`` is
+      not exported into sub-make invocations).
+    - Also patches the ``LIBS = @LIBS@`` substitution in ``.in`` files and
+      the ``LIBS = …`` assignment in generated ``Makefile`` files to append
+      ``-ldftracer_core``.  In autotools, ``LIBS`` is emitted *after* object
+      files in the link command, which is the correct position for ``-l`` flags.
+      Adding ``-ldftracer_core`` only to ``AM_LDFLAGS`` places it *before*
+      objects, which breaks static-link symbol resolution.
 
-    *pip_include_dir* and *pip_lib_dir* are accepted for API compatibility
-    but are no longer embedded in the Makefile — the ``PKG_CONFIG_PATH``
-    environment variable approach is simpler and avoids Make-syntax variables
-    being misinterpreted as shell commands.
-
-    This function is idempotent: if ``"dftracer"`` already appears in the
-    file, the original content is returned unchanged.
+    This function is idempotent: if ``"dftracer"`` already appears anywhere in
+    the file, the original content is returned unchanged.
 
     Args:
-        path: Absolute path to the ``Makefile`` or ``Makefile.am`` to patch.
-        pip_include_dir: Ignored (kept for API compatibility).
-        pip_lib_dir: Ignored (kept for API compatibility).
+        path: Absolute path to the ``Makefile``, ``Makefile.am``, or
+            ``Makefile.in`` to patch.
+        pip_include_dir: dftracer include directory (e.g. ``install_ann/include``).
+        pip_lib_dir: dftracer lib directory (e.g. ``install_ann/lib``).
 
     Returns:
         str: Modified file content.
@@ -231,20 +234,49 @@ def _patch_autotools_makefile(
     if "dftracer" in content:
         return content
 
-    injection = textwrap.dedent("""\
-        # --- dftracer (auto-injected via pkg-config) ---
-        # AM_CPPFLAGS / AM_LDFLAGS are the correct autotools hooks;
-        # they are accumulated by automake and not overridden by configure.
-        # PKG_CONFIG_PATH must include install_ann/lib/pkgconfig.
-        # Do NOT pass -DDFTRACER_ENABLE: dftracer.h defines it as a string
-        # and redefining it on the command line causes a compiler warning.
-        DFTRACER_CFLAGS  := $(shell pkg-config --cflags dftracer 2>/dev/null)
-        DFTRACER_LDFLAGS := $(shell pkg-config --libs   dftracer 2>/dev/null)
-        AM_CPPFLAGS += $(DFTRACER_CFLAGS)
-        AM_CXXFLAGS += $(DFTRACER_CFLAGS)
-        AM_LDFLAGS  += $(DFTRACER_LDFLAGS)
-        # ------------------------------------------------
-    """)
+    if pip_include_dir and pip_lib_dir:
+        injection = textwrap.dedent(f"""\
+            # --- dftracer (auto-injected) ---
+            # Do NOT pass -DDFTRACER_ENABLE: dftracer.h defines it as a string
+            # and redefining it on the command line causes a compiler warning.
+            DFTRACER_PREFIX  := {pip_lib_dir.rstrip("/")}
+            DFTRACER_CFLAGS  := -I{pip_include_dir}
+            DFTRACER_LDFLAGS := -L{pip_lib_dir} -Wl,-rpath,{pip_lib_dir}
+            AM_CPPFLAGS += $(DFTRACER_CFLAGS)
+            AM_CXXFLAGS += $(DFTRACER_CFLAGS)
+            AM_LDFLAGS  += $(DFTRACER_LDFLAGS)
+            # ------------------------------------------------
+        """)
+    else:
+        injection = textwrap.dedent("""\
+            # --- dftracer (auto-injected via pkg-config) ---
+            # AM_CPPFLAGS / AM_LDFLAGS are the correct autotools hooks;
+            # PKG_CONFIG_PATH must include install_ann/lib/pkgconfig.
+            # Do NOT pass -DDFTRACER_ENABLE: dftracer.h defines it as a string
+            # and redefining it on the command line causes a compiler warning.
+            DFTRACER_CFLAGS  := $(shell pkg-config --cflags dftracer 2>/dev/null)
+            DFTRACER_LDFLAGS := $(shell pkg-config --libs   dftracer 2>/dev/null)
+            AM_CPPFLAGS += $(DFTRACER_CFLAGS)
+            AM_CXXFLAGS += $(DFTRACER_CFLAGS)
+            AM_LDFLAGS  += $(DFTRACER_LDFLAGS)
+            # ------------------------------------------------
+        """)
+
+    name = path.name
+
+    # Patch LIBS assignment so -ldftracer_core appears after objects at link time.
+    # •  Makefile.in  — configure substitutes @LIBS@; append to that substitution.
+    # •  Generated Makefile — patch the resolved assignment directly.
+    # •  Makefile.am  — automake does not emit a LIBS line, so nothing to patch.
+    if name.endswith(".in") or name == "Makefile":
+        content = re.sub(
+            r"^(LIBS\s*=\s*)(.*)$",
+            lambda m: m.group(0) if "-ldftracer_core" in m.group(0)
+                      else m.group(1) + m.group(2).rstrip() + " -ldftracer_core",
+            content,
+            flags=re.MULTILINE,
+        )
+
     return injection + "\n" + content
 
 
