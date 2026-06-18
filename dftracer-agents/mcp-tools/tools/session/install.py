@@ -1,0 +1,499 @@
+"""
+dftracer install helpers — autobuild.sh wrapper and dftracer-utils installer.
+
+This module handles the two external installation concerns of the dftracer
+session pipeline:
+
+1. **dftracer itself** (:func:`_install_dftracer_autobuild`) — clones the
+   dftracer repository at a requested Git ref and delegates the entire build
+   and install process to the project's own ``autobuild.sh`` script.  Using
+   the upstream script ensures that all dependency detection, CMake flag
+   handling, and install-tree layout are exactly as the dftracer project
+   intends, rather than being re-implemented here.
+
+2. **dftracer-utils** (:func:`_install_dftracer_utils`,
+   :func:`_dftracer_utils_split`) — installs the ``dftracer-utils`` Python
+   package (post-processing tools) from the upstream ``develop`` branch and
+   provides a helper that compacts raw trace files via the ``split`` MCP tool.
+
+The split helper (:func:`_dftracer_utils_split`) uses dynamic module loading
+(:func:`_load_dftracer_utils_service`) to call the split tool's Python
+function directly in-process, avoiding a network round-trip to an MCP server.
+It falls back transparently to the ``dftracer_split`` CLI binary when the
+service module cannot be loaded.
+
+Runtime constraints:
+- Git clone operations time out after 600 seconds.
+- The full dftracer build (``autobuild.sh``) may take up to 1 800 seconds on
+  slow hardware; plan accordingly when setting pipeline stage timeouts.
+- The cloned dftracer source is cached at ``<workspace>/dftracer_src/`` so
+  that retries after a build failure do not re-download the repository.
+"""
+from __future__ import annotations
+
+import asyncio
+import importlib.util
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from .workspace import _run
+
+
+_CORE_LIB_NAMES = ("libdftracer_core.so", "libdftracer_core.so.4",
+                    "libdftracer_core.dylib")
+_CORE_HEADER    = Path("dftracer") / "dftracer.h"
+
+
+def _find_dftracer_dirs(
+    python_exe: Optional[str] = None,
+    cmake_prefix: Optional[Path] = None,
+) -> Optional[Dict[str, str]]:
+    """Locate dftracer include and lib directories, checking every known layout.
+
+    Search order (stops at the first lib dir that contains ``libdftracer_core.so``):
+
+    1. **cmake prefix** — ``<cmake_prefix>/lib/`` and ``<cmake_prefix>/lib64/``
+       (produced by ``autobuild.sh --install-mode cmake``).
+    2. **site-packages pkg dir** — ``<pkg>/lib/`` and ``<pkg>/lib64/``
+       (pip wheel layout when the core lib is bundled there).
+    3. **site-packages parent** — ``<site-packages>/lib/`` and ``<site-packages>/lib64/``
+       (some wheels install the shared lib one level above the package dir).
+
+    The include dir paired with each lib candidate is resolved by looking for
+    ``dftracer/dftracer.h`` relative to the same prefix (``<prefix>/include/``).
+
+    Args:
+        python_exe: Path to the Python interpreter used to locate the dftracer
+            package directory.  Defaults to the current interpreter.
+        cmake_prefix: Optional workspace cmake install prefix (``install_ann/``).
+            When supplied it is tried first so that cmake-mode installs win.
+
+    Returns:
+        Dict with ``include_dir``, ``lib_dir``, and ``lib_name`` on success, or
+        ``None`` when no dir containing ``libdftracer_core.so`` is found.
+    """
+    import json as _json
+
+    def _has_core(d: Path) -> bool:
+        return d.is_dir() and any((d / n).exists() for n in _CORE_LIB_NAMES)
+
+    def _include_for(prefix: Path) -> str:
+        inc = prefix / "include"
+        return str(inc) if (inc / _CORE_HEADER).exists() else str(inc)
+
+    def _lib_name(d: Path) -> str:
+        for n in _CORE_LIB_NAMES:
+            if (d / n).exists():
+                return n
+        return "libdftracer_core.so"
+
+    candidates: list[Path] = []
+
+    # 1. cmake prefix (install_ann) — highest priority
+    if cmake_prefix:
+        candidates += [cmake_prefix / "lib", cmake_prefix / "lib64"]
+
+    # 2. site-packages package dir  (pip wheel: <pkg>/lib, <pkg>/lib64)
+    py = python_exe or sys.executable
+    script = (
+        "import dftracer, os, json; "
+        "base = os.path.dirname(os.path.abspath(dftracer.__file__)); "
+        "parent = os.path.dirname(base); "
+        "print(json.dumps({'pkg': base, 'parent': parent}))"
+    )
+    try:
+        proc = subprocess.run([py, "-c", script],
+                              capture_output=True, text=True, timeout=30)
+        if proc.returncode == 0 and proc.stdout.strip():
+            info = _json.loads(proc.stdout.strip())
+            pkg    = Path(info["pkg"])
+            parent = Path(info["parent"])
+            candidates += [
+                pkg    / "lib",  pkg    / "lib64",
+                parent / "lib",  parent / "lib64",
+            ]
+    except Exception:
+        pass
+
+    for lib_dir in candidates:
+        if _has_core(lib_dir):
+            prefix = lib_dir.parent
+            return {
+                "include_dir": _include_for(prefix),
+                "lib_dir":     str(lib_dir),
+                "lib_name":    _lib_name(lib_dir),
+            }
+
+    # Nothing found — return the cmake prefix dirs anyway so callers can still
+    # set RPATH; the build will fail with a clear linker error rather than a
+    # silent wrong-path error.
+    if cmake_prefix and (cmake_prefix / "lib").is_dir():
+        return {
+            "include_dir": str(cmake_prefix / "include"),
+            "lib_dir":     str(cmake_prefix / "lib"),
+            "lib_name":    "libdftracer_core.so",
+        }
+    return None
+
+
+# Keep old name as alias so existing callers don't break
+_find_dftracer_pip_dirs = _find_dftracer_dirs
+
+
+#: Absolute path to the ``dftracer_utils_service.py`` module located in the
+#: sibling ``dftracer/`` package directory.  Resolved at import time so that
+#: :func:`_load_dftracer_utils_service` can use it without re-computing the
+#: path on every call.
+_UTILS_SERVICE_PATH = Path(__file__).resolve().parent.parent / "dftracer" / "dftracer_utils_service.py"
+
+
+def _load_dftracer_utils_service():
+    """Return the ``dftracer_utils_service`` module, loading it dynamically on first call.
+
+    The module is registered in ``sys.modules`` under the key
+    ``"dftracer_agents.mcp_tools.tools.dftracer_utils_service"`` after the
+    first successful load, so subsequent calls return the cached module object
+    without re-executing the module code.
+
+    Using dynamic loading (rather than a normal import) avoids making
+    ``dftracer_utils_service`` a hard dependency of this package: if the file
+    does not exist — for example in a minimal install that omits the dftracer
+    subpackage — the function returns ``None`` and callers fall back gracefully.
+
+    Returns:
+        module or None: The loaded ``dftracer_utils_service`` module, or
+            ``None`` if :data:`_UTILS_SERVICE_PATH` does not exist on disk.
+    """
+    mod_name = "dftracer_agents.mcp_tools.tools.dftracer_utils_service"
+    if mod_name in sys.modules:
+        return sys.modules[mod_name]
+    if not _UTILS_SERVICE_PATH.exists():
+        return None
+    spec = importlib.util.spec_from_file_location(mod_name, _UTILS_SERVICE_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _dftracer_utils_split(
+    directory: str,
+    output_dir: str,
+    app_name: str = "app",
+) -> Dict[str, Any]:
+    """Compact raw dftracer trace files using the ``split`` tool.
+
+    Attempts to invoke the split operation in-process via the
+    ``DftracerUtilsService`` MCP service (loaded dynamically by
+    :func:`_load_dftracer_utils_service`).  This avoids the overhead of an
+    out-of-process call when the service module is available.
+
+    The in-process path introspects the tool object returned by
+    ``service.core_subservice.list_tools()`` for a callable attribute
+    (trying ``fn``, ``function``, ``callable``, ``handler``, ``_fn`` in
+    order) and invokes it with keyword arguments.  Both synchronous and
+    ``async`` tool functions are supported.
+
+    If the service module cannot be loaded or any step of the in-process path
+    raises an exception, the function falls back to invoking the
+    ``dftracer_split`` CLI binary directly via :func:`~workspace._run`.
+
+    Args:
+        directory: Path to the directory containing raw ``.pfw`` trace files
+            produced by a dftracer-instrumented application run.
+        output_dir: Destination directory for the compacted output files.
+            Created by the split tool if it does not exist.
+        app_name: Application name tag embedded in the output file names.
+            Defaults to ``"app"``.
+
+    Returns:
+        Dict[str, Any]: A normalised result dict with keys:
+
+            - ``success`` (bool): ``True`` on success.
+            - ``returncode`` (int): Exit code (``0`` on success, non-zero or
+              ``-1`` on failure).
+            - ``stdout`` (str): Captured output or tool result string.
+            - ``stderr`` (str): Error output or exception message.
+    """
+    mod = _load_dftracer_utils_service()
+    if mod is not None:
+        try:
+            service = mod.DftracerUtilsService()
+            tools = asyncio.run(service.core_subservice.list_tools())
+            split_tool = next((t for t in tools if t.name == "split"), None)
+            if split_tool is not None:
+                fn = None
+                for attr in ("fn", "function", "callable", "handler", "_fn"):
+                    val = getattr(split_tool, attr, None)
+                    if callable(val):
+                        fn = val
+                        break
+                if fn is not None:
+                    try:
+                        kwargs = {"directory": directory, "output_dir": output_dir,
+                                  "app_name": app_name}
+                        result = (asyncio.run(fn(**kwargs))
+                                  if asyncio.iscoroutinefunction(fn) else fn(**kwargs))
+                        return {"success": True, "returncode": 0,
+                                "stdout": str(result), "stderr": ""}
+                    except subprocess.CalledProcessError as exc:
+                        return {"success": False, "returncode": exc.returncode,
+                                "stdout": "", "stderr": getattr(exc, "stderr", str(exc))}
+        except Exception:
+            pass  # fall through to binary fallback
+
+    # Fallback: call binary directly
+    return _run(
+        ["dftracer_split", "-n", app_name, "-d", directory, "-o", output_dir],
+        timeout=600,
+    )
+
+
+def _dftracer_utils_comparator(
+    baseline: str,
+    variant: str,
+    query: str = 'cat == "POSIX" OR cat == "STDIO" OR cat == "C_APP"',
+    group_by_dims: str = "cat,name",
+    output_format: str = "json",
+    threshold_pct: float = 5.0,
+) -> Dict[str, Any]:
+    """Compare trace metrics between two runs via the DftracerUtilsService comparator tool.
+
+    Invokes ``DftracerUtilsService.analysis_subservice`` comparator in-process
+    (same dynamic-loading pattern as :func:`_dftracer_utils_split`).  Falls
+    back to the ``dftracer_comparator`` CLI binary if the service cannot be
+    loaded.
+
+    Returns:
+        Dict[str, Any]: keys ``success``, ``returncode``, ``stdout``, ``stderr``.
+    """
+    mod = _load_dftracer_utils_service()
+    if mod is not None:
+        try:
+            service = mod.DftracerUtilsService()
+            tools = asyncio.run(service.analysis_subservice.list_tools())
+            cmp_tool = next((t for t in tools if t.name == "comparator"), None)
+            if cmp_tool is not None:
+                fn = None
+                for attr in ("fn", "function", "callable", "handler", "_fn"):
+                    val = getattr(cmp_tool, attr, None)
+                    if callable(val):
+                        fn = val
+                        break
+                if fn is not None:
+                    try:
+                        kwargs = {
+                            "baseline": baseline,
+                            "variant": variant,
+                            "query": query,
+                            "group_by_dims": group_by_dims,
+                            "output_format": output_format,
+                            "threshold_pct": threshold_pct,
+                        }
+                        result = (
+                            asyncio.run(fn(**kwargs))
+                            if asyncio.iscoroutinefunction(fn)
+                            else fn(**kwargs)
+                        )
+                        return {"success": True, "returncode": 0,
+                                "stdout": str(result), "stderr": ""}
+                    except subprocess.CalledProcessError as exc:
+                        return {"success": False, "returncode": exc.returncode,
+                                "stdout": "", "stderr": getattr(exc, "stderr", str(exc))}
+        except Exception:
+            pass  # fall through to binary fallback
+
+    # Fallback: call binary directly
+    cmd = [
+        "dftracer_comparator",
+        "--baseline", baseline,
+        "--variant", variant,
+        "--query", query,
+        "--format", output_format,
+        "--threshold", str(threshold_pct),
+    ]
+    if group_by_dims:
+        cmd += ["--group-by", group_by_dims]
+    return _run(cmd, timeout=120)
+
+
+def _install_dftracer_utils(pip: Path) -> Dict[str, Any]:
+    """Install the ``dftracer-utils`` package from its upstream ``develop`` branch.
+
+    Runs ``pip install --upgrade git+https://…/dftracer-utils.git@develop``
+    using the pip executable at *pip*, which may belong to a virtual
+    environment or a specific Python interpreter selected by the pipeline.
+
+    Args:
+        pip: Absolute path to the ``pip`` (or ``pip3``) executable to use for
+            installation.  Must be writable by the current process; if a
+            virtual environment is in use the venv's pip should be supplied.
+
+    Returns:
+        Dict[str, Any]: A normalised result dict as returned by
+            :func:`~workspace._run`.  Check the ``"success"`` key to determine
+            whether installation succeeded.
+    """
+    return _run(
+        [str(pip), "install", "--upgrade",
+         "git+https://github.com/llnl/dftracer-utils.git@develop"],
+        timeout=600,
+    )
+
+
+def _install_dftracer_autobuild(
+    ws: Path,
+    install_prefix: Path,
+    dftracer_ref: str = "v2.0.3",
+    jobs: int = 4,
+    install_mode: str = "cmake",
+    features: Optional[Dict[str, Any]] = None,
+    python_exe: Optional[str] = None,
+    cmake_flags: Optional[list] = None,
+) -> Dict[str, Any]:
+    """Clone dftracer and build and install it via the project's own ``autobuild.sh``.
+
+    Delegates the entire build to dftracer's upstream ``autobuild.sh`` so that
+    dependency detection, CMake configuration, compiler selection, and the
+    install-tree layout all follow the project's own conventions rather than
+    being duplicated here.
+
+    The dftracer source is cloned into ``<ws>/dftracer_src/`` on the first
+    call.  Subsequent calls (e.g. after a build failure) reuse the existing
+    clone, so the ``--depth=1`` git clone is performed at most once per
+    workspace.  The CMake build directory is placed at ``<ws>/dftracer_build/``
+    via the ``BUILD_DIR`` environment variable consumed by ``autobuild.sh``.
+
+    Feature flags detected by :func:`~detection._detect_info` are forwarded
+    to ``autobuild.sh`` as ``--enable-mpi`` when MPI is detected.  HDF5 is
+    intentionally not forwarded because dftracer does not require HDF5 as a
+    build dependency for C/C++ tracing (``--enable-hdf5`` is not a valid
+    ``autobuild.sh`` flag as of v2.0.3).
+
+    Note:
+        The build step may take up to 30 minutes on slow hardware.  The
+        function blocks until ``autobuild.sh`` exits or the 1 800-second
+        timeout is reached.  Ensure the calling MCP tool's timeout is set
+        accordingly.
+
+    Args:
+        ws: Workspace root directory (absolute ``Path``).  Source and build
+            trees are created as sub-directories of this path.
+        install_prefix: Installation prefix passed as ``--install-prefix`` to
+            ``autobuild.sh``.  dftracer headers, libraries, and CMake config
+            files are placed under this directory.
+        dftracer_ref: Git tag or branch name to clone.  Defaults to
+            ``"v2.0.3"``.  Must be a valid ref on the
+            ``https://github.com/llnl/dftracer.git`` remote.
+        jobs: Number of parallel build jobs forwarded as ``--jobs`` to
+            ``autobuild.sh``.  Defaults to ``4``.
+        install_mode: Controls what ``autobuild.sh`` installs.  Use
+            ``"cmake"`` for C/C++ projects (installs headers, libraries, and
+            CMake package config files); use ``"pip"`` for pure-Python projects
+            (installs the dftracer Python package into the target interpreter).
+        features: Detected project feature dict as returned by
+            :func:`~detection._detect_info`.  Relevant keys: ``"mpi"`` (bool),
+            ``"hdf5"`` (bool), ``"hdf5_system"`` (dict).  When ``None`` no
+            feature flags are passed.
+        python_exe: Absolute path to the Python interpreter to use for Python
+            bindings and pip-mode installation.  Forwarded as ``--python`` to
+            ``autobuild.sh``.  When ``None`` Python support is not explicitly
+            requested (though ``autobuild.sh`` may still auto-detect it).
+        cmake_flags: Extra cmake ``-D`` flags to forward to dftracer's cmake
+            build via the ``DFTRACER_CMAKE_ARGS`` env variable (semicolon-
+            separated, as expected by autobuild.sh).  Typical values come from
+            :func:`~detection._detect_info` ``dftracer_cmake_flags``.  For pip
+            mode these are ignored; feature env vars are set instead.
+
+    Returns:
+        Dict[str, Any]: A dict with the following keys:
+
+            - ``success`` (bool): ``True`` if all steps completed without
+              error.
+            - ``steps`` (Dict[str, Any]): Per-step result dicts.  Keys:
+              ``"clone"`` (git clone result or reuse notice) and
+              ``"autobuild"`` (``autobuild.sh`` execution result).
+            - ``prefix`` (str): String form of *install_prefix* (present only
+              on success or when ``autobuild.sh`` was reached regardless of
+              its exit code).
+            - ``error`` (str): Human-readable error message (present only when
+              a pre-build check fails, e.g. ``autobuild.sh`` is missing from
+              the cloned source).
+    """
+    features = features or {}
+    src = ws / "dftracer_src"
+    bld = ws / "dftracer_build"
+    bld.mkdir(exist_ok=True)
+    steps: Dict[str, Any] = {}
+
+    # Clone once; reuse on subsequent calls (e.g. retry after a failure)
+    if not src.exists():
+        r = _run(
+            ["git", "clone", "--depth=1", "--branch", dftracer_ref,
+             "https://github.com/llnl/dftracer.git", str(src)],
+            timeout=600,
+        )
+        steps["clone"] = r
+        if not r["success"]:
+            return {"success": False, "steps": steps}
+    else:
+        steps["clone"] = {"status": "reused", "path": str(src)}
+
+    autobuild = src / "autobuild.sh"
+    if not autobuild.exists():
+        return {
+            "success": False,
+            "steps": steps,
+            "error": "autobuild.sh not found in cloned dftracer source",
+        }
+
+    cmd = [
+        "/bin/bash", str(autobuild),
+        "--install-mode", install_mode,
+        "--build-type", "RelWithDebInfo",
+        "--jobs", str(jobs),
+    ]
+
+    # cmake mode uses an explicit install prefix; pip mode lets pip choose
+    if install_mode != "pip":
+        cmd += ["--install-prefix", str(install_prefix)]
+
+    # Feature flags — mirror what autobuild.sh exposes.
+    # Note: --enable-hdf5 is NOT a valid autobuild.sh flag (as of v2.0.3);
+    # dftracer does not require HDF5 as a dependency for C/C++ tracing.
+    if python_exe:
+        cmd += ["--python", python_exe]
+    if features.get("mpi"):
+        cmd += ["--enable-mpi"]
+
+    # Build env for autobuild.sh.
+    # cmake mode: pass feature flags via DFTRACER_CMAKE_ARGS (semicolon-separated).
+    # pip mode:   set env vars that dftracer's setup.py / pip build respects.
+    build_env: Dict[str, str] = {"BUILD_DIR": str(bld)}
+
+    if install_mode == "cmake":
+        extra: list = list(cmake_flags or [])
+        if features.get("hdf5"):
+            if "-DDFTRACER_ENABLE_HDF5=ON" not in extra:
+                extra.append("-DDFTRACER_ENABLE_HDF5=ON")
+            hdf5_hint = (features.get("hdf5_system") or {}).get("cmake_hint", "")
+            if hdf5_hint and hdf5_hint not in extra:
+                extra.append(hdf5_hint)
+        if extra:
+            build_env["DFTRACER_CMAKE_ARGS"] = ";".join(extra)
+    else:
+        # pip mode: feature env vars
+        if features.get("mpi"):
+            build_env["DFTRACER_ENABLE_MPI"] = "ON"
+        if features.get("hdf5"):
+            build_env["DFTRACER_ENABLE_HDF5"] = "ON"
+            hdf5_prefix = (features.get("hdf5_system") or {}).get("prefix") or ""
+            if hdf5_prefix:
+                build_env["HDF5_ROOT"] = hdf5_prefix
+                build_env["HDF5_DIR"] = hdf5_prefix
+
+    r = _run(cmd, cwd=src, env=build_env, timeout=1800)
+    steps["autobuild"] = r
+    return {"success": r["success"], "steps": steps, "prefix": str(install_prefix)}

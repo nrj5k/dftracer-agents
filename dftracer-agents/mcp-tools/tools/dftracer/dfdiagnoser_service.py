@@ -1,0 +1,402 @@
+"""DFDiagnoser MCP service — I/O bottleneck diagnosis from DFAnalyzer checkpoints.
+
+This module exposes the DFDiagnoser library as an MCP tool so that AI agents can
+identify I/O bottlenecks in dftracer traces without constructing shell commands
+manually.
+
+Background
+----------
+DFDiagnoser consumes *DFAnalyzer checkpoints* — a directory of ``_flat_view_*.parquet``
+and ``_raw_stats_*.json`` files produced when dfanalyzer is run with
+``analyzer.checkpoint=True``.  It scores each metric against severity thresholds
+(trivial → critical) and, in streaming mode, builds higher-level findings with
+motifs and recommendations.
+
+For static checkpoint runs (the common batch-pipeline use case) the tool:
+
+1. Loads each ``_flat_view_*.parquet`` file from the checkpoint directory.
+2. Calls ``score_metrics()`` which adds a ``<metric>_score`` column
+   (1 = trivial, 2 = low, 3 = medium, 4 = high, 5 = critical) to every
+   relevant metric.
+3. Serialises the scored views to ``<output_dir>/`` as JSON/CSV/Parquet.
+4. Extracts the highest-scoring metrics and surfaces them as a structured
+   bottleneck summary.
+
+Tools exposed
+-------------
+* ``diagnose`` — run dfdiagnoser on an existing DFAnalyzer checkpoint directory.
+
+Typical pipeline order
+----------------------
+::
+
+    dfanalyzer (via analyze tool, with analyzer_checkpoint=True)
+        → checkpoint_dir/  (_flat_view_*.parquet, _raw_stats_*.json)
+
+    diagnose(checkpoint_dir=checkpoint_dir, output_dir=output_dir)
+        → scored flat views  +  bottleneck summary JSON
+
+References
+----------
+* https://github.com/llnl/DFDiagnoser
+* https://dfanalyzer.readthedocs.io/
+"""
+
+from __future__ import annotations
+
+import glob
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from fastmcp import FastMCP
+
+from ...mcp_service_factory import MCPService, MCPServiceFactory
+
+# Score integer → human label (1-indexed, matching dfdiagnoser.scoring.SCORE_NAMES)
+_SCORE_LABELS = {1: "trivial", 2: "low", 3: "medium", 4: "high", 5: "critical"}
+
+# Human-readable descriptions for metric suffixes found in dfanalyzer flat views
+_METRIC_DESCRIPTIONS: Dict[str, str] = {
+    "read_time_pct":            "fraction of wall time spent in read operations",
+    "write_time_pct":           "fraction of wall time spent in write operations",
+    "metadata_time_pct":        "fraction of wall time spent in metadata operations",
+    "metadata_time_frac_parent":"metadata operations as fraction of parent I/O time",
+    "small_io_pct":             "fraction of I/O operations that are small (<4 KiB)",
+    "small_read_pct":           "fraction of read operations that are small",
+    "small_write_pct":          "fraction of write operations that are small",
+    "rand_pct":                 "fraction of random (non-sequential) accesses",
+    "seq_pct":                  "fraction of sequential accesses (low score = fragmented)",
+    "read_size_mean":           "mean read request size",
+    "write_size_mean":          "mean write request size",
+    "read_bw_mean":             "mean read bandwidth",
+    "write_bw_mean":            "mean write bandwidth",
+    "read_time_frac_parent":    "read time as fraction of parent I/O time",
+    "write_time_frac_parent":   "write time as fraction of parent I/O time",
+    "operation_imbalance_ratio":"imbalance ratio between read and write operation counts",
+    "size_imbalance_ratio":     "imbalance ratio between read and write data sizes",
+    "fetch_pressure":           "data-fetch pipeline pressure (high = reader starving compute)",
+    "epoch_straggler":          "straggler epoch latency (high = one epoch much slower than others)",
+    "checkpoint_tail_skew":     "tail skew in checkpoint write latency",
+    "intensity_mean":           "I/O intensity (bytes/sec relative to compute time)",
+}
+
+
+def _describe_metric(metric: str) -> str:
+    """Return a human-readable description for a dfanalyzer metric name."""
+    for suffix, desc in _METRIC_DESCRIPTIONS.items():
+        if metric.endswith(suffix):
+            return desc
+    return metric.replace("_", " ")
+
+
+def _run_cli(cmd: List[str], timeout: int = 300) -> Dict[str, Any]:
+    """Run a subprocess and return a normalised result dict."""
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return {
+            "returncode": r.returncode,
+            "stdout": r.stdout.strip(),
+            "stderr": r.stderr.strip(),
+            "success": r.returncode == 0,
+        }
+    except subprocess.TimeoutExpired:
+        return {"returncode": -1, "stdout": "", "stderr": "Command timed out", "success": False}
+    except FileNotFoundError as exc:
+        return {"returncode": -1, "stdout": "", "stderr": str(exc), "success": False}
+    except Exception as exc:
+        return {"returncode": -1, "stdout": "", "stderr": str(exc), "success": False}
+
+
+def _diagnose_via_api(
+    checkpoint_dir: str,
+    output_dir: str,
+    output_format: str,
+    metric_boundaries: Dict[str, float],
+) -> Optional[Dict[str, Any]]:
+    """Attempt Python-API diagnosis; return None if dfdiagnoser is not installed."""
+    try:
+        from dfdiagnoser.diagnoser import Diagnoser  # type: ignore
+        from dfdiagnoser.output import FileOutput    # type: ignore
+    except ImportError:
+        return None
+
+    diagnoser = Diagnoser()
+    try:
+        result = diagnoser.diagnose_checkpoint(
+            checkpoint_dir=checkpoint_dir,
+            metric_boundaries=metric_boundaries,
+        )
+    except Exception as exc:
+        return {"returncode": -1, "stdout": "", "stderr": str(exc), "success": False}
+
+    os.makedirs(output_dir, exist_ok=True)
+    handler = FileOutput(output_dir=output_dir, output_format=output_format)
+    handler.handle_result(result)
+
+    n = len(result.scored_flat_views)
+    return {
+        "returncode": 0,
+        "stdout": f"Scored {n} flat view(s) via Python API",
+        "stderr": "",
+        "success": True,
+    }
+
+
+def _diagnose_via_cli(
+    checkpoint_dir: str,
+    output_dir: str,
+    output_format: str,
+    timeout: int,
+) -> Dict[str, Any]:
+    """Run dfdiagnoser CLI as a subprocess."""
+    cmd = [
+        "dfdiagnoser",
+        "input=checkpoint",
+        f"input.checkpoint_dir={checkpoint_dir}",
+        "output=file",
+        f"output.output_dir={output_dir}",
+        f"output.output_format={output_format}",
+    ]
+    r = _run_cli(cmd, timeout=timeout)
+    if not r["success"] and "not found" in r["stderr"].lower():
+        r["stderr"] += " — install with: pip install dfdiagnoser"
+    return r
+
+
+def _load_scored_views(output_dir: str) -> List[Dict[str, Any]]:
+    """Load scored flat view files written by dfdiagnoser."""
+    views: List[Dict[str, Any]] = []
+    for path in sorted(glob.glob(os.path.join(output_dir, "*_scored.*"))):
+        name = os.path.basename(path)
+        try:
+            if path.endswith(".json"):
+                with open(path) as f:
+                    views.append({"view_file": name, "rows": json.load(f)})
+            elif path.endswith(".parquet"):
+                import pandas as pd  # type: ignore
+                df = pd.read_parquet(path)
+                views.append({"view_file": name, "rows": df.to_dict(orient="index")})
+            elif path.endswith(".csv"):
+                import pandas as pd  # type: ignore
+                df = pd.read_csv(path, index_col=0)
+                views.append({"view_file": name, "rows": df.to_dict(orient="index")})
+        except Exception:
+            pass
+    return views
+
+
+def _extract_bottlenecks(
+    scored_views: List[Dict[str, Any]],
+) -> Tuple[Dict[str, int], List[Dict[str, Any]]]:
+    """Parse scored flat views into severity counts and ranked bottleneck list."""
+    severity_counts: Dict[str, int] = {
+        "critical": 0, "high": 0, "medium": 0, "low": 0, "trivial": 0
+    }
+    bottlenecks: List[Dict[str, Any]] = []
+
+    for view in scored_views:
+        view_file = view.get("view_file", "")
+        rows = view.get("rows", {})
+        for row_key, row in (rows.items() if isinstance(rows, dict) else []):
+            score_cols = {
+                k.removesuffix("_score"): int(v)
+                for k, v in row.items()
+                if k.endswith("_score") and v is not None
+            }
+            if not score_cols:
+                continue
+            for metric, score in score_cols.items():
+                label = _SCORE_LABELS.get(score, "unknown")
+                if label in severity_counts:
+                    severity_counts[label] += 1
+                if score >= 4:  # high or critical
+                    bottlenecks.append({
+                        "view": view_file,
+                        "scope": str(row_key),
+                        "metric": metric,
+                        "score": score,
+                        "severity": label,
+                        "description": _describe_metric(metric),
+                        "value": row.get(metric),
+                    })
+
+    bottlenecks.sort(key=lambda x: x["score"], reverse=True)
+    return severity_counts, bottlenecks
+
+
+def _load_raw_stats(checkpoint_dir: str) -> Optional[Dict[str, Any]]:
+    """Load the raw statistics JSON from the checkpoint directory."""
+    for path in glob.glob(os.path.join(checkpoint_dir, "_raw_stats_*.json")):
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return None
+
+
+class DFDiagnoserService(MCPService):
+    """MCP service that diagnoses I/O bottlenecks from DFAnalyzer checkpoints.
+
+    Wraps the DFDiagnoser library (https://github.com/llnl/DFDiagnoser) and
+    exposes a single ``diagnose`` tool.  The tool tries the Python API first and
+    falls back to the ``dfdiagnoser`` CLI binary when the package is not
+    installed in the current Python environment.
+
+    Attributes:
+        diagnoser_subservice (FastMCP): Sub-server named ``"DFDiagnoser"``
+            that hosts the ``diagnose`` tool.
+    """
+
+    def __init__(self) -> None:
+        self.diagnoser_subservice = FastMCP("DFDiagnoser")
+        self._register_tools()
+
+    def _register_tools(self) -> None:
+        """Register ``diagnose`` on :attr:`diagnoser_subservice`."""
+
+        @self.diagnoser_subservice.tool()
+        def diagnose(
+            checkpoint_dir: str,
+            output_dir: Optional[str] = None,
+            output_format: str = "json",
+            metric_boundaries: Optional[str] = None,
+            timeout: int = 300,
+        ) -> str:
+            """Diagnose I/O bottlenecks from a DFAnalyzer checkpoint directory.
+
+            Loads the ``_flat_view_*.parquet`` files produced by dfanalyzer
+            (when run with ``analyzer.checkpoint=True``) and scores every
+            metric against severity thresholds defined by DFDiagnoser:
+
+            * ``trivial`` (1) — below 25 % of threshold / baseline
+            * ``low``     (2) — 25–50 %
+            * ``medium``  (3) — 50–75 %
+            * ``high``    (4) — 75–90 %
+            * ``critical``(5) — above 90 % of threshold / baseline
+
+            The tool attempts the DFDiagnoser Python API first; if the package
+            is not installed it falls back to the ``dfdiagnoser`` CLI binary.
+
+            Typical upstream step::
+
+                dfanalyzer \\
+                    trace_path=<trace_dir> \\
+                    "analyzer.checkpoint=True" \\
+                    "analyzer.checkpoint_dir=<checkpoint_dir>" \\
+                    "analyzer/preset=posix" \\
+                    "view_types=[time_range]"
+
+            Args:
+                checkpoint_dir: Path to the DFAnalyzer checkpoint directory
+                    (must contain ``_flat_view_*.parquet`` and
+                    ``_raw_stats_*.json`` files).
+                output_dir: Directory where scored flat views are written.
+                    Defaults to ``<checkpoint_dir>/scored/``.
+                output_format: Format for scored output files.  One of
+                    ``"json"`` (default), ``"csv"``, or ``"parquet"``.
+                metric_boundaries: Optional JSON object string mapping metric
+                    names to their peak-performance reference values.  Used
+                    by DFDiagnoser to normalise bandwidth/IOPS metrics against
+                    hardware limits (e.g. ``'{"bw_mean": 10000000000}'``).
+                    Defaults to ``None`` (no boundary normalisation).
+                timeout: Seconds before the diagnosis subprocess is killed.
+                    Defaults to ``300``.
+
+            Returns:
+                JSON string with keys:
+                    * ``status`` (``"ok"`` or ``"error"``).
+                    * ``message`` — outcome description.
+                    * ``checkpoint_dir`` — the directory that was analysed.
+                    * ``output_dir`` — where scored views were written.
+                    * ``severity_counts`` — dict mapping severity label to count
+                      of (view, metric) pairs at that severity level.
+                    * ``bottlenecks`` — list of high/critical findings, each
+                      with ``view``, ``scope``, ``metric``, ``severity``,
+                      ``description``, and ``value`` keys.
+                      Sorted by severity score descending, capped at 50 entries.
+                    * ``raw_stats_summary`` — top-level keys from the
+                      ``_raw_stats_*.json`` checkpoint file, if present.
+                    * ``diagnose_result`` — subprocess/API run result dict.
+
+            Raises:
+                Returns ``{"status": "error"}`` when:
+                    * *checkpoint_dir* does not exist or is empty.
+                    * No ``_flat_view_*.parquet`` files are found.
+                    * Both the Python API and CLI fail.
+            """
+            # ── Validate checkpoint dir ──────────────────────────────────
+            cp = Path(checkpoint_dir)
+            if not cp.exists():
+                return json.dumps({
+                    "status": "error",
+                    "message": f"Checkpoint directory not found: {checkpoint_dir}",
+                }, indent=2)
+            flat_views = list(cp.glob("_flat_view_*.parquet"))
+            if not flat_views:
+                return json.dumps({
+                    "status": "error",
+                    "message": (
+                        f"No _flat_view_*.parquet files in {checkpoint_dir}. "
+                        "Run dfanalyzer with analyzer.checkpoint=True first."
+                    ),
+                }, indent=2)
+
+            out_dir = output_dir or str(cp / "scored")
+            Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+            boundaries = json.loads(metric_boundaries) if metric_boundaries else {}
+
+            # ── Run diagnosis (API → CLI fallback) ────────────────────────
+            run_result = _diagnose_via_api(checkpoint_dir, out_dir, output_format, boundaries)
+            if run_result is None:
+                run_result = _diagnose_via_cli(checkpoint_dir, out_dir, output_format, timeout)
+
+            # ── Parse scored outputs ──────────────────────────────────────
+            scored_views = _load_scored_views(out_dir)
+            severity_counts, bottlenecks = _extract_bottlenecks(scored_views)
+            raw_stats = _load_raw_stats(checkpoint_dir)
+
+            total_issues = sum(severity_counts.values())
+            critical_high = severity_counts["critical"] + severity_counts["high"]
+            msg = (
+                f"Diagnosis complete: {total_issues} metric observations across "
+                f"{len(scored_views)} view(s). "
+                f"{critical_high} high/critical issue(s) found."
+            )
+
+            if not run_result["success"] and not scored_views:
+                return json.dumps({
+                    "status": "error",
+                    "message": f"Diagnosis failed: {run_result['stderr']}",
+                    "checkpoint_dir": checkpoint_dir,
+                    "diagnose_result": run_result,
+                }, indent=2)
+
+            return json.dumps({
+                "status": "ok",
+                "message": msg,
+                "checkpoint_dir": checkpoint_dir,
+                "output_dir": out_dir,
+                "severity_counts": severity_counts,
+                "bottlenecks": bottlenecks[:50],
+                "raw_stats_summary": (
+                    {k: raw_stats[k] for k in list(raw_stats)[:20]}
+                    if raw_stats else None
+                ),
+                "diagnose_result": run_result,
+            }, indent=2)
+
+    def execute(self, data: dict) -> Optional[str]:
+        return "Use the diagnose tool to identify I/O bottlenecks from DFAnalyzer checkpoints."
+
+    @property
+    def name(self) -> str:
+        return "dfdiagnoser"
+
+
+MCPServiceFactory.register("dfdiagnoser", DFDiagnoserService())

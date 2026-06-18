@@ -1,0 +1,48 @@
+# Goose configuration for the DFTracer MCP Server.
+#
+# Copy the relevant block into ~/.config/goose/config.yaml
+# (or merge with your existing config).
+#
+# ── Option A: installed via "pip install -e ." (recommended) ──────────────────
+# After running:   pip install -e /path/to/dftracer-agents
+# the dftracer-mcp-server console script is on your PATH.
+
+extensions:
+  dftracer:
+    type: stdio
+    cmd: dftracer-mcp-server
+    args: []
+    enabled: true
+    description: >
+      DFTracer I/O tracing toolkit — dftracer_utils + dfanalyzer tools.
+      Use analyze() or summarize_trace() to inspect HPC I/O traces.
+
+# ── Option B: point directly at the venv Python (no install needed) ───────────
+# Uncomment and adjust the paths below if you prefer not to install the package.
+
+# extensions:
+#   dftracer:
+#     type: stdio
+#     cmd: /workspaces/dftracer-agents/venv/bin/python
+#     args:
+#       - /workspaces/dftracer-agents/dftracer_mcp_server.py
+#     enabled: true
+
+# ── Expose only one service ───────────────────────────────────────────────────
+# To expose only dftracer_utils (no analyzer):
+#
+# extensions:
+#   dftracer:
+#     type: stdio
+#     cmd: dftracer-mcp-server
+#     args: [--service, utils]
+#     enabled: true
+#
+# To expose only dfanalyzer:
+#
+# extensions:
+#   dftracer:
+#     type: stdio
+#     cmd: dftracer-mcp-server
+#     args: [--service, analyzer]
+#     enabled: true
