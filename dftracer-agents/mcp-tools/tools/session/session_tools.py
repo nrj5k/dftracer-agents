@@ -95,9 +95,297 @@ from .build import (
     _patch_autotools_makefile,
 )
 from .install import (
-    _install_dftracer_autobuild, _dftracer_utils_split, _install_dftracer_utils,
-    _find_dftracer_dirs,
+    _install_dftracer_autobuild, _dftracer_utils_split, _dftracer_utils_comparator,
+    _install_dftracer_utils, _find_dftracer_dirs,
 )
+
+
+# ---------------------------------------------------------------------------
+# Optimization-loop helpers (module-level so they can be unit-tested)
+# ---------------------------------------------------------------------------
+
+#: Per-metric lists of (primary_phrase, synonym_phrase) pairs.
+#: Index 0 is the most specific; deeper indices are progressively fuzzier.
+_METRIC_SYNONYM_PAIRS: Dict[str, List[tuple]] = {
+    "small_io": [
+        ("small I/O aggregation buffering",     "small write coalescing HPC"),
+        ("two-phase I/O collective optimization","I/O forwarding staging parallel"),
+        ("burst buffer staging optimization",    "write-behind cache aggregation"),
+        ("ROMIO hints MPI-IO optimization",      "MPI-IO aggregator collective"),
+        ("I/O middleware optimization HPC",      "data staging I/O optimization"),
+    ],
+    "small_read": [
+        ("small read prefetching optimization",  "read-ahead policy optimization"),
+        ("cache hit ratio I/O optimization",     "temporal locality I/O"),
+        ("file read buffer optimization HPC",    "read coalescing parallel I/O"),
+        ("I/O request merging readahead",        "prefetch sequential"),
+        ("data placement locality optimization", "cache-oblivious I/O"),
+    ],
+    "small_write": [
+        ("small write buffering optimization",   "write aggregation parallel I/O"),
+        ("write coalescing delayed write HPC",   "asynchronous write optimization"),
+        ("write-back cache I/O optimization",    "write combining parallel"),
+        ("write ordering optimization",          "journaling write HPC storage"),
+        ("N-to-1 write optimization",            "write barrier optimization"),
+    ],
+    "rand": [
+        ("random I/O access pattern optimization", "data layout optimization HPC"),
+        ("random access prefetching storage",      "out-of-core random access"),
+        ("storage layout striping optimization",   "random I/O sequential"),
+        ("index-based access sorted layout",       "spatial locality data reorder"),
+        ("data reorganization optimization HPC",   "Z-order curve data layout"),
+    ],
+    "seq": [
+        ("sequential I/O fragmentation optimization", "contiguous I/O performance"),
+        ("sequential prefetch I/O",                   "streaming read optimization"),
+        ("file fragmentation repair",                 "sequential throughput HPC"),
+        ("disk layout sequential",                    "data contiguity optimization"),
+        ("defragmentation I/O performance",           "stripe alignment HPC"),
+    ],
+    "metadata": [
+        ("metadata operation scalability parallel filesystem", "directory overhead HPC"),
+        ("POSIX metadata bottleneck inode",              "namespace scalability"),
+        ("metadata server optimization",                 "open close overhead reduction"),
+        ("lazy metadata caching optimization",           "MDT optimization Lustre"),
+        ("metadata aggregation batching",                "stat operation reduction"),
+    ],
+    "read_time": [
+        ("parallel I/O read throughput optimization",  "read bandwidth HPC"),
+        ("collective read optimization",               "read scalability parallel"),
+        ("data staging read pipeline",                 "prefetch overlap"),
+        ("storage read latency reduction",             "I/O read hiding"),
+        ("read performance tuning HPC",                "read-ahead buffer tuning"),
+    ],
+    "write_time": [
+        ("parallel I/O write throughput optimization", "checkpoint I/O performance"),
+        ("asynchronous checkpoint write",              "write buffering parallel I/O"),
+        ("write overlap compute I/O",                  "non-blocking write HPC"),
+        ("incremental checkpoint optimization",        "write scalability parallel"),
+        ("write barrier pipeline HPC",                 "online checkpoint compression"),
+    ],
+    "imbalance": [
+        ("I/O load imbalance HPC optimization",        "uneven I/O workload distribution"),
+        ("I/O load balancing parallel",                "process I/O skew reduction"),
+        ("collective I/O load balance",                "work stealing I/O"),
+        ("I/O redistribution optimization",            "task scheduling I/O"),
+        ("dynamic load balancing I/O",                 "I/O contention reduction"),
+    ],
+    "bw": [
+        ("I/O bandwidth utilization optimization",     "storage throughput HPC"),
+        ("I/O bandwidth bottleneck",                   "network bandwidth storage"),
+        ("bandwidth saturation HPC parallel",          "I/O bandwidth balance"),
+        ("memory bandwidth I/O bottleneck",            "memory-I/O co-optimization"),
+        ("effective bandwidth utilization",            "bandwidth steering I/O"),
+    ],
+    "intensity": [
+        ("I/O intensity compute overlap",              "asynchronous I/O pipeline"),
+        ("I/O bound application optimization",         "I/O hiding technique"),
+        ("non-blocking I/O overlap compute",           "prefetch I/O pipeline"),
+        ("I/O compute ratio optimization",             "data access pattern optimization"),
+        ("I/O interleaving optimization",              "overlap communication computation"),
+    ],
+    "fetch": [
+        ("data prefetching deep learning I/O",         "training data pipeline optimization"),
+        ("data loader bottleneck GPU",                 "async data loading optimization"),
+        ("prefetch buffer pipeline GPU training",      "storage data pipeline ML"),
+        ("data augmentation I/O optimization",         "GPU I/O pipeline throughput"),
+        ("data ingestion optimization HPC ML",         "storage-side preprocessing"),
+    ],
+    "checkpoint": [
+        ("checkpoint I/O optimization HPC",            "fault tolerance checkpoint"),
+        ("incremental checkpoint optimization",        "checkpoint compression"),
+        ("asynchronous checkpoint restart",            "multi-level checkpoint SCR"),
+        ("FTI checkpoint parallel",                    "checkpoint scalability"),
+        ("online checkpoint write optimization",       "restart optimization HPC"),
+    ],
+    "epoch": [
+        ("epoch straggler optimization distributed",   "load imbalance deep learning"),
+        ("distributed training I/O straggler",         "batch processing imbalance"),
+        ("data pipeline straggler mitigation",         "I/O straggler deep learning"),
+        ("elastic training optimization",              "fault tolerant training I/O"),
+        ("synchronous SGD straggler",                  "all-reduce optimization HPC"),
+    ],
+}
+
+# Broadest final-fallback queries used when all metric-specific attempts exhaust
+_GENERAL_FALLBACK_QUERIES = [
+    "I/O performance optimization parallel filesystem HPC",
+    "storage optimization high performance computing",
+]
+
+
+def _fetch_arxiv_papers(query: str, n: int = 5) -> List[Dict[str, Any]]:
+    """Fetch up to *n* arXiv papers matching *query*.  Returns an empty list on failure."""
+    import urllib.parse
+    import xml.etree.ElementTree as _ET
+
+    _ARXIV = "https://export.arxiv.org/api/query"
+    _NS    = {"atom": "http://www.w3.org/2005/Atom"}
+
+    params = {
+        "search_query": f"all:{query}",
+        "max_results":  n,
+        "sortBy":       "relevance",
+        "sortOrder":    "descending",
+    }
+    url = f"{_ARXIV}?{urllib.parse.urlencode(params)}"
+    r = _run(["curl", "-s", "--max-time", "30", url], timeout=45)
+    if not r.get("success") or not r.get("stdout"):
+        return []
+    try:
+        root = _ET.fromstring(r["stdout"])
+        papers = []
+        for entry in root.findall("atom:entry", _NS):
+            def _t(tag):
+                el = entry.find(tag, _NS)
+                return el.text.strip() if el is not None and el.text else ""
+            arxiv_id = _t("atom:id").split("/abs/")[-1]
+            authors  = [
+                a.find("atom:name", _NS).text.strip()
+                for a in entry.findall("atom:author", _NS)
+                if a.find("atom:name", _NS) is not None
+            ]
+            papers.append({
+                "title":     _t("atom:title").replace("\n", " "),
+                "authors":   authors[:4],
+                "published": _t("atom:published")[:10],
+                "abstract":  _t("atom:summary").replace("\n", " ")[:500],
+                "url":       f"https://arxiv.org/abs/{arxiv_id}",
+            })
+        return papers
+    except Exception:
+        return []
+
+
+def _build_sys_context(sys_info: dict) -> str:
+    """Build a short hardware context string from a system_config dict.
+
+    Used to refine academic search queries with hardware-specific terms so
+    results are relevant to the actual deployment environment.
+
+    Examples: ``"Lustre ARM64 InfiniBand"`` or ``"NFS x86_64 Ethernet 10G"``.
+    """
+    parts: List[str] = []
+
+    # CPU architecture
+    cpu = sys_info.get("cpu", {})
+    arch = cpu.get("architecture", "") or cpu.get("arch", "")
+    if arch:
+        parts.append(arch)
+
+    # All mounted filesystem types, sorted: parallel/network FSes first, local last.
+    # Pseudo/virtual FSes are excluded entirely; however /dev/shm (tmpfs) and
+    # /tmp are tracked separately because apps commonly use them for staging.
+    _PSEUDO_FS = {"proc", "sysfs", "devtmpfs", "cgroup", "cgroup2", "devpts",
+                  "mqueue", "hugetlbfs", "pstore", "securityfs", "overlay",
+                  "nsfs", "bpf", "tracefs", "debugfs", "efivarfs",
+                  "squashfs", "iso9660", "autofs"}
+    _FS_LABEL = {
+        "lustre": ("Lustre", 10), "gpfs": ("GPFS", 10), "beegfs": ("BeeGFS", 10),
+        "daos":   ("DAOS",   10), "pvfs2": ("OrangeFS", 10),
+        "nfs":    ("NFS",     8), "nfs4": ("NFS", 8), "glusterfs": ("GlusterFS", 8),
+        "ceph":   ("Ceph",    8), "xfs":  ("XFS", 5), "zfs": ("ZFS", 5),
+        "ext4":   ("ext4",    2), "btrfs": ("btrfs", 2), "vfat": ("vfat", 1),
+    }
+    seen_fs: Dict[str, int] = {}  # label → max priority
+    has_shm = False
+    has_tmp = False
+    for fs in sys_info.get("filesystems", []):
+        ftype = (fs.get("type") or "").lower()
+        mount = (fs.get("mount") or fs.get("mountpoint") or "").rstrip("/")
+        # Track /dev/shm and /tmp explicitly (both are tmpfs)
+        if ftype == "tmpfs":
+            if mount in ("/dev/shm", "/run/shm"):
+                has_shm = True
+            elif mount in ("/tmp", "/var/tmp"):
+                has_tmp = True
+            continue  # don't include generic tmpfs in the FS list
+        if ftype in _PSEUDO_FS:
+            continue
+        if ftype:
+            label, prio = _FS_LABEL.get(ftype, (ftype.upper()[:8], 1))
+            if label not in seen_fs or prio > seen_fs[label]:
+                seen_fs[label] = prio
+    # All unique FS labels sorted by priority (parallel/network first)
+    fstypes = [lbl for lbl, _ in sorted(seen_fs.items(), key=lambda x: -x[1])]
+    if fstypes:
+        parts.extend(fstypes)
+    # Shared-memory and tmp staging flags
+    if has_shm:
+        parts.append("SHM")
+    if has_tmp:
+        parts.append("tmpfs-staging")
+
+    # Network type — prefer InfiniBand keyword if present
+    ib = any(
+        iface.get("name", "").startswith(("ib", "mlx", "hfi"))
+        for iface in sys_info.get("network", {}).get("interfaces", [])
+        if isinstance(iface, dict)
+    )
+    if ib:
+        parts.append("InfiniBand")
+
+    # Always append HPC as a domain anchor
+    parts.append("HPC")
+
+    return " ".join(parts) if parts else "HPC parallel filesystem"
+
+
+def _bottleneck_search_queries(
+    metric: str,
+    description: str,
+    sys_context: str,
+    max_queries: int = 10,
+) -> List[str]:
+    """Return up to *max_queries* progressively fuzzier search queries for *metric*.
+
+    Strategy:
+    - Queries 1-2: most specific (metric primary phrase + system context)
+    - Queries 3-8: synonym pairs with and without system context
+    - Queries 9-10: broadest fallbacks (domain + context, then generic)
+    """
+    # Find best synonym list — match on any fragment of the metric name
+    syn_pairs: List[tuple] = []
+    for fragment, pairs in _METRIC_SYNONYM_PAIRS.items():
+        if fragment in metric:
+            syn_pairs = pairs
+            break
+
+    # If no direct match, guess from description keywords
+    if not syn_pairs:
+        desc_lower = description.lower()
+        for fragment, pairs in _METRIC_SYNONYM_PAIRS.items():
+            if fragment in desc_lower:
+                syn_pairs = pairs
+                break
+
+    if not syn_pairs:
+        syn_pairs = _METRIC_SYNONYM_PAIRS.get("bw", [])
+
+    queries: List[str] = []
+
+    # Queries 1-2: primary phrase with and without sys_context
+    primary = syn_pairs[0][0] if syn_pairs else f"I/O optimization {metric}"
+    queries.append(f"{primary} {sys_context}")
+    queries.append(f"{primary} parallel filesystem optimization")
+
+    # Queries 3-8: remaining synonym pairs (skip index 0 — already used above)
+    for phrase_a, phrase_b in syn_pairs[1:]:
+        queries.append(f"{phrase_a} {sys_context}")
+        queries.append(f"{phrase_b} optimization")
+        if len(queries) >= max_queries - 2:
+            break
+
+    # If we still have room and only one synonym pair existed, add the pair[0] synonym
+    if len(queries) < max_queries - 2 and syn_pairs:
+        queries.append(f"{syn_pairs[0][1]} {sys_context}")
+        queries.append(f"{syn_pairs[0][1]} optimization")
+
+    # Final 2: broadest fallbacks
+    queries.append(f"I/O optimization {sys_context} storage")
+    queries.extend(_GENERAL_FALLBACK_QUERIES)
+
+    return list(dict.fromkeys(queries))[:max_queries]  # deduplicate while preserving order
 
 
 def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but intentional)
@@ -1842,7 +2130,7 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             "cpu":         cpu,
             "memory":      memory,
             "network":     {"interfaces": interfaces},
-            "filesystems": {"mounts": mounts},
+            "filesystems": mounts,
         }
 
         config_path = ws / "system_config.json"
@@ -2389,4 +2677,493 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
                 f"Export: PKG_CONFIG_PATH={pc_dir}:$PKG_CONFIG_PATH "
                 f"before calling ./configure or make"
             ),
+        )
+
+    @mcp.tool()
+    def session_optimization_iteration(
+        run_id: str,
+        command: str,
+        app_name: str = "app",
+        data_dir: str = "all",
+        timeout: int = 600,
+        env_extra: Optional[str] = None,
+        optimization_applied: str = "",
+        rebuild: bool = True,
+        max_search_attempts: int = 10,
+        papers_per_query: int = 3,
+    ) -> str:
+        """Run one iteration of the build → profile → diagnose → search optimization loop.
+
+        Each call executes the following pipeline in sequence:
+
+        1. **Build** (optional) — rebuild the annotated binary so any source
+           changes applied between calls take effect.  Skip with
+           ``rebuild=False`` to re-profile without rebuilding.
+        2. **Profile** — run *command* with dftracer tracing enabled.
+        3. **Split** — compact raw ``.pfw`` traces.
+        4. **Diagnose** — run DFAnalyzer + DFDiagnoser and score bottlenecks.
+        5. **System context** — collect or re-read ``system_config.json`` so
+           hardware details (CPU arch, filesystem type, network) are available
+           to refine search queries.
+        6. **Literature search** — for each of the top-5 highest-severity
+           bottlenecks, search arXiv with up to *max_search_attempts*
+           progressively fuzzier queries that combine the bottleneck behaviour
+           **and** the system hardware context:
+
+           * Attempts 1-2: most specific phrase + system context.
+           * Attempts 3-8: synonym phrase pairs with/without system context.
+           * Attempts 9-10: broadest fallback ("I/O optimization {sys_context}",
+             then generic "parallel I/O performance optimization HPC").
+
+           A bottleneck is marked **unsolved** if no papers are found after all
+           *max_search_attempts* queries.  The tool reports what it could not
+           find so the agent knows where to ask the user for guidance.
+
+        7. **Compare** — diff the bottleneck severity table against the previous
+           iteration (stored in ``session.json`` under ``optimization_history``).
+
+        **Typical agent loop**::
+
+            # Baseline — first iteration
+            r0 = session_optimization_iteration(
+                run_id, command, optimization_applied="baseline")
+            # Agent reads r0.literature and r0.unsolved, applies a source change.
+            r1 = session_optimization_iteration(
+                run_id, command, optimization_applied="increased write buffer to 4 MiB")
+            # r1.delta shows which bottlenecks improved / regressed.
+            # Repeat until r1.bottlenecks is empty or delta shows no improvement.
+
+        Args:
+            run_id:               Session identifier.
+            command:              Benchmark command passed to
+                                  ``session_run_with_dftracer``.
+            app_name:             Trace split file prefix.
+            data_dir:             ``DFTRACER_DATA_DIR`` value (default ``"all"``).
+            timeout:              Seconds allowed for profiled run and diagnosis.
+            env_extra:            Extra env vars as JSON (same format as
+                                  ``session_run_with_dftracer``).
+            optimization_applied: Human-readable label for this iteration's change.
+                                  Use ``"baseline"`` on the first call.
+            rebuild:              If ``True``, rebuild before profiling.
+            max_search_attempts:  Maximum arXiv queries per bottleneck (1-10,
+                                  default 10).  Stops early when papers are found.
+            papers_per_query:     Papers to fetch per query attempt (1-5, default 3).
+
+        Returns:
+            JSON string with keys:
+
+            * ``status``          — ``"ok"`` or ``"error"``.
+            * ``iteration``       — zero-based iteration index.
+            * ``optimization``    — echoed *optimization_applied* label.
+            * ``build``           — build step summary (or ``null``).
+            * ``profile``         — profiling step summary.
+            * ``diagnosis``       — DFDiagnoser summary (severity counts).
+            * ``system_context``  — hardware context string used for searches.
+            * ``top5_bottlenecks``— top-5 bottlenecks by severity.
+            * ``literature``      — list of per-bottleneck search results:
+              ``{"bottleneck": …, "queries_tried": N, "papers": [...]}``.
+            * ``unsolved``        — bottlenecks for which no papers were found
+              after all *max_search_attempts* attempts, with the queries tried.
+            * ``delta``           — severity delta vs previous iteration:
+              ``{"improved": [...], "regressed": [...], "resolved": [...],
+              "new": [...], "unchanged": [...]}``.
+            * ``recommendation``  — plain-text guidance for the next step.
+        """
+        import json as _json
+
+        state = _load_state(run_id)
+        history: list = state.get("optimization_history", [])
+        iteration = len(history)
+        _SEV = {"trivial": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+
+        # ── Step 1: (re)build annotated binary ──────────────────────────────
+        build_summary = None
+        if rebuild:
+            raw = session_build_annotated(run_id=run_id)
+            build_result = _json.loads(raw)
+            if build_result.get("status") != "ok":
+                return _json.dumps({
+                    "status": "error",
+                    "message": f"Build failed at iteration {iteration}: "
+                               + build_result.get("message", ""),
+                    "build": build_result,
+                    "iteration": iteration,
+                })
+            build_summary = {
+                "returncode": build_result.get("returncode", 0),
+                "duration_s": build_result.get("duration_s"),
+            }
+
+        # ── Per-iteration artifact directory ─────────────────────────────────
+        ws = _ws(run_id)
+        iter_dir = ws / f"opt{iteration}"
+        iter_dir.mkdir(exist_ok=True)
+        iter_traces_dir  = iter_dir / "traces"
+        iter_split_dir   = iter_dir / "traces_split"
+        iter_traces_dir.mkdir(exist_ok=True)
+        iter_split_dir.mkdir(exist_ok=True)
+
+        # Capture a diff of annotated source vs the previous iteration
+        import subprocess as _sp
+        prev_patch = iter_dir / "changes.patch"
+        if iteration == 0:
+            prev_patch.write_text("# baseline — no prior iteration\n")
+        else:
+            _diff = _sp.run(
+                ["git", "diff", "--no-index",
+                 str(ws / f"opt{iteration - 1}" / "annotated_snapshot"),
+                 str(ws / "annotated")],
+                capture_output=True, text=True,
+            )
+            prev_patch.write_text(_diff.stdout or "# no diff\n")
+        # Snapshot the current annotated tree
+        import shutil as _sh
+        ann_snapshot = iter_dir / "annotated_snapshot"
+        if ann_snapshot.exists():
+            _sh.rmtree(ann_snapshot)
+        _sh.copytree(str(ws / "annotated"), str(ann_snapshot))
+
+        # ── Step 2: profile run ──────────────────────────────────────────────
+        raw = session_run_with_dftracer(
+            run_id=run_id,
+            command=command,
+            subfolder="build_ann",
+            data_dir=data_dir,
+            timeout=timeout,
+            env_extra=env_extra,
+        )
+        profile_result = _json.loads(raw)
+        if profile_result.get("status") != "ok":
+            return _json.dumps({
+                "status": "error",
+                "message": f"Profile run failed at iteration {iteration}: "
+                           + profile_result.get("message", ""),
+                "profile": profile_result,
+                "iteration": iteration,
+            })
+        profile_summary = {
+            "returncode": profile_result.get("returncode"),
+            "elapsed_s":  profile_result.get("elapsed_s"),
+            "trace_files": profile_result.get("trace_files", []),
+        }
+
+        # Copy raw traces to per-iteration directory
+        import glob as _glob
+        for _pfw in _glob.glob(str(ws / "traces" / "*.pfw.gz")):
+            _sh.copy2(_pfw, str(iter_traces_dir))
+        # Also handle run_id-subdirectory layout (traces/<prefix>/*.pfw.gz)
+        _run_prefix = run_id.split("/")[0]
+        for _pfw in _glob.glob(str(ws / "traces" / _run_prefix / "*.pfw.gz")):
+            _sh.copy2(_pfw, str(iter_traces_dir))
+
+        # ── Step 3: split traces into per-iteration split dir ────────────────
+        session_split_traces(run_id=run_id, app_name=app_name)
+        # Copy split output to per-iteration directory
+        for _chunk in _glob.glob(str(ws / "traces_split" / "*.pfw.gz")):
+            _sh.copy2(_chunk, str(iter_split_dir))
+
+        # ── Step 3b: compare against previous iteration traces ───────────────
+        comparison: Dict[str, Any] = {}
+        if iteration > 0:
+            prev_split = ws / f"opt{iteration - 1}" / "traces_split"
+            if prev_split.exists() and any(prev_split.glob("*.pfw.gz")):
+                try:
+                    cmp_raw = _dftracer_utils_comparator(
+                        baseline=str(prev_split),
+                        variant=str(iter_split_dir),
+                        query='cat == "POSIX" OR cat == "STDIO" OR cat == "C_APP"',
+                        group_by_dims="cat,name",
+                        output_format="json",
+                        threshold_pct=5.0,
+                    )
+                    cmp_result = (
+                        _json.loads(cmp_raw["stdout"])
+                        if cmp_raw["success"] and cmp_raw["stdout"].strip()
+                        else {"error": cmp_raw["stderr"][:500] or "empty output",
+                              "returncode": cmp_raw["returncode"]}
+                    )
+                    comparison = {
+                        "baseline_iter": iteration - 1,
+                        "variant_iter":  iteration,
+                        "baseline_dir":  str(prev_split),
+                        "variant_dir":   str(iter_split_dir),
+                        "result":        cmp_result,
+                    }
+                    # Persist comparison to per-iteration dir
+                    (iter_dir / "comparison.json").write_text(
+                        _json.dumps(comparison, indent=2)
+                    )
+                except Exception as _cmp_err:
+                    comparison = {"error": str(_cmp_err)}
+
+        # ── Step 4: diagnose bottlenecks ────────────────────────────────────
+        # Clear stale checkpoint so each iteration scores only its own traces
+        _ckpt = ws / "dfanalyzer_checkpoint"
+        if _ckpt.exists():
+            import shutil as _sh2
+            _sh2.rmtree(str(_ckpt))
+        _ckpt.mkdir(exist_ok=True)
+        raw = session_diagnose_bottlenecks(run_id=run_id, timeout=timeout)
+        diag_result = _json.loads(raw)
+        current_bottlenecks: list = diag_result.get("bottlenecks", [])
+        diag_summary = {
+            "severity_counts": diag_result.get("severity_counts", {}),
+            "bottleneck_count": len(current_bottlenecks),
+        }
+
+        # ── Step 5: system context ───────────────────────────────────────────
+        sys_cfg_path = ws / "system_config.json"
+        if sys_cfg_path.exists():
+            try:
+                sys_info = _json.loads(sys_cfg_path.read_text())
+            except Exception:
+                sys_info = {}
+        else:
+            raw_sys = session_collect_system_info(run_id=run_id)
+            sys_info = _json.loads(raw_sys)
+        sys_context = _build_sys_context(sys_info)
+
+        # ── Step 6: literature search — top 5 bottlenecks ───────────────────
+        top5 = sorted(
+            current_bottlenecks,
+            key=lambda b: _SEV.get(b.get("severity", "trivial"), 0),
+            reverse=True,
+        )[:5]
+
+        max_attempts = max(1, min(10, max_search_attempts))
+        n_papers     = max(1, min(5, papers_per_query))
+        seen_titles: set = set()
+        literature: List[Dict[str, Any]] = []
+        unsolved:   List[Dict[str, Any]] = []
+
+        for bn in top5:
+            metric      = bn.get("metric", "")
+            description = bn.get("description", "")
+            severity    = bn.get("severity", "")
+
+            queries = _bottleneck_search_queries(
+                metric=metric,
+                description=description,
+                sys_context=sys_context,
+                max_queries=max_attempts,
+            )
+
+            found_papers: List[Dict[str, Any]] = []
+            queries_tried: List[str] = []
+
+            for q in queries:
+                queries_tried.append(q)
+                papers = _fetch_arxiv_papers(q, n=n_papers)
+                for p in papers:
+                    title_key = p["title"].lower()[:80]
+                    if title_key not in seen_titles:
+                        seen_titles.add(title_key)
+                        found_papers.append({**p, "query": q, "bottleneck": metric})
+                if found_papers:
+                    break  # stop as soon as at least one paper is found
+
+            entry = {
+                "bottleneck":    metric,
+                "severity":      severity,
+                "description":   description,
+                "sys_context":   sys_context,
+                "queries_tried": len(queries_tried),
+                "last_query":    queries_tried[-1] if queries_tried else "",
+                "papers":        found_papers,
+            }
+            if found_papers:
+                literature.append(entry)
+            else:
+                unsolved.append({
+                    "bottleneck":    metric,
+                    "severity":      severity,
+                    "description":   description,
+                    "queries_tried": queries_tried,
+                    "message":       (
+                        f"No papers found for '{metric}' ({severity}) after "
+                        f"{len(queries_tried)} search attempt(s) including "
+                        f"system-context '{sys_context}'. "
+                        "Manual expert guidance recommended."
+                    ),
+                })
+
+        # ── Step 7: compare with previous iteration ──────────────────────────
+        prev_bottlenecks: list = []
+        if history:
+            prev_bottlenecks = history[-1].get("bottlenecks", [])
+
+        def _bn_key(b: dict) -> str:
+            return f"{b.get('metric', '')}:{b.get('view', '')}"
+
+        prev_keys = {_bn_key(b): b for b in prev_bottlenecks}
+        curr_keys = {_bn_key(b): b for b in current_bottlenecks}
+
+        improved   = []
+        regressed  = []
+        unchanged  = []
+        new_issues = []
+
+        for key, cb in curr_keys.items():
+            if key not in prev_keys:
+                new_issues.append(cb)
+            else:
+                pb = prev_keys[key]
+                cs = _SEV.get(cb.get("severity", "trivial"), 0)
+                ps = _SEV.get(pb.get("severity", "trivial"), 0)
+                if cs < ps:
+                    improved.append({"metric": key, "from": pb["severity"], "to": cb["severity"]})
+                elif cs > ps:
+                    regressed.append({"metric": key, "from": pb["severity"], "to": cb["severity"]})
+                else:
+                    unchanged.append(key)
+
+        resolved = [k for k in prev_keys if k not in curr_keys]
+
+        delta = {
+            "improved":  improved,
+            "regressed": regressed,
+            "resolved":  resolved,
+            "new":       new_issues,
+            "unchanged": unchanged,
+        }
+
+        # ── Build recommendation ─────────────────────────────────────────────
+        # ── Build per-bottleneck citations list ──────────────────────────────
+        # Each entry: {metric, severity, papers: [{title, url, authors, published}]}
+        citations: List[Dict[str, Any]] = []
+        for lit_entry in literature:
+            cite_papers = [
+                {
+                    "title":     p.get("title", ""),
+                    "url":       p.get("url", ""),
+                    "authors":   p.get("authors", []),
+                    "published": p.get("published", ""),
+                    "abstract":  p.get("abstract", "")[:300] + "…" if p.get("abstract") else "",
+                    "query":     p.get("query", ""),
+                }
+                for p in lit_entry.get("papers", [])
+            ]
+            citations.append({
+                "metric":   lit_entry["bottleneck"],
+                "severity": lit_entry["severity"],
+                "papers":   cite_papers,
+            })
+
+        def _cite_str(lit_entry: dict) -> str:
+            """One-line citation: 'Title (Authors, Year) <url>'"""
+            papers = lit_entry.get("papers", [])
+            if not papers:
+                return "(no papers found)"
+            p = papers[0]
+            year  = (p.get("published") or "")[:4]
+            auth  = p.get("authors", [])
+            first = auth[0].split()[-1] if auth else "Unknown"
+            et_al = " et al." if len(auth) > 1 else ""
+            return (
+                f'"{p["title"][:70]}..." '
+                f"- {first}{et_al}, {year} "
+                f"<{p.get('url', '')}>"
+            )
+
+        n_papers = sum(len(e["papers"]) for e in literature)
+        lit_summary = (
+            f"{n_papers} paper(s) found across {len(literature)} bottleneck(s)"
+        ) if literature else "no papers found"
+
+        if not current_bottlenecks:
+            recommendation = "No active bottlenecks — optimization complete."
+        elif unsolved:
+            names = ", ".join(u["bottleneck"] for u in unsolved)
+            recommendation = (
+                f"Literature search exhausted for: {names}. "
+                "These require manual expert analysis — see 'unsolved' for the "
+                "full list of attempted queries. "
+            )
+            if literature:
+                top_lit = literature[0]
+                recommendation += (
+                    f"For remaining solvable bottlenecks, start with "
+                    f"'{top_lit['bottleneck']}': {_cite_str(top_lit)}"
+                )
+        elif regressed:
+            cite_lines = "\n".join(f"  • [{c['metric']}] {_cite_str(c)}" for c in citations[:3])
+            recommendation = (
+                f"{len(regressed)} metric(s) regressed — revert last change or "
+                "investigate interaction effects.\n"
+                f"Evidence ({lit_summary}):\n{cite_lines}"
+            )
+        elif improved or resolved:
+            top = top5[0] if top5 else {}
+            cite_lines = "\n".join(f"  • [{c['metric']}] {_cite_str(c)}" for c in citations[:3])
+            recommendation = (
+                f"Progress: {len(improved)} improved, {len(resolved)} resolved. "
+                f"Top remaining: {top.get('metric','')} ({top.get('severity','')}).\n"
+                f"Evidence ({lit_summary}):\n{cite_lines}\n"
+                "Apply the suggested optimization and iterate."
+            )
+        else:
+            top = top5[0] if top5 else {}
+            cite_lines = "\n".join(f"  • [{c['metric']}] {_cite_str(c)}" for c in citations[:3])
+            recommendation = (
+                f"No change yet. Top bottleneck: {top.get('metric','')} "
+                f"({top.get('severity','')}).\n"
+                f"Evidence ({lit_summary}):\n{cite_lines}\n"
+                "Apply the technique from the first cited paper and re-run."
+            )
+
+        # ── Persist iteration to history ─────────────────────────────────────
+        entry = {
+            "iteration":       iteration,
+            "optimization":    optimization_applied,
+            "build":           build_summary,
+            "profile":         profile_summary,
+            "diagnosis":       diag_summary,
+            "system_context":  sys_context,
+            "bottlenecks":     current_bottlenecks,
+            "top5":            top5,
+            "literature":      literature,
+            "unsolved":        unsolved,
+            "delta":           delta,
+            "comparison":      comparison,
+        }
+        history.append(entry)
+        _save_state(run_id, {"optimization_history": history, "step": "optimization_loop"})
+
+        # Save full literature results to workspace for reference
+        lit_file = ws / f"optimization_literature_iter{iteration}.json"
+        iter_summary = {
+            "iteration":    iteration,
+            "optimization": optimization_applied,
+            "sys_context":  sys_context,
+            "literature":   literature,
+            "citations":    citations,
+            "unsolved":     unsolved,
+            "bottlenecks":  current_bottlenecks,
+            "delta":        delta,
+            "comparison":   comparison,
+        }
+        lit_file.write_text(_json.dumps(iter_summary, indent=2))
+        # Mirror into per-iteration directory for comparison
+        (iter_dir / "summary.json").write_text(_json.dumps(iter_summary, indent=2))
+        if sys_cfg_path.exists():
+            _sh.copy2(str(sys_cfg_path), str(iter_dir / "system_config.json"))
+
+        return _ok(
+            f"Iteration {iteration} complete — {len(current_bottlenecks)} active "
+            f"bottleneck(s), {len(literature)} solved by literature, "
+            f"{len(unsolved)} unsolved. " + recommendation,
+            iteration=iteration,
+            optimization=optimization_applied,
+            build=build_summary,
+            profile=profile_summary,
+            diagnosis=diag_summary,
+            system_context=sys_context,
+            top5_bottlenecks=top5,
+            literature=literature,
+            unsolved=unsolved,
+            delta=delta,
+            literature_file=str(lit_file),
+            iter_dir=str(iter_dir),
+            citations=citations,
+            recommendation=recommendation,
         )

@@ -227,3 +227,43 @@ fix: |
        "$SERVICE_BIN" stop "$SERVICE_LOG"
   If $SERVICE_BIN is missing, skip service start/stop (service not compiled in).
 tags: [dftracer, data_dir, service, daemon, trace, best-practice]
+
+---
+date: 2026-06-18
+app: https://github.com/llnl/ior (tag 4.0.0)
+context: session_split_traces fails because pfw files are in a subdirectory of traces/
+error: |
+  {"status": "error", "message": "No .pfw or .pfw.gz files found in <workspace>/traces"}
+root_cause: |
+  When run_id contains a slash (e.g., "ior/20260617_185032"), dftracer's LOG_FILE is
+  set to <workspace>/traces/<run_id>, so it writes:
+    <workspace>/traces/ior/20260617_185032-<hash>-app.pfw.gz
+  The subdirectory traces/ior/ must be created before the run, AND the split tool
+  looks only in traces/ directly (not subdirectories), so files must be copied up.
+fix: |
+  Before calling session_run_with_dftracer, create the subdirectory:
+    mkdir -p <workspace>/traces/<run_id_prefix>   # e.g., traces/ior
+  After the run, copy pfw files to the parent traces/ directory before splitting:
+    cp <workspace>/traces/ior/*.pfw.gz <workspace>/traces/
+  Then call session_split_traces normally.
+tags: [dftracer, traces, split, run_id, subdirectory, pfw]
+
+---
+date: 2026-06-18
+app: general
+context: DFTRACER_INIT=0 prevents the POSIX interceptor from capturing syscall-level events
+error: |
+  dfanalyzer reports "Total Files: 0" and no POSIX-layer events in trace despite
+  application running and C_APP annotations recording correctly.
+root_cause: |
+  Setting DFTRACER_INIT=0 disables the dftracer constructor, which prevents the
+  POSIX LD_PRELOAD interceptor from initializing. Only C_APP (application-level)
+  annotations are recorded; open/read/write/close syscalls are never hooked.
+  dfanalyzer's posix preset requires POSIX-layer events to compute file I/O metrics.
+fix: |
+  Do NOT set DFTRACER_INIT=0 when you want POSIX-layer tracing.
+  Even when the annotated source has explicit DFTRACER_C_INIT() calls, leave
+  DFTRACER_INIT unset (defaults to 1). The auto-init and explicit C_INIT() coexist
+  without conflict — C_INIT() is idempotent when dftracer is already initialized.
+  Only set DFTRACER_INIT=0 if you explicitly do NOT want POSIX-level tracing.
+tags: [dftracer, DFTRACER_INIT, posix, interceptor, dfanalyzer]

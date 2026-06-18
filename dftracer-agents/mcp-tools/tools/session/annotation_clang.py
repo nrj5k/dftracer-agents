@@ -7,8 +7,10 @@ This module registers six MCP tools on a FastMCP instance:
 * ``clang_insert_line``             — insert a single code line at an exact line number
 * ``clang_annotate_file``           — full-file annotation: insert all dftracer macros
                                        accounting for line-number shifts automatically
+* ``clang_annotate_project``        — annotate every source file in annotated/ in one call
 * ``clang_write_annotated_file``    — flush the in-memory file buffer to disk
-* ``clang_estimate_function_cost``  — heuristic cost estimate; returns skip/annotate recommendation
+* ``clang_estimate_function_cost``  — AST-based cost estimate; returns skip/annotate recommendation
+* ``clang_syntax_check``            — verify C/C++/Python syntax using clang / ast module
 
 These tools are designed to be called by annotation sub-agents before and during
 the macro insertion loop (Steps 2a/2b and 4 of annotate-c.yaml / annotate-cpp.yaml).
@@ -91,6 +93,23 @@ def _should_annotate(fn: dict) -> bool:
     if cost.get("vendor_calls", 0) > 0:
         return True
     return cost.get("score", 0) >= ANNOTATION_SCORE_THRESHOLD
+
+
+def _derive_comp(fn: dict) -> str:
+    """Return the dftracer ``comp`` category string for *fn*.
+
+    Priority order mirrors the backend hierarchy from the annotation SKILL:
+    MPI comms > vendor FS > POSIX I/O > memory ops > CPU.
+    """
+    cost = fn.get("cost_info", {})
+    if cost.get("mpi_calls", 0) > 0:
+        return "comm"
+    if cost.get("vendor_calls", 0) > 0 or cost.get("io_calls", 0) > 0:
+        return "io"
+    if cost.get("mem_calls", 0) > 0:
+        return "mem"
+    return "cpu"
+
 
 # ---------------------------------------------------------------------------
 # Module-level in-memory file cache
@@ -423,6 +442,12 @@ def register_clang_tools(mcp: FastMCP) -> None:
         INIT = f"DFTRACER_C_INIT({init_args});"
         FINI = "DFTRACER_C_FINI();"
 
+        def _make_update(fn: dict, ind: str) -> str:
+            comp = _derive_comp(fn)
+            if is_cpp:
+                return f'{ind}DFTRACER_CPP_FUNCTION_UPDATE("comp", "{comp}");'
+            return f'{ind}DFTRACER_C_FUNCTION_UPDATE_STR("comp", "{comp}");'
+
         # ── Step 1: find where to insert #include (outside any #ifdef block) ──
         # Track preprocessor block depth so we never insert inside a conditional
         # section (which would make the include unavailable in the main code path).
@@ -494,6 +519,11 @@ def register_clang_tools(mcp: FastMCP) -> None:
                 # INIT must come before START in main()
                 insertions.append((body_idx, ind + INIT))
             insertions.append((body_idx, ind + START))
+            # UPDATE_STR("comp") must appear right after START.
+            # We mark it with a sentinel prefix "UPDATE:" so the sort key
+            # can place it below START (processed before START in the
+            # bottom-to-top pass, so START ends up above it in the file).
+            insertions.append((body_idx, "UPDATE:" + _make_update(fn, ind)))
 
             if not is_cpp:
                 if exits:
@@ -513,21 +543,26 @@ def register_clang_tools(mcp: FastMCP) -> None:
                     insertions.append((close_idx, ind + END))
 
         # ── Step 4: sort highest-index-first, apply all in one pass ───────────
-        # For same index: END/FINI before INIT/START so START ends up topmost.
+        # For same index, insertion order (bottom-to-top within the index)
+        # determines final vertical order — the LAST inserted ends up on top:
+        #   prio 0: END / FINI  → processed first, end up at bottom
+        #   prio 1: UPDATE      → processed second, pushed above END
+        #   prio 2: START / INIT → processed last, pushed above UPDATE
         def _sort_key(item):
             idx, txt = item
-            # Lower priority number = processed earlier (inserted first at this idx)
-            # We want FINI/END to go first so that START/INIT land above them.
             if FINI in txt or END in txt:
                 prio = 0
-            else:
+            elif txt.startswith("UPDATE:"):
                 prio = 1
+            else:
+                prio = 2
             return (-idx, prio)
 
         insertions.sort(key=_sort_key)
 
         for idx, txt in insertions:
-            lines.insert(idx, txt)
+            # Strip the UPDATE sentinel prefix before writing to the file.
+            lines.insert(idx, txt.removeprefix("UPDATE:"))
 
         # Store in cache AND write to disk (single write)
         _FILE_CACHE[cache_key] = list(lines)
@@ -546,6 +581,160 @@ def register_clang_tools(mcp: FastMCP) -> None:
             total_lines=len(lines),
             already_annotated=False,
             braces_added=braces_added,
+        )
+
+    @mcp.tool()
+    def clang_annotate_project(
+        run_id: str,
+        language: str = "c",
+        init_args: str = "NULL, NULL, -1",
+        exclude_patterns: List[str] = None,
+    ) -> str:
+        """Annotate every C/C++ source file in the ``annotated/`` workspace in one call.
+
+        Discovers all ``.c`` / ``.cpp`` / ``.cxx`` / ``.cc`` files under
+        ``annotated/``, determines which contain ``main()`` (entry-point files),
+        and annotates them in the correct order:
+
+        1. **Library / inner files first** — annotated with ``is_entry=False``.
+        2. **Entry-point files last** — annotated with ``is_entry=True`` so
+           ``DFTRACER_C_INIT`` / ``DFTRACER_C_FINI`` are inserted around ``main()``.
+
+        Each file is processed by ``clang_annotate_file`` which:
+
+        * Adds braces to braceless control-flow bodies (required before macro insertion).
+        * Skips trivial functions automatically (cost filter, Rules 0 / R6 / R7).
+        * Inserts ``DFTRACER_C_FUNCTION_UPDATE_STR("comp", …)`` with the correct
+          category derived from the AST cost info (mpi → "comm", io → "io",
+          mem → "mem", cpu → "cpu").
+        * Is idempotent — already-annotated files are silently skipped.
+
+        Paths can be excluded by passing glob-style substrings in
+        ``exclude_patterns`` (e.g. ``["test/", "vendor/"]``).  The following
+        patterns are always excluded regardless:
+        ``/test/``, ``/tests/``, ``/vendor/``, ``/third_party/``,
+        ``/CMakeFiles/``, ``/.git/``.
+
+        Args:
+            run_id:           Session identifier returned by ``session_create``.
+            language:         ``"c"`` or ``"cpp"``.  Applied to all files.
+            init_args:        Argument string for ``DFTRACER_C_INIT(…)``.
+            exclude_patterns: Extra path substrings to skip.
+
+        Returns:
+            JSON string with keys:
+
+            * ``status``         — ``"ok"`` or ``"error"``.
+            * ``total_files``    — number of source files discovered.
+            * ``annotated``      — number of files newly annotated.
+            * ``skipped``        — number of files already annotated or excluded.
+            * ``errors``         — list of ``{"file": …, "error": …}`` dicts for
+              any file that failed.
+            * ``file_results``   — per-file summary dicts.
+        """
+        import json as _json
+
+        ws = _ws(run_id)
+        ann_dir = ws / "annotated"
+        if not ann_dir.exists():
+            return _err(f"annotated/ directory not found in workspace {run_id}")
+
+        # Always-excluded path fragments
+        _ALWAYS_EXCLUDE = (
+            "/test/", "/tests/", "/vendor/", "/third_party/",
+            "/CMakeFiles/", "/.git/",
+        )
+        extra_exclude = list(exclude_patterns) if exclude_patterns else []
+
+        def _is_excluded(p: Path) -> bool:
+            s = str(p)
+            for pat in _ALWAYS_EXCLUDE:
+                if pat in s:
+                    return True
+            for pat in extra_exclude:
+                if pat in s:
+                    return True
+            return False
+
+        # Discover source files
+        C_EXTS = {".c", ".cpp", ".cxx", ".cc"}
+        all_files = sorted(
+            p for p in ann_dir.rglob("*")
+            if p.suffix.lower() in C_EXTS and not _is_excluded(p)
+        )
+
+        if not all_files:
+            return _ok(
+                "No source files found in annotated/.",
+                total_files=0, annotated=0, skipped=0, errors=[], file_results=[],
+            )
+
+        # Detect entry-point files (contain "int main(")
+        def _is_entry(p: Path) -> bool:
+            try:
+                text = p.read_text(errors="replace")
+                return bool(re.search(r'\bint\s+main\s*\(', text))
+            except OSError:
+                return False
+
+        regular_files = []
+        entry_files = []
+        for p in all_files:
+            (entry_files if _is_entry(p) else regular_files).append(p)
+
+        # Annotate in order: regular first, entry-points last
+        file_results = []
+        annotated_count = 0
+        skipped_count = 0
+        errors = []
+
+        for p in regular_files + entry_files:
+            rel = str(p.relative_to(ann_dir))
+            is_entry_file = p in entry_files
+            try:
+                raw = clang_annotate_file(
+                    run_id=run_id,
+                    filepath=rel,
+                    language=language,
+                    is_entry=is_entry_file,
+                    init_args=init_args,
+                )
+                result = _json.loads(raw)
+                already = result.get("already_annotated", False)
+                if result.get("status") == "ok":
+                    if already:
+                        skipped_count += 1
+                    else:
+                        annotated_count += 1
+                    file_results.append({
+                        "file": rel,
+                        "status": "ok",
+                        "already_annotated": already,
+                        "functions": result.get("functions", 0),
+                        "skipped_functions": result.get("skipped", 0),
+                        "insertions": result.get("insertions", 0),
+                    })
+                else:
+                    errors.append({"file": rel, "error": result.get("message", "unknown error")})
+                    skipped_count += 1
+                    file_results.append({"file": rel, "status": "error", "error": result.get("message")})
+            except Exception as exc:
+                errors.append({"file": rel, "error": str(exc)})
+                skipped_count += 1
+                file_results.append({"file": rel, "status": "error", "error": str(exc)})
+
+        total = len(all_files)
+        msg = (
+            f"Project annotation complete: {annotated_count}/{total} file(s) annotated, "
+            f"{skipped_count} skipped/already-done, {len(errors)} error(s)."
+        )
+        return _ok(
+            msg,
+            total_files=total,
+            annotated=annotated_count,
+            skipped=skipped_count,
+            errors=errors,
+            file_results=file_results,
         )
 
     @mcp.tool()

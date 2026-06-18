@@ -679,9 +679,9 @@ class DftracerUtilsService(MCPService):
             if config_path is not None:
                 cmd += ["--config", config_path]
             cmd += ["--query", query]
-            # group-by dimensions are space-separated via individual --group-by flags.
-            for g in group_by_dims.split(","):
-                cmd += ["--group-by", g.strip()]
+            # CLI accepts a single --group-by with comma-separated keys.
+            if group_by_dims:
+                cmd += ["--group-by", group_by_dims]
             cmd += ["--format", output_format]
             cmd += ["-t", str(time_interval_ms)]
             cmd += ["--threshold", str(threshold_pct)]

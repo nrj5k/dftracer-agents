@@ -251,6 +251,74 @@ def _dftracer_utils_split(
     )
 
 
+def _dftracer_utils_comparator(
+    baseline: str,
+    variant: str,
+    query: str = 'cat == "POSIX" OR cat == "STDIO" OR cat == "C_APP"',
+    group_by_dims: str = "cat,name",
+    output_format: str = "json",
+    threshold_pct: float = 5.0,
+) -> Dict[str, Any]:
+    """Compare trace metrics between two runs via the DftracerUtilsService comparator tool.
+
+    Invokes ``DftracerUtilsService.analysis_subservice`` comparator in-process
+    (same dynamic-loading pattern as :func:`_dftracer_utils_split`).  Falls
+    back to the ``dftracer_comparator`` CLI binary if the service cannot be
+    loaded.
+
+    Returns:
+        Dict[str, Any]: keys ``success``, ``returncode``, ``stdout``, ``stderr``.
+    """
+    mod = _load_dftracer_utils_service()
+    if mod is not None:
+        try:
+            service = mod.DftracerUtilsService()
+            tools = asyncio.run(service.analysis_subservice.list_tools())
+            cmp_tool = next((t for t in tools if t.name == "comparator"), None)
+            if cmp_tool is not None:
+                fn = None
+                for attr in ("fn", "function", "callable", "handler", "_fn"):
+                    val = getattr(cmp_tool, attr, None)
+                    if callable(val):
+                        fn = val
+                        break
+                if fn is not None:
+                    try:
+                        kwargs = {
+                            "baseline": baseline,
+                            "variant": variant,
+                            "query": query,
+                            "group_by_dims": group_by_dims,
+                            "output_format": output_format,
+                            "threshold_pct": threshold_pct,
+                        }
+                        result = (
+                            asyncio.run(fn(**kwargs))
+                            if asyncio.iscoroutinefunction(fn)
+                            else fn(**kwargs)
+                        )
+                        return {"success": True, "returncode": 0,
+                                "stdout": str(result), "stderr": ""}
+                    except subprocess.CalledProcessError as exc:
+                        return {"success": False, "returncode": exc.returncode,
+                                "stdout": "", "stderr": getattr(exc, "stderr", str(exc))}
+        except Exception:
+            pass  # fall through to binary fallback
+
+    # Fallback: call binary directly
+    cmd = [
+        "dftracer_comparator",
+        "--baseline", baseline,
+        "--variant", variant,
+        "--query", query,
+        "--format", output_format,
+        "--threshold", str(threshold_pct),
+    ]
+    if group_by_dims:
+        cmd += ["--group-by", group_by_dims]
+    return _run(cmd, timeout=120)
+
+
 def _install_dftracer_utils(pip: Path) -> Dict[str, Any]:
     """Install the ``dftracer-utils`` package from its upstream ``develop`` branch.
 
