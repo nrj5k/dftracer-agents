@@ -38,15 +38,15 @@ in `env_extra` unless you have a specific override reason**:
 | `DFTRACER_INC_METADATA` | `1` | Include process/thread metadata |
 | `DFTRACER_LOG_FILE` | `workspaces/<run_id>/traces/<run_id>` | Trace file prefix |
 | `DFTRACER_DATA_DIR` | `workspaces/<run_id>/source` | Directory to monitor for I/O events |
-| `DFTRACER_INIT` | `1` *(see note below)* | Auto-initialise without an explicit API call |
+| `DFTRACER_INIT` | `FUNCTION` *(see note below)* | Auto-initialise without an explicit API call |
 
 **DFTRACER_INIT conflict warning:** If the annotated source already contains explicit
 `DFTRACER_C_INIT()` / `DFTRACER_CPP_INIT()` calls (added during Pass 1), do NOT set
 `DFTRACER_INIT=1`. Both active simultaneously causes double-init, producing an empty
-or corrupted trace file. Pass `env_extra='{"DFTRACER_INIT":"0"}'` in that case.
+or corrupted trace file. Pass `env_extra='{"DFTRACER_INIT":"FUNCTION"}'` in that case.
 
 Heuristic: `grep -r "DFTRACER_C_INIT\|DFTRACER_CPP_INIT" annotated/` — if any matches,
-set `DFTRACER_INIT=0`.
+set `DFTRACER_INIT=FUNCTION`.
 
 **`DFTRACER_LOG_FILE` must always be an absolute path inside the workspace run directory.**
 Trace files land at `workspaces/<run_id>/traces/<run_id>.<pid>.pfw`.
@@ -59,5 +59,5 @@ export DFTRACER_ENABLE=1
 export DFTRACER_INC_METADATA=1
 export DFTRACER_LOG_FILE=/absolute/path/to/workspaces/<run_id>/traces/<run_id>
 export DFTRACER_DATA_DIR=/absolute/path/to/workspaces/<run_id>/source
-export DFTRACER_INIT=1
+export DFTRACER_INIT=PRELOAD  # or FUNCTION if explicit init calls are in the code
 ```

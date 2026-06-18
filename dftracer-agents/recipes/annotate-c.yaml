@@ -300,9 +300,8 @@ instructions: |
                                 no END before them; only before visible returns
   PC5  goto: END before each    → duplicate ENDs → put single END at label instead
   PC6  Fwd decl annotated       annotated a ";" line → annotate the definition instead
-  PC7  DFTRACER_INIT=1 conflict if code has DFTRACER_C_INIT(), set DFTRACER_INIT=0
-  PC8  Duplicate END            two consecutive ENDs → remove one
-
+  PC7  DFTRACER_INIT=1 is incorrect. Correct values are FUNCTION (default and recommened), PRELOAD but need to set LD_PRELOAD to dftracer_preload.so, and HYBRID
+  
   C ANNOTATION QUICK REFERENCE:
 
   Macro pair per function:      START + END(s)

@@ -323,8 +323,8 @@ All files now build. Detect INIT usage:
 grep -r "DFTRACER_C_INIT\|DFTRACER_CPP_INIT\|DFTracer.initialize_log" \
   <WS>/annotated/ 2>/dev/null | wc -l
 ```
-count > 0 → DFTRACER_INIT_ENV = `{"DFTRACER_INIT": "0"}`
-count == 0 → DFTRACER_INIT_ENV = `{"DFTRACER_INIT": "1"}`
+count > 0 → DFTRACER_INIT_ENV = `{"DFTRACER_INIT": "FUNCTION"}`
+count == 0 → DFTRACER_INIT_ENV = `{"DFTRACER_INIT": "PRELOAD"}` but you need to se LD_PRELOAD to dftracer_preload.so
 
 Run smoke test:
 ```

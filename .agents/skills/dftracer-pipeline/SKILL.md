@@ -113,8 +113,8 @@ STEP 5 — BUILD FOR CORRECTNESS  (MCP tools)
   grep -r "DFTRACER_C_INIT\|DFTRACER_CPP_INIT\|DFTracer.initialize_log" \
     /workspaces/dftracer-agents/workspaces/<RUN_ID>/annotated/ 2>/dev/null | wc -l
   ```
-  count > 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "0"}
-  count == 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "1"}
+  count > 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "FUNCTION"}
+  count == 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "PRELOAD"}
 
 5b. session_install_dftracer(run_id=RUN_ID)
 

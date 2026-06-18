@@ -134,10 +134,10 @@ fix: Before inserting any END, check the 3 lines above the return: `awk "NR>=$((
 
 ---
 
-**Pitfall: DFTRACER_INIT=1 conflicts with explicit DFTRACER_C_INIT() in code**
+**Pitfall: DFTRACER_INIT=1 is incorrect value**
 
 error: Trace file is empty (0 bytes or 580 bytes with no events).
-fix: NEVER set `DFTRACER_INIT=1` when source already contains explicit `DFTRACER_C_INIT()` calls. Pass `env_extra='{"DFTRACER_INIT": "0"}'`. Heuristic: `grep -r "DFTRACER_C_INIT" annotated/` — if matches found, set `DFTRACER_INIT=0`.
+fix: NEVER set `DFTRACER_INIT=1` when source already contains explicit `DFTRACER_C_INIT()` calls. Pass `env_extra='{"DFTRACER_INIT": "FUNCTION"}'`. Heuristic: `grep -r "DFTRACER_C_INIT" annotated/` — if matches found, set `DFTRACER_INIT=FUNCTION`.
 
 ---
 

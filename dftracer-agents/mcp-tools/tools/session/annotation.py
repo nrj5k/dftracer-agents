@@ -640,7 +640,7 @@ def _annotate_python_source(content: str, is_entry: bool) -> str:
     1. The :data:`_PY_IMPORT` line is inserted after the last ``import`` or
        ``from … import`` statement in the file.
     2. For entry files, ``DFTRACER_INIT(log_file=None, data_dirs=None,
-       process_id=-1)`` is emitted immediately after the import line.
+       process_id=None)`` is emitted immediately after the import line.
     3. Every top-level ``def`` statement is prefixed with ``@dft_fn`` so that
        all module-level functions are traced automatically.
     4. For entry files, a ``# TODO`` comment reminding the developer to call
@@ -674,7 +674,7 @@ def _annotate_python_source(content: str, is_entry: bool) -> str:
             out.append(f"\n{_PY_IMPORT}\n")
             if is_entry:
                 out.append(
-                    "DFTRACER_INIT(log_file=None, data_dirs=None, process_id=-1)\n\n"
+                    "DFTRACER_INIT(log_file=None, data_dirs=None, process_id=None)\n\n"
                 )
     result = "".join(out)
 

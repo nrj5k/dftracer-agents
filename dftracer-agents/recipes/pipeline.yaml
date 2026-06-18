@@ -312,8 +312,9 @@ instructions: |
   grep -r "DFTRACER_C_INIT\|DFTRACER_CPP_INIT\|DFTracer.initialize_log" \
     <WS>/annotated/ 2>/dev/null | wc -l
   ```
-  count > 0 → DFTRACER_INIT_ENV = '{"DFTRACER_INIT": "0"}'
-  count == 0 → DFTRACER_INIT_ENV = '{"DFTRACER_INIT": "1"}'
+  count > 0 → DFTRACER_INIT_ENV = '{"DFTRACER_INIT": "FUNCTION"}'
+  count == 0 → DFTRACER_INIT_ENV = '{"DFTRACER_INIT": "PRELOAD"}' also set LD_PRELOAD to dftracer_preload.so
+
 
   5b. dftracer__session_run_smoke_test(run_id=RUN_ID, command=SMOKE_CMD,
         subfolder="build_ann")

@@ -257,13 +257,13 @@ error: |
   application running and C_APP annotations recording correctly.
 root_cause: |
   Setting DFTRACER_INIT=0 disables the dftracer constructor, which prevents the
-  POSIX LD_PRELOAD interceptor from initializing. Only C_APP (application-level)
+  POSIX LD_PRELOAD interceptor from initializing. The current values are FUNCTION (default and recommended), PRELOAD (is no annotation is done), and HYBRID. Only C_APP (application-level)
   annotations are recorded; open/read/write/close syscalls are never hooked.
   dfanalyzer's posix preset requires POSIX-layer events to compute file I/O metrics.
 fix: |
-  Do NOT set DFTRACER_INIT=0 when you want POSIX-layer tracing.
+  Do NOT set DFTRACER_INIT=0 when you want POSIX-layer tracing. It can be FUNCTION (RECOMMENDED), PRELOAD (when no applictaion annotation is done), or HYBRID (both preload is set and applictaion annotaion is done), but not 0.
   Even when the annotated source has explicit DFTRACER_C_INIT() calls, leave
-  DFTRACER_INIT unset (defaults to 1). The auto-init and explicit C_INIT() coexist
+  DFTRACER_INIT unset (defaults to FUNCTION). The auto-init and explicit C_INIT() coexist
   without conflict — C_INIT() is idempotent when dftracer is already initialized.
   Only set DFTRACER_INIT=0 if you explicitly do NOT want POSIX-level tracing.
 tags: [dftracer, DFTRACER_INIT, posix, interceptor, dfanalyzer]

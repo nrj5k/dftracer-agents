@@ -359,7 +359,7 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
             "DFTRACER_INC_METADATA": "1",
             "DFTRACER_LOG_FILE": str(traces_dir / "trace"),
             "DFTRACER_DATA_DIR": str(src),
-            "DFTRACER_INIT": "1",
+            "DFTRACER_INIT": "FUNCTION",
         }
         ann_smoke_cwd = build_ann if build_ann.exists() else ann
         MAX_ANNOTATION_RETRIES = 3

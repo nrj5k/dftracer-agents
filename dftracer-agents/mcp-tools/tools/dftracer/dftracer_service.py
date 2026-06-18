@@ -118,7 +118,7 @@ def register_annotation_api_tools(mcp: FastMCP) -> None:
                     "from dftracer.python import dftracer, dft_fn as DFTracerFn\n"
                     "_dft = DFTracerFn(\"<category>\")\n"
                     "_dft_log = dftracer.initialize_log("
-                    "logfile=None, data_dir=None, process_id=-1)"
+                    "logfile=None, data_dir=None, process_id=None)"
                 ),
                 fini="_dft_log.finalize()",
                 notes=(

@@ -240,7 +240,7 @@ instructions: |
   PP5  finalize_log missing      trace truncated → add before sys.exit and MPI.Finalize
   PP6  Decorator order wrong     @dftracer_fn above other decorators → move it below them
   PP7  @property decorated       conflict with property → skip @property methods
-  PP8  DFTRACER_INIT=1 conflict  if code calls DFTracer.initialize_log(), set DFTRACER_INIT=0
+  PP8  DFTRACER_INIT= is incorrect conflict  if code calls DFTracer.initialize_log(), set DFTRACER_INIT=0
 
   PYTHON ANNOTATION QUICK REFERENCE:
 

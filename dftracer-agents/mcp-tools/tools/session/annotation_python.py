@@ -19,7 +19,7 @@ The annotation inserts the following pydftracer constructs:
   _dft = DFTracerFn("<MODULE>")
 
   # Entry-point files only (file containing main() or if __name__ == "__main__")
-  _dft_log = dftracer.initialize_log(logfile=None, data_dir=None, process_id=-1)
+  _dft_log = dftracer.initialize_log(logfile=None, data_dir=None, process_id=None)
 
   # Per-function decorators (inserted before the first decorator or 'def'):
   @_dft.log          # regular functions and methods
@@ -54,7 +54,7 @@ from .workspace import _ws, _ok, _err
 _PY_FILE_CACHE: Dict[tuple, List[str]] = {}
 
 _PY_IMPORT = "from dftracer.python import dftracer, dft_fn as DFTracerFn"
-_DFT_INIT  = "_dft_log = dftracer.initialize_log(logfile=None, data_dir=None, process_id=-1)"
+_DFT_INIT  = "_dft_log = dftracer.initialize_log(logfile=None, data_dir=None, process_id=None)"
 _DFT_FINI  = "_dft_log.finalize()"
 
 

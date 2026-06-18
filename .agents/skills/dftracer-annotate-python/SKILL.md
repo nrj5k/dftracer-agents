@@ -30,7 +30,7 @@ from dftracer.logger import DFTracer
 tracer = DFTracer.initialize_log(
     log_file="traces/my_app",    # prefix for .pfw trace files
     data_dir="/data",            # directory to monitor for I/O events
-    process_id=rank,             # MPI rank or 0 for single-process
+    process_id=rank,             # Pointer to MPI rank or 0 for single-process
 )
 
 # At program exit (before MPI.Finalize if using mpi4py)
@@ -39,13 +39,12 @@ DFTracer.finalize_log()
 
 - **With mpi4py**: call `DFTracer.initialize_log` AFTER `MPI.Init()`.
 - **With mpi4py**: call `DFTracer.finalize_log()` BEFORE `MPI.Finalize()`.
-- Use `process_id=0` for single-process runs.
+- Use `process_id=NULL` for single-process runs.
 
 ### Python Rule 3 — Environment-variable initialization (alternative)
 
 ```bash
 export DFTRACER_ENABLE=1
-export DFTRACER_INIT=1
 export DFTRACER_LOG_FILE=/tmp/traces/my_app
 export DFTRACER_DATA_DIR=/data
 python my_app.py
