@@ -724,19 +724,47 @@ class DftracerUtilsService(MCPService):
             max_duration: Optional[int] = None,
             output_file: Optional[str] = None,
             stream: bool = False,
-            no_metadata: bool = False,
+            no_metadata: bool = True,
             index_dir: Optional[str] = None,
             no_auto_index: bool = False,
             checkpoint_size: Optional[int] = None,
             executor_threads: Optional[int] = None,
         ) -> str:
-            """Extract a filtered subset of trace data with chunk-pruning.
+            """Extract a filtered subset of trace events with chunk-level pruning.
 
-            ``dftracer_view [OPTIONS]`` — directory or file-scoped.
-            Use *preset* for io|compute|dlio views, or supply an explicit --query.
+            Returns NDJSON — one JSON event object per line.  The tool builds
+            bloom-filter indices on first use so subsequent queries over the same
+            directory are fast.
 
-            The ``save_recipe`` parameter writes the constructed view back to
-            JSON so it can be reused verbatim with ``--recipe`` on a later call.
+            **Query DSL** (``--query`` field) — case-sensitive string matching:
+
+            * Fields: ``cat``, ``name``, ``dur`` (µs), ``ph``, ``pid``, ``tid``,
+              ``ts`` (µs), ``id``
+            * Nested args: ``args.comp``, ``args.fhash``, ``args.flags``, etc.
+            * Operators: ``==``, ``!=``, ``>``, ``<``, ``>=``, ``<=``
+            * Boolean: ``and`` (lower), ``OR`` (upper)
+            * String values **must** match case exactly: ``"POSIX"`` not ``"posix"``
+
+            **Example queries**::
+
+                'cat == "POSIX"'
+                'cat == "POSIX" and name == "open"'
+                'cat == "POSIX" OR cat == "STDIO"'
+                'cat == "C_APP" and args.comp == "io"'
+                'cat == "POSIX" and dur > 1000'
+                'cat == "POSIX" and name != "lseek"'
+
+            **Presets** (``--preset``):
+                * ``io``      — STDIO-level I/O events
+                * ``compute`` — C_APP compute spans
+                * ``dlio``    — deep-learning I/O workload events
+
+            **Time / duration filters**:
+                * ``time_range`` — ``"min_us,max_us"`` e.g. ``"0,500000"``
+                * ``min_duration`` / ``max_duration`` — event duration in µs
+
+            ``no_metadata=True`` (default) strips ``ph=M`` hash-mapping events
+            from output.  Set ``False`` to include FH (file-hash→path) events.
 
             Reference: https://dftracer.readthedocs.io/projects/utils/en/latest/cli.html
             """
@@ -762,7 +790,7 @@ class DftracerUtilsService(MCPService):
                 cmd += ["--max-duration", str(max_duration)]
             if output_file:
                 cmd += ["-o", output_file]
-            else:
+            if no_metadata:
                 cmd.append("--no-metadata")
             if stream:
                 cmd.append("--stream")

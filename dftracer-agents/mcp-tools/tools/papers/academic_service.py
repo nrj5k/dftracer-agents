@@ -1,4 +1,4 @@
-"""Academic Papers MCP service — arXiv and Semantic Scholar search.
+"""Academic Papers MCP service — arXiv, Semantic Scholar, and web article tools.
 
 Exposes tools for fetching and searching academic papers so that AI agents
 can find relevant literature for I/O performance optimizations identified by
@@ -12,12 +12,19 @@ Tools
 * ``get_semantic_scholar_paper``— fetch one S2 paper by ID
 * ``get_author_papers``         — retrieve an author's paper list from S2
 * ``search_papers_combined``    — parallel search on both sources at once
+* ``fetch_webpage_article``     — fetch and extract any webpage/blog/article
+* ``rank_papers_by_relevance``  — rank papers by bottleneck + system-config relevance
 """
 from __future__ import annotations
 
 import asyncio
+import html
+import json
+import math
+import re
 import xml.etree.ElementTree as ET
-from typing import Optional
+from html.parser import HTMLParser
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from fastmcp import FastMCP
@@ -85,6 +92,266 @@ def _fmt_paper(p: dict) -> str:
             break
     lines.append(f"Source: {p.get('source', 'N/A')}")
     return "\n".join(lines)
+
+
+_WEB_UA = "Mozilla/5.0 (compatible; dftracer-agents/1.0)"
+
+_WEB_SKIP_TAGS = frozenset({
+    "script", "style", "nav", "footer", "header", "noscript",
+    "aside", "form", "button", "svg", "iframe",
+})
+_WEB_VOID_TAGS = frozenset({
+    "meta", "link", "br", "hr", "img", "input", "area",
+    "base", "col", "embed", "param", "source", "track", "wbr",
+})
+_WEB_BLOCK_TAGS = frozenset({"p", "li", "td", "th", "dt", "dd"})
+_WEB_HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
+_WEB_CODE_TAGS = frozenset({"code", "pre"})
+
+
+class _WebParser(HTMLParser):
+    """Generic webpage content extractor — title + sections from arbitrary HTML."""
+
+    def __init__(self):
+        super().__init__()
+        self.title: str = ""
+        self.description: str = ""
+        self.sections: List[Dict[str, Any]] = []
+        self._heading = ""
+        self._text: List[str] = []
+        self._code: List[str] = []
+        self._in_title = False
+        self._in_heading = False
+        self._in_code = False
+        self._in_meta_desc = False
+        self._skip_depth = 0
+        self._skip_tag: Optional[str] = None
+        self._heading_buf: List[str] = []
+        self._code_buf: List[str] = []
+
+    def handle_starttag(self, tag: str, attrs):
+        attrs_dict = dict(attrs)
+        if self._skip_depth:
+            if tag == self._skip_tag:
+                self._skip_depth += 1
+            return
+        if tag in _WEB_SKIP_TAGS:
+            self._skip_tag = tag
+            self._skip_depth = 1
+            return
+        if tag == "title":
+            self._in_title = True
+        if tag == "meta":
+            n = attrs_dict.get("name", "").lower()
+            if n in ("description", "og:description"):
+                self.description = attrs_dict.get("content", "")
+        if tag in _WEB_HEADING_TAGS:
+            self._in_heading = True
+            self._heading_buf = []
+        if tag in _WEB_CODE_TAGS:
+            self._in_code = True
+            self._code_buf = []
+
+    def handle_endtag(self, tag: str):
+        if self._skip_depth:
+            if tag == self._skip_tag:
+                self._skip_depth -= 1
+                if self._skip_depth == 0:
+                    self._skip_tag = None
+            return
+        if tag == "title":
+            self._in_title = False
+        if tag in _WEB_CODE_TAGS:
+            self._in_code = False
+            snippet = "".join(self._code_buf).strip()
+            if snippet:
+                self._code.append(snippet)
+        if tag in _WEB_HEADING_TAGS:
+            self._in_heading = False
+            h = "".join(self._heading_buf).strip()
+            self._flush()
+            self._heading = h
+        if tag in _WEB_BLOCK_TAGS:
+            t = "".join(self._text).strip()
+            if t:
+                self._text.append("\n")
+
+    def handle_data(self, data: str):
+        if self._skip_depth:
+            return
+        cleaned = html.unescape(data)
+        if self._in_title:
+            self.title += cleaned
+        elif self._in_heading:
+            self._heading_buf.append(cleaned)
+        elif self._in_code:
+            self._code_buf.append(cleaned)
+        else:
+            self._text.append(cleaned)
+
+    def _flush(self):
+        body = re.sub(r"\n{3,}", "\n\n", "".join(self._text)).strip()
+        if body or self._code:
+            self.sections.append({
+                "heading": self._heading,
+                "content": body,
+                "code_blocks": list(self._code),
+            })
+        self._text = []
+        self._code = []
+
+    def close(self):
+        super().close()
+        self._flush()
+
+
+def _parse_webpage(html_text: str) -> Dict[str, Any]:
+    p = _WebParser()
+    p.feed(html_text)
+    p.close()
+    return {
+        "title": p.title.strip(),
+        "description": p.description.strip(),
+        "sections": p.sections,
+    }
+
+
+def _score_web_section(section: Dict[str, Any], terms: List[str]) -> float:
+    text = " ".join([
+        section.get("heading", "") * 3,
+        section.get("content", ""),
+        " ".join(section.get("code_blocks", [])),
+    ]).lower()
+    return sum(text.count(t.lower()) for t in terms)
+
+
+def _best_web_sections(
+    parsed: Dict[str, Any],
+    terms: List[str],
+    top_n: int = 5,
+    max_chars: int = 800,
+) -> List[Dict[str, Any]]:
+    sections = parsed.get("sections", [])
+    if terms:
+        scored = sorted(sections, key=lambda s: _score_web_section(s, terms), reverse=True)
+    else:
+        scored = sections
+    results = []
+    for sec in scored[:top_n]:
+        content = sec.get("content", "")[:max_chars]
+        if len(sec.get("content", "")) > max_chars:
+            content += " …"
+        entry: Dict[str, Any] = {"heading": sec.get("heading", ""), "content": content}
+        if sec.get("code_blocks"):
+            entry["code_example"] = sec["code_blocks"][0][:400]
+        results.append(entry)
+    return results
+
+
+# ── Domain keyword expansion for semantic ranking ─────────────────────────────
+
+_BOTTLENECK_KEYWORD_EXPANSION: Dict[str, List[str]] = {
+    "small_io":    ["buffering", "aggregation", "collective", "mpi-io", "write-combining",
+                    "small-file", "many-file", "coalescing", "packing", "small writes"],
+    "small":       ["buffering", "aggregation", "coalescing", "small-file", "packing"],
+    "metadata":    ["inode", "directory", "stat", "open", "close", "namespace", "mdt",
+                    "posix", "metadata server", "file creation", "unlink"],
+    "random":      ["seek", "prefetch", "layout", "out-of-core", "irregular", "non-contiguous",
+                    "stride", "indirect", "reorder", "spatial locality"],
+    "sequential":  ["streaming", "prefetch", "contiguous", "fragmentation", "stripe",
+                    "sequential read", "buffered"],
+    "bandwidth":   ["throughput", "stripe", "raid", "network", "interconnect", "saturation",
+                    "effective bandwidth", "storage bandwidth"],
+    "checkpoint":  ["fault-tolerance", "restart", "scr", "fti", "incremental", "snapshot",
+                    "persistence", "recovery", "dmtcp"],
+    "read":        ["throughput", "prefetch", "cache", "read-ahead", "collective read",
+                    "parallel read", "mpio"],
+    "write":       ["buffering", "write-back", "async write", "collective write", "checkpoint",
+                    "parallel write", "compression"],
+    "imbalance":   ["load balancing", "skew", "uneven", "redistribution", "work stealing",
+                    "straggler", "synchronization"],
+    "intensity":   ["compute overlap", "asynchronous", "hiding", "non-blocking", "pipeline",
+                    "overlap", "offload"],
+    "fetch":       ["prefetch", "pipeline", "data loader", "ingestion", "staging",
+                    "preprocessing", "cache", "deep learning data"],
+    "epoch":       ["straggler", "distributed training", "synchronization", "allreduce",
+                    "load imbalance", "batch"],
+    "compression": ["lossless", "zlib", "zstd", "blosc", "hdf5", "szip", "bandwidth reduction"],
+    "cache":       ["page cache", "buffer cache", "burst buffer", "nvme", "ssd", "flash",
+                    "tiered storage"],
+    "mpi":         ["collective", "mpi-io", "romio", "adio", "parallel", "ranks", "processes"],
+    "lustre":      ["lnet", "ost", "mdt", "stripe", "parallel filesystem", "lustre"],
+    "gpfs":        ["ibm spectrum scale", "gpfs", "parallel filesystem", "blocks"],
+    "hdf5":        ["hdf5", "h5", "parallel hdf5", "phdf5", "chunking", "compression"],
+    "gpu":         ["cuda", "gpu", "deep learning", "training", "nvidia", "tensor", "pytorch"],
+}
+
+_SYSTEM_KEYWORD_EXPANSION: Dict[str, List[str]] = {
+    "lustre":    ["lustre", "parallel filesystem", "ost", "mdt", "stripe"],
+    "gpfs":      ["gpfs", "spectrum scale", "parallel filesystem"],
+    "nfs":       ["nfs", "network filesystem", "nfsv4"],
+    "hdf5":      ["hdf5", "parallel hdf5", "chunking"],
+    "mpi":       ["mpi", "mpi-io", "collective", "romio"],
+    "gpu":       ["gpu", "cuda", "deep learning", "pytorch", "tensorflow"],
+    "hpc":       ["hpc", "supercomputer", "cluster", "high performance computing"],
+    "nvme":      ["nvme", "ssd", "flash", "burst buffer"],
+    "infiniband": ["infiniband", "rdma", "high-speed network"],
+    "posix":     ["posix", "posix io", "system call", "pread", "pwrite"],
+    "python":    ["python", "pytorch", "tensorflow", "numpy", "h5py"],
+    "checkpoint": ["checkpoint", "fault tolerance", "restart"],
+}
+
+
+def _expand_query_terms(text: str, expansion_map: Dict[str, List[str]]) -> List[str]:
+    """Return original words + expansions from domain map for any matched key."""
+    words = [w.lower() for w in re.split(r"\W+", text) if len(w) > 1]
+    expanded = list(words)
+    lower_text = text.lower()
+    for key, synonyms in expansion_map.items():
+        if key in lower_text or any(w.startswith(key[:4]) for w in words):
+            expanded.extend(synonyms)
+    return list(dict.fromkeys(expanded))  # deduplicate, preserve order
+
+
+def _score_paper_relevance(
+    paper: Dict[str, Any],
+    query_terms: List[str],
+    boost_terms: List[str],
+) -> Tuple[float, List[str]]:
+    """Return (score, matched_terms) for a single paper."""
+    title = (paper.get("title") or "").lower()
+    abstract = (paper.get("abstract") or "").lower()
+    matched: List[str] = []
+
+    term_score = 0.0
+    for term in query_terms:
+        t = term.lower()
+        title_hits = title.count(t)
+        abs_hits = abstract.count(t)
+        if title_hits or abs_hits:
+            matched.append(term)
+        term_score += title_hits * 3.0 + abs_hits * 1.0
+
+    boost_score = 0.0
+    for term in boost_terms:
+        t = term.lower()
+        if t in title:
+            boost_score += 2.0
+        elif t in abstract:
+            boost_score += 0.5
+
+    cit_count = paper.get("citationCount") or 0
+    citation_bonus = math.log10(1 + cit_count) * 0.5
+
+    year_str = str(paper.get("year") or paper.get("published") or "")[:4]
+    try:
+        year = int(year_str)
+        recency_bonus = max(0.0, (year - 2010) / 50.0)
+    except ValueError:
+        recency_bonus = 0.0
+
+    score = term_score + boost_score + citation_bonus + recency_bonus
+    return score, list(dict.fromkeys(matched))
 
 
 async def _arxiv_search(query: str, max_results: int = 5, sort_by: str = "relevance",
@@ -344,6 +611,158 @@ class AcademicPapersService(MCPService):
             output.append(str(s2_result) if not isinstance(s2_result, Exception)
                           else f"Semantic Scholar error: {s2_result}")
             return "\n".join(output)
+
+        @self.papers_subservice.tool()
+        async def fetch_webpage_article(
+            url: str,
+            query: Optional[str] = None,
+            top_sections: int = 5,
+        ) -> str:
+            """Fetch and extract structured content from any webpage, blog post, or article.
+
+            Retrieves the page at ``url``, strips navigation/ads/scripts, and
+            returns title, description, and content sections.  When ``query`` is
+            given the most relevant sections are ranked by keyword frequency.
+
+            Args:
+                url:          Full URL of any webpage or article to fetch.
+                query:        Optional keywords to filter/rank sections by relevance.
+                top_sections: Maximum number of content sections to return (default 5).
+
+            Returns:
+                JSON with:
+                  - url:         fetched URL
+                  - title:       page title
+                  - description: meta description if available
+                  - sections:    list of {heading, content, code_example?}
+            """
+            try:
+                async with httpx.AsyncClient(
+                    timeout=30,
+                    follow_redirects=True,
+                    headers={"User-Agent": _WEB_UA},
+                ) as client:
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    html_text = resp.text
+            except Exception as exc:
+                return json.dumps({
+                    "status": "error",
+                    "url": url,
+                    "message": str(exc),
+                }, indent=2)
+
+            parsed = _parse_webpage(html_text)
+            terms = (
+                [t for t in re.split(r"\W+", query.lower()) if len(t) > 2]
+                if query else []
+            )
+            sections = _best_web_sections(parsed, terms, top_n=top_sections)
+
+            return json.dumps({
+                "status": "ok",
+                "url": url,
+                "title": parsed["title"],
+                "description": parsed.get("description", ""),
+                "sections": sections,
+            }, indent=2)
+
+        @self.papers_subservice.tool()
+        def rank_papers_by_relevance(
+            papers_json: str,
+            bottleneck_description: str,
+            system_config: Optional[str] = None,
+            top_n: int = 10,
+        ) -> str:
+            """Rank papers and articles by relevance to I/O bottlenecks and system configuration.
+
+            Uses domain-aware keyword expansion to match bottleneck concepts
+            (small I/O, metadata, bandwidth, checkpoint, etc.) against paper titles
+            and abstracts.  System configuration terms (Lustre, MPI, GPU, HDF5, etc.)
+            are used as a secondary boost signal.  Citation count and publication
+            recency add a small bonus to well-cited or newer works.
+
+            Args:
+                papers_json:             JSON string — either a list of paper dicts
+                    or a dict with a ``"papers"`` list key (as returned by
+                    ``search_papers_combined``, ``search_arxiv``, or
+                    ``session_search_optimization_papers``).  Each paper may
+                    contain any of: ``title``, ``abstract``, ``authors``,
+                    ``year``, ``published``, ``citationCount``, ``url``,
+                    ``pdf_url``, ``source``, ``topic``.
+                bottleneck_description:  Free-text description of the bottleneck(s)
+                    to solve.  Examples:
+                      "high metadata ops, small random writes under Lustre"
+                      "data loader bottleneck, slow checkpoint I/O, GPU stalls"
+                      "low read bandwidth, imbalanced I/O across MPI ranks"
+                system_config:           Optional free-text description of the system,
+                    used as a boost signal.  Examples:
+                      "Lustre filesystem, 512 MPI ranks, HDF5 checkpoint"
+                      "GPFS, A100 GPU cluster, PyTorch, NVLink"
+                top_n:                   Number of top-ranked papers to return (default 10).
+
+            Returns:
+                JSON with:
+                  - status:         "ok" or "error"
+                  - total_papers:   total number of papers scored
+                  - query_terms:    expanded keyword list derived from bottleneck_description
+                  - boost_terms:    expanded keyword list derived from system_config
+                  - ranked_papers:  top-N paper dicts, each with an added ``relevance_score``
+                    (float) and ``matched_terms`` (list of matched expansion terms)
+            """
+            try:
+                raw = json.loads(papers_json)
+            except Exception as exc:
+                return json.dumps({
+                    "status": "error",
+                    "message": f"Could not parse papers_json: {exc}",
+                }, indent=2)
+
+            if isinstance(raw, list):
+                papers: List[Dict[str, Any]] = raw
+            elif isinstance(raw, dict):
+                papers = raw.get("papers", [])
+                if not papers:
+                    for v in raw.values():
+                        if isinstance(v, list) and v and isinstance(v[0], dict):
+                            papers = v
+                            break
+            else:
+                papers = []
+
+            if not papers:
+                return json.dumps({
+                    "status": "error",
+                    "message": "No papers found in papers_json.",
+                }, indent=2)
+
+            query_terms = _expand_query_terms(bottleneck_description, _BOTTLENECK_KEYWORD_EXPANSION)
+            boost_terms = (
+                _expand_query_terms(system_config, _SYSTEM_KEYWORD_EXPANSION)
+                if system_config else []
+            )
+
+            scored: List[Tuple[float, List[str], Dict[str, Any]]] = []
+            for paper in papers:
+                score, matched = _score_paper_relevance(paper, query_terms, boost_terms)
+                scored.append((score, matched, paper))
+
+            scored.sort(key=lambda x: x[0], reverse=True)
+
+            ranked = []
+            for score, matched, paper in scored[:top_n]:
+                entry = dict(paper)
+                entry["relevance_score"] = round(score, 3)
+                entry["matched_terms"] = matched
+                ranked.append(entry)
+
+            return json.dumps({
+                "status": "ok",
+                "total_papers": len(papers),
+                "query_terms": query_terms[:30],
+                "boost_terms": boost_terms[:20],
+                "ranked_papers": ranked,
+            }, indent=2)
 
     def execute(self, data: dict) -> str:
         return "Use the search tools to find academic papers on arXiv and Semantic Scholar."

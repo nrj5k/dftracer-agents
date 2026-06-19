@@ -96,7 +96,7 @@ from .build import (
 )
 from .install import (
     _install_dftracer_autobuild, _dftracer_utils_split, _dftracer_utils_comparator,
-    _install_dftracer_utils, _find_dftracer_dirs,
+    _dftracer_info_uncompressed_bytes, _install_dftracer_utils, _find_dftracer_dirs,
 )
 
 
@@ -1793,6 +1793,24 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         trace_files = list(traces_in.glob("*.pfw")) + list(traces_in.glob("*.pfw.gz"))
         if not trace_files:
             return _err(f"No .pfw or .pfw.gz files found in {traces_in}")
+
+        _SPLIT_CHUNK_MB = 512
+        if len(trace_files) == 1:
+            uncompressed = _dftracer_info_uncompressed_bytes(str(trace_files[0]))
+            if uncompressed is not None and uncompressed <= _SPLIT_CHUNK_MB * 1024 * 1024:
+                import shutil as _shutil
+                dest = traces_out / trace_files[0].name
+                _shutil.copy2(trace_files[0], dest)
+                r = {"success": True, "returncode": 0,
+                     "stdout": (f"skipped split: single file {trace_files[0].name} "
+                                f"uncompressed {uncompressed / (1024*1024):.1f} MB ≤ {_SPLIT_CHUNK_MB} MB chunk size"),
+                     "stderr": ""}
+                _save_state(run_id, {"step": "traces_split", "split_result": r})
+                _write_artifact_log(ws, 12, "session_split_traces", r, run_id)
+                return _ok(
+                    f"Traces copied without splitting (single file {uncompressed / (1024*1024):.1f} MB uncompressed ≤ {_SPLIT_CHUNK_MB} MB)",
+                    output=str(traces_out), **r,
+                )
 
         r = _dftracer_utils_split(
             directory=str(traces_in),

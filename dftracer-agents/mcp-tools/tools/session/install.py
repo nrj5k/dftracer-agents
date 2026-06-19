@@ -178,6 +178,25 @@ def _load_dftracer_utils_service():
     return mod
 
 
+def _dftracer_info_uncompressed_bytes(file_path: str) -> Optional[int]:
+    """Return the uncompressed byte count for a single trace file via dftracer_info.
+
+    Calls ``dftracer_info --files <file> --query summary`` and parses the
+    ``Total Uncompressed: ... (<N> bytes)`` line from the output.
+
+    Returns the byte count on success, or ``None`` if the call fails or the
+    line cannot be parsed.
+    """
+    import re as _re
+    r = _run(["dftracer_info", "--files", file_path, "--query", "summary"], timeout=60)
+    if not r["success"]:
+        return None
+    m = _re.search(r"Total Uncompressed:.*?\((\d+)\s+bytes\)", r["stdout"])
+    if m:
+        return int(m.group(1))
+    return None
+
+
 def _dftracer_utils_split(
     directory: str,
     output_dir: str,
