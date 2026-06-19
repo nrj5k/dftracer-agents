@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "dftracer": {
+      "url": "http://localhost:5000/mcp"
+    }
+  }
+}

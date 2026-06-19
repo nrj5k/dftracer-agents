@@ -1,13 +1,6 @@
 {
   "permissions": {
     "allow": [
-      "mcp__dftracer__stats",
-      "mcp__dftracer__pipeline_create_run",
-      "Bash(ln -s /workspaces/dftracer-agents/test/data/cm1_1_48_20240926 /workspaces/dftracer-agents/workspaces/cm1/20260618_213555/traces_split)",
-      "mcp__dftracer__session_diagnose_bottlenecks",
-      "mcp__dftracer__session_collect_system_info",
-      "mcp__dftracer__session_search_optimization_papers",
-      "mcp__dftracer__search_papers_combined"
     ]
   }
 }

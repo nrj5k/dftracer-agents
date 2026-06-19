@@ -1,4 +1,4 @@
-{
+fix this {
   "name": "dftracer-agents",
   "build": {
     "dockerfile": "Dockerfile"
@@ -13,7 +13,7 @@
   },
   "forwardPorts": [5000],
   "postCreateCommand": "bash .devcontainer/postCreate.sh",
-  "postStartCommand": "bash .devcontainer/link-goose-config.sh",
+  "postStartCommand": "bash .devcontainer/link-goose-config.sh && bash .devcontainer/start-mcp-server.sh",
   "customizations": {
     "vscode": {
       "settings": {

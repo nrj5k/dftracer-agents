@@ -97,14 +97,10 @@ extensions:
     available_tools: []
   dftracer:
     enabled: true
-    type: stdio
+    type: streamable_http
     name: dftracer
     description: mcp tools for using dftracer
-    cmd: dftracer-mcp-server
-    args: []
-    envs: {}
-    env_keys: []
-    timeout: 300
+    uri: http://localhost:5000/mcp
     bundled: null
     available_tools: []
 providers:

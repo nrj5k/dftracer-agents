@@ -174,8 +174,15 @@ def _load_dftracer_utils_service():
     spec = importlib.util.spec_from_file_location(mod_name, _UTILS_SERVICE_PATH)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[mod_name] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    try:
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:
+        # C3: module has relative imports that fail outside the installed package
+        # (e.g. "No module named 'dftracer_agents.mcp_service_factory'").
+        # Clean up the partial registration and let callers fall back to the binary.
+        sys.modules.pop(mod_name, None)
+        return None
 
 
 def _dftracer_info_uncompressed_bytes(file_path: str) -> Optional[int]:

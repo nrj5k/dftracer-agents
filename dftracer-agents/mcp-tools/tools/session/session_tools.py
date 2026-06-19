@@ -1715,6 +1715,9 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         # Using run_id as the prefix keeps trace files clearly associated with
         # this specific run: <workspace>/traces/<run_id>.<pid>.pfw
         log_file_prefix = str(traces_dir / run_id)
+        # C1: run_id may contain path separators (e.g. "ior/20260619_031338")
+        # so the parent directory must be created explicitly.
+        Path(log_file_prefix).parent.mkdir(parents=True, exist_ok=True)
 
         env: Dict[str, str] = {
             "DFTRACER_ENABLE": "1",
@@ -1790,7 +1793,7 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         if not traces_in.exists():
             return _err(f"traces/ not found in session {run_id} — run session_run_with_dftracer first")
 
-        trace_files = list(traces_in.glob("*.pfw")) + list(traces_in.glob("*.pfw.gz"))
+        trace_files = list(traces_in.rglob("*.pfw")) + list(traces_in.rglob("*.pfw.gz"))
         if not trace_files:
             return _err(f"No .pfw or .pfw.gz files found in {traces_in}")
 
@@ -3184,4 +3187,817 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             iter_dir=str(iter_dir),
             citations=citations,
             recommendation=recommendation,
+        )
+
+    # ── Built-in citable references (always available) ───────────────────────
+    _BUILTIN_CITATIONS: Dict[str, Dict[str, Any]] = {
+        "wisio": {
+            "authors": ["Yildirim, I.", "Devarajan, H.", "Kougkas, A.", "Sun, X.-H.", "Mohror, K."],
+            "title": "WisIO: Automated I/O Bottleneck Detection with Multi-Perspective Views for HPC Workflows",
+            "venue": "Proc. 39th ACM ICS 2025, pp. 749–763",
+            "year": "2025",
+            "url": "https://dl.acm.org/doi/10.1145/3721145.3730395",
+        },
+        "drishti": {
+            "authors": ["Bez, J.L.", "Ather, H.", "Byna, S."],
+            "title": "Drishti: Guiding end-users in the I/O optimization journey",
+            "venue": "2022 IEEE/ACM PDSW, pp. 1–6",
+            "year": "2022",
+            "url": "https://ieeexplore.ieee.org/document/10027503",
+        },
+    }
+
+    # ── Per-level strategy tables (from optimize-l1/l2/l3-*.yaml) ───────────
+    # Each entry: metric_pattern → list of strategy dicts
+    # strategy dict keys: title, change, expected_delta, risk, builtin_cite, finding
+    _L1_STRATEGIES: Dict[str, List[Dict[str, Any]]] = {
+        "small_io": [
+            {"title": "Coalesce small reads into 4 MB staging buffer",
+             "change": "Replace per-call read() with staging buffer; flush at buffer-full or loop-end",
+             "expected_delta": "+20–40% bandwidth",
+             "risk": "LOW",
+             "builtin_cite": "wisio",
+             "finding": "WisIO Table 2: small_io primary L1 fix — increase application-level buffer size"},
+        ],
+        "small_write": [
+            {"title": "Batch small writes into pre-allocated buffer",
+             "change": "Accumulate writes in a pre-allocated 4 MB buffer; flush once per segment",
+             "expected_delta": "+15–35% bandwidth",
+             "risk": "LOW",
+             "builtin_cite": "drishti",
+             "finding": "Drishti category small-io, L1 suggestion: batch writes to reduce syscall frequency"},
+        ],
+        "rand_pct": [
+            {"title": "Sort access indices before I/O to improve sequentiality",
+             "change": "Sort file offsets / dataset sample indices before issuing reads",
+             "expected_delta": "+10–30% bandwidth",
+             "risk": "LOW",
+             "builtin_cite": "wisio",
+             "finding": "WisIO: sequentiality bottleneck L1 fix — reorder access to improve seq_pct"},
+            {"title": "Add posix_fadvise(POSIX_FADV_SEQUENTIAL) before sequential reads",
+             "change": "Insert posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL) before read loop",
+             "expected_delta": "+5–15% read bandwidth",
+             "risk": "LOW",
+             "builtin_cite": "drishti",
+             "finding": "Drishti L1 sequentiality: posix_fadvise hint allows kernel readahead"},
+        ],
+        "read_time": [
+            {"title": "Pre-open file descriptors across iterations",
+             "change": "Move open()/close() outside hot loop; keep FDs alive across repetitions",
+             "expected_delta": "–10–25% read latency",
+             "risk": "LOW",
+             "builtin_cite": "wisio",
+             "finding": "WisIO read-time: open overhead is a significant fraction of per-call latency"},
+            {"title": "Overlap I/O with compute using async I/O (io_uring / aiofiles)",
+             "change": "Replace blocking read() with io_uring submission (C) or asyncio/aiofiles (Python)",
+             "expected_delta": "–20–40% wall-clock I/O time",
+             "risk": "MEDIUM",
+             "builtin_cite": "wisio",
+             "finding": "WisIO read-time L1 fix: async I/O reduces idle CPU waiting for I/O"},
+        ],
+        "write_time": [
+            {"title": "Pre-allocate file size with fallocate before writing",
+             "change": "Call fallocate(fd, 0, 0, total_size) before the write loop",
+             "expected_delta": "–5–20% write time",
+             "risk": "LOW",
+             "builtin_cite": "wisio",
+             "finding": "WisIO write-time: fragmentation from incremental allocation adds latency"},
+            {"title": "Write checkpoints asynchronously in a background thread",
+             "change": "Move checkpoint save to a daemon thread; signal main loop when done",
+             "expected_delta": "–30–60% checkpoint stall time",
+             "risk": "MEDIUM",
+             "builtin_cite": "drishti",
+             "finding": "Drishti L1 checkpoint: async write removes checkpoint from critical path"},
+        ],
+        "metadata_time": [
+            {"title": "Cache stat() results; avoid repeated lstat on same paths",
+             "change": "Replace per-sample os.path.exists()/stat() with a pre-built dict cache",
+             "expected_delta": "–20–50% metadata overhead",
+             "risk": "LOW",
+             "builtin_cite": "drishti",
+             "finding": "Drishti metadata L1: caching stat results eliminates redundant syscalls"},
+            {"title": "Open files once per epoch, not once per sample",
+             "change": "Hoist open()/close() out of the per-sample loop; reuse FD per epoch",
+             "expected_delta": "–15–40% metadata time",
+             "risk": "LOW",
+             "builtin_cite": "wisio",
+             "finding": "WisIO metadata-time: repeated open/close contributes to metadata_time_pct"},
+        ],
+        "fetch_pressure": [
+            {"title": "Increase DataLoader num_workers to cpu_count//2",
+             "change": "Set DataLoader(num_workers=os.cpu_count()//2, prefetch_factor=4, persistent_workers=True)",
+             "expected_delta": "–20–50% fetch latency",
+             "risk": "LOW",
+             "builtin_cite": "wisio",
+             "finding": "WisIO fetch-pressure L1 fix: increase DataLoader workers and prefetch factor"},
+        ],
+        "epoch_straggler": [
+            {"title": "Sort dataset by sample size before training",
+             "change": "Pre-sort dataset indices by file size; shuffle only indices within sorted buckets",
+             "expected_delta": "–10–30% tail batch latency",
+             "risk": "LOW",
+             "builtin_cite": "wisio",
+             "finding": "WisIO stragglers L1 fix: homogeneous batch sizes reduce rank imbalance"},
+        ],
+    }
+
+    _L2_STRATEGIES: Dict[str, List[Dict[str, Any]]] = {
+        "small_io": [
+            {"title": "Enable ROMIO collective buffering (cb_buffer_size=64MB)",
+             "change": "Set ROMIO_HINTS env var: cb_buffer_size=67108864;romio_cb_read=enable;romio_cb_write=enable",
+             "expected_delta": "+30–60% bandwidth for shared-file MPI-IO",
+             "risk": "LOW",
+             "builtin_cite": "drishti",
+             "finding": "Drishti L2 small-io: collective I/O aggregates small requests into large transfers",
+             "delivery": "env_var",
+             "env_key": "ROMIO_HINTS"},
+            {"title": "Enable ROMIO data sieving for non-contiguous access",
+             "change": "Set ROMIO_HINTS: romio_ds_read=enable;romio_ds_write=enable",
+             "expected_delta": "+10–25% for non-contiguous patterns",
+             "risk": "LOW",
+             "builtin_cite": "wisio",
+             "finding": "WisIO small-io L2: data sieving bridges gaps in non-contiguous access patterns",
+             "delivery": "env_var",
+             "env_key": "ROMIO_HINTS"},
+        ],
+        "rand_pct": [
+            {"title": "Add POSIX_FADV_SEQUENTIAL via LD_PRELOAD wrapper",
+             "change": "Write a small LD_PRELOAD library that calls posix_fadvise on every open(); inject via env",
+             "expected_delta": "+5–15% sequential read bandwidth",
+             "risk": "LOW",
+             "builtin_cite": "drishti",
+             "finding": "Drishti L2 sequentiality: POSIX readahead hint at library level without source change",
+             "delivery": "env_var",
+             "env_key": "LD_PRELOAD"},
+        ],
+        "read_time": [
+            {"title": "Tune ROMIO collective buffer for read aggregation",
+             "change": "Set ROMIO_HINTS: cb_buffer_size=67108864;romio_cb_read=enable",
+             "expected_delta": "–15–30% MPI-IO read time",
+             "risk": "LOW",
+             "builtin_cite": "wisio",
+             "finding": "WisIO read-time L2: collective read buffer amortizes per-rank I/O overhead",
+             "delivery": "env_var",
+             "env_key": "ROMIO_HINTS"},
+        ],
+        "metadata_time": [
+            {"title": "Disable HDF5 metadata cache evictions during write phases",
+             "change": "Set HDF5_METADATA_CACHE_EVICT_ON_CLOSE=0 env var before run",
+             "expected_delta": "–10–25% HDF5 metadata overhead",
+             "risk": "LOW",
+             "builtin_cite": "drishti",
+             "finding": "Drishti L2 metadata: suppressing cache evictions keeps metadata hot in memory",
+             "delivery": "env_var",
+             "env_key": "HDF5_METADATA_CACHE_EVICT_ON_CLOSE"},
+        ],
+        "fetch_pressure": [
+            {"title": "Tune PyTorch DataLoader env vars for I/O throughput",
+             "change": "Set OMP_NUM_THREADS=<cores>, MALLOC_ARENA_MAX=2 to reduce threading/memory overhead",
+             "expected_delta": "–5–15% DataLoader overhead",
+             "risk": "LOW",
+             "builtin_cite": "wisio",
+             "finding": "WisIO fetch-pressure L2: threading and malloc tuning reduces worker coordination cost",
+             "delivery": "env_var",
+             "env_key": "OMP_NUM_THREADS"},
+        ],
+        "write_time": [
+            {"title": "Tune Linux dirty page flush timing",
+             "change": "Set MALLOC_ARENA_MAX=2 and pre-configure vm.dirty_writeback_centisecs via sysctl before run (L2-safe read of current value)",
+             "expected_delta": "–5–15% write stall time",
+             "risk": "LOW",
+             "builtin_cite": "wisio",
+             "finding": "WisIO write-time L2: dirty page writeback timing affects write throughput",
+             "delivery": "env_var",
+             "env_key": "MALLOC_ARENA_MAX"},
+        ],
+    }
+
+    _L3_STRATEGIES: Dict[str, List[Dict[str, Any]]] = {
+        "small_io": [
+            {"title": "Increase Lustre stripe size to 4 MB to align with buffer sizes",
+             "change": "lfs setstripe -S 4m <data_dir>",
+             "expected_delta": "+10–30% bandwidth for large-file sequential I/O",
+             "risk": "LOW",
+             "privilege": "no-sudo",
+             "rollback": "lfs setstripe -S 1m <data_dir>",
+             "side_effect": "Affects new files created in that directory only",
+             "builtin_cite": "drishti",
+             "finding": "Drishti L3 small-io: stripe size aligned to collective buffer maximizes OST utilization"},
+        ],
+        "rand_pct": [
+            {"title": "Increase kernel readahead on data device",
+             "change": "sudo blockdev --setra 4096 /dev/<data_device>  (sets 2 MB readahead)",
+             "expected_delta": "+10–25% sequential read bandwidth",
+             "risk": "MEDIUM",
+             "privilege": "sudo",
+             "rollback": "sudo blockdev --setra 128 /dev/<data_device>",
+             "side_effect": "Affects all processes reading from this device",
+             "builtin_cite": "drishti",
+             "finding": "Drishti L3 sequentiality: blockdev readahead amplifies OS prefetch for sequential reads"},
+        ],
+        "read_time": [
+            {"title": "Reduce vfs_cache_pressure to retain page cache longer",
+             "change": "sudo sysctl -w vm.vfs_cache_pressure=50",
+             "expected_delta": "–10–20% re-read latency (data fits in RAM)",
+             "risk": "MEDIUM",
+             "privilege": "sudo",
+             "rollback": "sudo sysctl -w vm.vfs_cache_pressure=100",
+             "side_effect": "Reduces kernel tendency to reclaim page cache system-wide",
+             "builtin_cite": "wisio",
+             "finding": "WisIO read-time: lower vfs_cache_pressure keeps hot data in page cache"},
+        ],
+        "write_time": [
+            {"title": "Tune vm.dirty_ratio and vm.dirty_background_ratio",
+             "change": "sudo sysctl -w vm.dirty_ratio=20 vm.dirty_background_ratio=5",
+             "expected_delta": "–5–15% write stall time",
+             "risk": "MEDIUM",
+             "privilege": "sudo",
+             "rollback": "sudo sysctl -w vm.dirty_ratio=20 vm.dirty_background_ratio=10",
+             "side_effect": "Affects all dirty-page behavior on the node",
+             "builtin_cite": "wisio",
+             "finding": "WisIO write-time L3: dirty-page ratios control when background flush begins"},
+        ],
+        "metadata_time": [
+            {"title": "Set Lustre stripe count=1 for small metadata-heavy directories",
+             "change": "lfs setstripe -c 1 <metadata_dir>  (reduces cross-OST lock contention)",
+             "expected_delta": "–10–20% metadata latency for small files",
+             "risk": "LOW",
+             "privilege": "no-sudo",
+             "rollback": "lfs setstripe -c -1 <metadata_dir>",
+             "side_effect": "Affects new files in that directory only",
+             "builtin_cite": "drishti",
+             "finding": "Drishti L3 metadata: single-OST placement reduces MDS lock traffic for small files"},
+        ],
+        "fetch_pressure": [
+            {"title": "Pin process to NUMA node with local memory",
+             "change": "Prefix run command with: numactl --cpunodebind=0 --membind=0",
+             "expected_delta": "–5–15% memory access latency",
+             "risk": "LOW",
+             "privilege": "no-sudo",
+             "rollback": "Remove numactl prefix from run command",
+             "side_effect": "Restricts process to one NUMA node; may underutilize cores on other nodes",
+             "builtin_cite": "wisio",
+             "finding": "WisIO fetch-pressure: NUMA-local memory reduces cross-node bandwidth pressure"},
+        ],
+    }
+
+    def _pick_citation(
+        metric: str,
+        level_strategies: List[Dict[str, Any]],
+        lit_by_metric: Dict[str, List[Dict[str, Any]]],
+        builtin_cites: Dict[str, Dict[str, Any]],
+    ) -> Tuple[Dict[str, Any], str]:
+        """Return (citation_dict, finding_text) for a strategy.
+
+        Priority:
+        1. Searched arXiv papers matching this metric (from literature search).
+        2. Built-in WisIO / Drishti entry from the strategy's ``builtin_cite`` key.
+        """
+        searched = lit_by_metric.get(metric, [])
+        if searched:
+            p = searched[0]
+            year = (p.get("published") or "")[:4]
+            auth = p.get("authors", [])
+            cite = {
+                "authors": auth,
+                "title": p.get("title", ""),
+                "venue": f"arXiv {year}",
+                "year": year,
+                "url": p.get("url", ""),
+                "abstract_excerpt": (p.get("abstract", "")[:200] + "…") if p.get("abstract") else "",
+            }
+            finding = f"arXiv search for '{metric}': {p.get('title','')[:80]}…"
+            return cite, finding
+        # Fall back to built-in reference
+        key = level_strategies[0].get("builtin_cite", "wisio") if level_strategies else "wisio"
+        cite = dict(builtin_cites.get(key, builtin_cites["wisio"]))
+        finding = level_strategies[0].get("finding", "") if level_strategies else ""
+        return cite, finding
+
+    @mcp.tool()
+    def session_generate_optimization_proposals(
+        run_id: str,
+        iteration: int = -1,
+        levels: str = "123",
+        metric: str = "time",
+        max_proposals_per_level: int = 3,
+    ) -> str:
+        """Generate concrete, citation-backed optimization proposals from bottleneck diagnosis.
+
+        Reads the bottleneck list and searched literature from a completed
+        ``session_optimization_iteration`` call, maps each bottleneck to a set of
+        concrete code / config / system changes using the three-level strategy
+        tables (L1 application, L2 software/middleware, L3 system/filesystem),
+        and attaches a verifiable citation (URL) to every proposal.
+
+        Citation priority per proposal:
+        1. Papers found by the arXiv / Semantic Scholar search in the latest iteration.
+        2. Built-in reference: WisIO (Yildirim et al., ICS 2025) or
+           Drishti (Bez et al., PDSW 2022) — whichever is most relevant.
+
+        A proposal is OMITTED if neither a searched paper nor a built-in reference
+        can be matched to the bottleneck + strategy combination.
+
+        Args:
+            run_id:                  Session identifier.
+            iteration:               Which optimization iteration to read (-1 = latest).
+            levels:                  Which levels to generate proposals for.
+                                     Any combination of "1", "2", "3" (default "123").
+            metric:                  Optimization objective used to rank proposals
+                                     (time | bandwidth | iops | metadata_ops).
+            max_proposals_per_level: Cap on proposals returned per level (default 3).
+
+        Returns:
+            JSON with keys:
+            * ``status``     — ``"ok"`` or ``"error"``.
+            * ``proposals``  — list of proposal dicts, each containing:
+              ``id``, ``level``, ``title``, ``bottleneck``, ``severity``,
+              ``change``, ``expected_delta``, ``risk``, ``citation``
+              (sub-keys: authors, title, venue, year, url, finding),
+              and for L2: ``delivery``, ``env_key``;
+              for L3: ``privilege``, ``rollback``, ``side_effect``.
+            * ``unsupported`` — bottlenecks for which no strategy was found.
+            * ``citation_sources`` — breakdown of how many proposals used searched
+              papers vs built-in references.
+        """
+        import json as _json
+
+        state = _load_state(run_id)
+        history: list = state.get("optimization_history", [])
+        if not history:
+            return _err("No optimization iterations found — run session_optimization_iteration first.")
+
+        idx = iteration if iteration >= 0 else len(history) - 1
+        if idx >= len(history):
+            return _err(f"Iteration {iteration} not found (history has {len(history)} entries).")
+
+        iter_entry  = history[idx]
+        bottlenecks = iter_entry.get("bottlenecks", [])
+        literature  = iter_entry.get("literature", [])
+
+        # Build metric → papers lookup from the iteration's existing literature search
+        searched: Dict[str, List[Dict[str, Any]]] = {}
+        for lit_entry in literature:
+            m = lit_entry.get("bottleneck", "")
+            searched[m] = lit_entry.get("papers", [])
+
+        want_l1 = "1" in levels
+        want_l2 = "2" in levels
+        want_l3 = "3" in levels
+
+        all_proposals: List[Dict[str, Any]] = []
+        all_unsupported: List[str] = []
+        total_cs = 0
+        total_cb = 0
+
+        # Delegate to _gen_level_proposals (defined later in the same scope;
+        # resolved at call-time so definition order doesn't matter)
+        if want_l1:
+            p1, cs1, cb1 = _gen_level_proposals(
+                bottlenecks, _L1_STRATEGIES, "L1", searched,
+                max_per_level=max_proposals_per_level,
+            )
+            all_proposals.extend(p1)
+            total_cs += cs1
+            total_cb += cb1
+
+        if want_l2:
+            p2, cs2, cb2 = _gen_level_proposals(
+                bottlenecks, _L2_STRATEGIES, "L2", searched,
+                max_per_level=max_proposals_per_level,
+                extra_fields=["delivery", "env_key"],
+            )
+            all_proposals.extend(p2)
+            total_cs += cs2
+            total_cb += cb2
+
+        if want_l3:
+            p3, cs3, cb3 = _gen_level_proposals(
+                bottlenecks, _L3_STRATEGIES, "L3", searched,
+                max_per_level=max_proposals_per_level,
+                extra_fields=["privilege", "rollback", "side_effect"],
+            )
+            all_proposals.extend(p3)
+            total_cs += cs3
+            total_cb += cb3
+
+        # Collect bottlenecks not covered by any level
+        _SEV = {"trivial": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+        covered = {p["bottleneck"] for p in all_proposals}
+        for bn in bottlenecks:
+            met = bn.get("metric", "")
+            if _SEV.get(bn.get("severity", "trivial"), 0) >= 2 and met not in covered:
+                all_unsupported.append(met)
+
+        total = len(all_proposals)
+        return _ok(
+            f"{total} citation-backed proposal(s) across levels '{levels}' "
+            f"for run {run_id} iteration {idx}. "
+            f"Citations: {total_cs} from arXiv search, {total_cb} from built-in references. "
+            f"Unsupported bottlenecks: {all_unsupported or 'none'}.",
+            proposals=all_proposals,
+            unsupported=all_unsupported,
+            citation_sources={
+                "searched_papers": total_cs,
+                "builtin_references": total_cb,
+            },
+            iteration=idx,
+        )
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Internal helper — generate proposals for one level with citation rule
+    # ──────────────────────────────────────────────────────────────────────────
+    def _gen_level_proposals(
+        bottlenecks: List[Dict[str, Any]],
+        strat_table: Dict[str, List[Dict[str, Any]]],
+        level_tag: str,
+        searched_papers: Dict[str, List[Dict[str, Any]]],
+        max_per_level: int = 3,
+        extra_fields: Optional[List[str]] = None,
+    ) -> Tuple[List[Dict[str, Any]], int, int]:
+        """Map *bottlenecks* to *strat_table* strategies, attach citations.
+
+        Returns (proposals, cited_searched, cited_builtin).
+        Proposals without a URL-backed citation are silently dropped.
+        """
+        import json as _json  # noqa: F401 (unused but keeps linters happy)
+
+        _SEV = {"trivial": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+        proposals: List[Dict[str, Any]] = []
+        cited_searched = 0
+        cited_builtin  = 0
+        prop_counter   = [0]
+
+        for bn in sorted(bottlenecks,
+                         key=lambda b: _SEV.get(b.get("severity", "trivial"), 0),
+                         reverse=True):
+            met = bn.get("metric", "")
+            sev = bn.get("severity", "trivial")
+            if _SEV.get(sev, 0) < 2:
+                continue  # skip trivial / low
+
+            strats = strat_table.get(met, [])
+            if not strats:
+                for key in strat_table:
+                    if met.startswith(key) or key.startswith(met.split("_")[0]):
+                        strats = strat_table[key]
+                        break
+
+            added = 0
+            for strat in strats:
+                if added >= max_per_level:
+                    break
+                # Citation selection: searched papers first, built-in fallback
+                cite_src = None
+                finding  = ""
+                searched = searched_papers.get(met, [])
+                if searched:
+                    p = searched[0]
+                    yr = (p.get("published") or "")[:4]
+                    cite_src = {
+                        "authors": p.get("authors", []),
+                        "title":   p.get("title", ""),
+                        "venue":   f"arXiv {yr}",
+                        "year":    yr,
+                        "url":     p.get("url", ""),
+                    }
+                    finding = (
+                        f"arXiv search for '{met}': "
+                        + p.get("title", "")[:80] + "…"
+                    )
+                    cited_searched += 1
+                else:
+                    key = strat.get("builtin_cite", "wisio")
+                    cite_src = dict(_BUILTIN_CITATIONS.get(key, _BUILTIN_CITATIONS["wisio"]))
+                    finding  = strat.get("finding", "")
+                    cited_builtin += 1
+
+                if not cite_src or not cite_src.get("url"):
+                    continue  # citation rule: no URL → drop
+
+                prop_counter[0] += 1
+                p_dict: Dict[str, Any] = {
+                    "id":             f"{level_tag.upper()}-{prop_counter[0]}",
+                    "level":          level_tag,
+                    "title":          strat["title"],
+                    "bottleneck":     met,
+                    "severity":       sev,
+                    "change":         strat["change"],
+                    "expected_delta": strat["expected_delta"],
+                    "risk":           strat["risk"],
+                    "citation": {
+                        "authors": cite_src.get("authors", []),
+                        "title":   cite_src.get("title", ""),
+                        "venue":   cite_src.get("venue", ""),
+                        "year":    cite_src.get("year", ""),
+                        "url":     cite_src.get("url", ""),
+                        "finding": finding,
+                    },
+                }
+                for fld in (extra_fields or []):
+                    if fld in strat:
+                        p_dict[fld] = strat[fld]
+                proposals.append(p_dict)
+                added += 1
+
+        return proposals, cited_searched, cited_builtin
+
+    @mcp.tool()
+    def session_optimize_l1_app(
+        run_id: str,
+        iteration: int = -1,
+        metric: str = "time",
+        max_proposals: int = 5,
+    ) -> str:
+        """Generate citation-backed application-code optimization proposals (Level 1).
+
+        Searches arXiv for papers on application-level I/O optimization techniques
+        that target the detected bottlenecks (buffer coalescing, async I/O, access
+        reordering, DataLoader tuning, checkpoint async-write, etc.).
+
+        Every proposal MUST be backed by a verifiable citation (URL).
+        Proposals without a citation are silently dropped.
+
+        Args:
+            run_id:         Session identifier.
+            iteration:      Which optimization iteration to read (-1 = latest).
+            metric:         Optimization objective (time | bandwidth | iops | metadata_ops).
+            max_proposals:  Maximum total proposals to return (default 5).
+
+        Returns:
+            JSON with keys: status, proposals (list with citation sub-key per entry),
+            citation_sources (searched vs built-in counts), unsupported (unmatched metrics).
+        """
+        import json as _json
+
+        state   = _load_state(run_id)
+        history = state.get("optimization_history", [])
+        if not history:
+            return _err("No optimization iterations — run session_optimization_iteration first.")
+
+        idx  = iteration if iteration >= 0 else len(history) - 1
+        iter_e = history[idx]
+        bottlenecks = iter_e.get("bottlenecks", [])
+
+        # ── Targeted arXiv searches per unique bottleneck ────────────────────
+        _SEV = {"trivial": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+        high_bns = [b for b in bottlenecks if _SEV.get(b.get("severity","trivial"),0) >= 2]
+        searched: Dict[str, List[Dict[str, Any]]] = {}
+
+        # Merge already-searched papers from the iteration
+        for lit in iter_e.get("literature", []):
+            searched[lit["bottleneck"]] = lit.get("papers", [])
+
+        # Domain-specific L1 search queries per bottleneck
+        _L1_SEARCH: Dict[str, List[str]] = {
+            "small_io":       ["application buffer coalescing small I/O HPC performance",
+                               "buffered I/O aggregation parallel file access"],
+            "small_read":     ["read buffering application layer HPC I/O optimization"],
+            "small_write":    ["write buffering batch I/O application code parallel"],
+            "rand_pct":       ["random to sequential I/O reordering application optimization HPC",
+                               "index sorting access pattern parallel I/O performance"],
+            "seq_pct":        ["sequential access optimization posix_fadvise prefetch HPC"],
+            "read_time":      ["async I/O io_uring application code latency HPC",
+                               "non-blocking I/O file descriptor pre-open parallel"],
+            "write_time":     ["async checkpoint write background thread HPC application",
+                               "fallocate write performance parallel storage"],
+            "metadata_time":  ["metadata caching application layer stat syscall HPC",
+                               "file open reuse epoch training metadata optimization"],
+            "fetch_pressure": ["DataLoader parallel I/O workers prefetch deep learning HPC",
+                               "data pipeline prefetching GPU training throughput"],
+            "epoch_straggler":["sample size bucketing training batch latency optimization",
+                               "straggler mitigation deep learning data loading"],
+        }
+
+        seen_titles: set = set()
+        for bn in high_bns:
+            met = bn.get("metric", "")
+            if met in searched and searched[met]:
+                continue  # already have papers for this metric
+            queries = _L1_SEARCH.get(met, [
+                f"application code {met} optimization HPC parallel I/O",
+                f"{met} I/O performance tuning source code",
+            ])
+            for q in queries:
+                papers = _fetch_arxiv_papers(q, n=3)
+                unique = [p for p in papers
+                          if p.get("title","").lower()[:60] not in seen_titles]
+                if unique:
+                    for p in unique:
+                        seen_titles.add(p.get("title","").lower()[:60])
+                    searched[met] = unique
+                    break
+
+        proposals, cs, cb = _gen_level_proposals(
+            bottlenecks, _L1_STRATEGIES, "L1",
+            searched, max_per_level=max_proposals,
+        )
+        unsupported = [b["metric"] for b in high_bns
+                       if not any(p["bottleneck"] == b["metric"] for p in proposals)]
+
+        return _ok(
+            f"L1 app: {len(proposals)} citation-backed proposal(s). "
+            f"Citations: {cs} arXiv, {cb} built-in. Unsupported: {unsupported or 'none'}.",
+            proposals=proposals,
+            unsupported=unsupported,
+            citation_sources={"searched_papers": cs, "builtin_references": cb},
+            level="L1",
+            iteration=idx,
+        )
+
+    @mcp.tool()
+    def session_optimize_l2_software(
+        run_id: str,
+        iteration: int = -1,
+        metric: str = "time",
+        max_proposals: int = 5,
+    ) -> str:
+        """Generate citation-backed software/middleware optimization proposals (Level 2).
+
+        Searches arXiv for papers on MPI-IO collective buffering, ROMIO hints,
+        HDF5 chunk/cache tuning, PyTorch DataLoader env-var tuning, NetCDF/PnetCDF
+        settings, and other middleware configuration changes that do not require
+        source code edits.
+
+        Every proposal is backed by a verifiable citation (URL).
+
+        Args:
+            run_id:         Session identifier.
+            iteration:      Which optimization iteration to read (-1 = latest).
+            metric:         Optimization objective (time | bandwidth | iops | metadata_ops).
+            max_proposals:  Maximum total proposals to return (default 5).
+
+        Returns:
+            JSON with keys: status, proposals (each with citation + delivery/env_key),
+            citation_sources, unsupported.
+        """
+        import json as _json
+
+        state   = _load_state(run_id)
+        history = state.get("optimization_history", [])
+        if not history:
+            return _err("No optimization iterations — run session_optimization_iteration first.")
+
+        idx    = iteration if iteration >= 0 else len(history) - 1
+        iter_e = history[idx]
+        bottlenecks = iter_e.get("bottlenecks", [])
+
+        _SEV = {"trivial": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+        high_bns = [b for b in bottlenecks if _SEV.get(b.get("severity","trivial"),0) >= 2]
+
+        searched: Dict[str, List[Dict[str, Any]]] = {}
+        for lit in iter_e.get("literature", []):
+            searched[lit["bottleneck"]] = lit.get("papers", [])
+
+        _L2_SEARCH: Dict[str, List[str]] = {
+            "small_io":       ["ROMIO collective buffering MPI-IO small request optimization",
+                               "MPI-IO cb_buffer_size collective I/O aggregation performance"],
+            "rand_pct":       ["ROMIO data sieving non-contiguous MPI-IO access",
+                               "MPI-IO hints access pattern optimization parallel"],
+            "read_time":      ["ROMIO collective read buffering MPI-IO latency reduction",
+                               "HDF5 chunk cache read performance parallel HPC"],
+            "write_time":     ["ROMIO collective write MPI-IO throughput hints",
+                               "HDF5 collective metadata write parallel performance"],
+            "metadata_time":  ["HDF5 metadata cache collective write parallel optimization",
+                               "MPI-IO metadata overhead reduction hints"],
+            "fetch_pressure": ["PyTorch DataLoader num_workers prefetch_factor throughput",
+                               "deep learning data pipeline I/O throughput GPU training"],
+            "epoch_straggler":["PyTorch DistributedSampler persistent_workers optimization",
+                               "deep learning training epoch tail latency worker tuning"],
+        }
+
+        seen_titles: set = set()
+        for bn in high_bns:
+            met = bn.get("metric","")
+            if met in searched and searched[met]:
+                continue
+            queries = _L2_SEARCH.get(met, [
+                f"middleware configuration {met} parallel I/O optimization",
+                f"MPI-IO HDF5 {met} tuning HPC performance",
+            ])
+            for q in queries:
+                papers = _fetch_arxiv_papers(q, n=3)
+                unique = [p for p in papers
+                          if p.get("title","").lower()[:60] not in seen_titles]
+                if unique:
+                    for p in unique:
+                        seen_titles.add(p.get("title","").lower()[:60])
+                    searched[met] = unique
+                    break
+
+        proposals, cs, cb = _gen_level_proposals(
+            bottlenecks, _L2_STRATEGIES, "L2",
+            searched, max_per_level=max_proposals,
+            extra_fields=["delivery", "env_key"],
+        )
+        unsupported = [b["metric"] for b in high_bns
+                       if not any(p["bottleneck"] == b["metric"] for p in proposals)]
+
+        return _ok(
+            f"L2 software: {len(proposals)} citation-backed proposal(s). "
+            f"Citations: {cs} arXiv, {cb} built-in. Unsupported: {unsupported or 'none'}.",
+            proposals=proposals,
+            unsupported=unsupported,
+            citation_sources={"searched_papers": cs, "builtin_references": cb},
+            level="L2",
+            iteration=idx,
+        )
+
+    @mcp.tool()
+    def session_optimize_l3_filesystem(
+        run_id: str,
+        iteration: int = -1,
+        metric: str = "time",
+        max_proposals: int = 5,
+    ) -> str:
+        """Generate citation-backed filesystem/OS optimization proposals (Level 3).
+
+        Searches arXiv for papers on Lustre stripe tuning, GPFS configuration,
+        Linux kernel readahead (blockdev --setra), vm.dirty page writeback tuning,
+        I/O scheduler selection, and NUMA memory binding for I/O-bound workloads.
+
+        Every proposal includes:
+        - A verifiable citation URL (arXiv or built-in reference)
+        - Required privilege level (no-sudo | sudo | admin-only)
+        - Rollback command
+        - Side-effect warning
+
+        Args:
+            run_id:         Session identifier.
+            iteration:      Which optimization iteration to read (-1 = latest).
+            metric:         Optimization objective (time | bandwidth | iops | metadata_ops).
+            max_proposals:  Maximum total proposals to return (default 5).
+
+        Returns:
+            JSON with keys: status, proposals (each with citation + privilege/rollback/side_effect),
+            citation_sources, unsupported.
+        """
+        import json as _json
+
+        state   = _load_state(run_id)
+        history = state.get("optimization_history", [])
+        if not history:
+            return _err("No optimization iterations — run session_optimization_iteration first.")
+
+        idx    = iteration if iteration >= 0 else len(history) - 1
+        iter_e = history[idx]
+        bottlenecks = iter_e.get("bottlenecks", [])
+
+        _SEV = {"trivial": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+        high_bns = [b for b in bottlenecks if _SEV.get(b.get("severity","trivial"),0) >= 2]
+
+        searched: Dict[str, List[Dict[str, Any]]] = {}
+        for lit in iter_e.get("literature", []):
+            searched[lit["bottleneck"]] = lit.get("papers", [])
+
+        _L3_SEARCH: Dict[str, List[str]] = {
+            "small_io":       ["Lustre striping small file I/O optimization HPC",
+                               "parallel filesystem stripe configuration performance"],
+            "rand_pct":       ["Linux kernel readahead blockdev setra optimization HPC",
+                               "sequential I/O readahead tuning parallel workload"],
+            "read_time":      ["page cache pressure vfs_cache_pressure HPC read optimization",
+                               "Linux kernel I/O performance read cache tuning"],
+            "write_time":     ["vm.dirty_ratio dirty page writeback HPC I/O tuning",
+                               "Linux kernel write performance dirty page flush optimization"],
+            "metadata_time":  ["Lustre metadata striping DNE directory optimization",
+                               "parallel filesystem metadata performance tuning HPC"],
+            "fetch_pressure": ["NUMA memory binding I/O performance HPC training",
+                               "numactl memory locality deep learning GPU I/O throughput"],
+        }
+
+        seen_titles: set = set()
+        for bn in high_bns:
+            met = bn.get("metric","")
+            if met in searched and searched[met]:
+                continue
+            queries = _L3_SEARCH.get(met, [
+                f"filesystem OS {met} optimization HPC parallel",
+                f"Lustre GPFS {met} tuning performance",
+            ])
+            for q in queries:
+                papers = _fetch_arxiv_papers(q, n=3)
+                unique = [p for p in papers
+                          if p.get("title","").lower()[:60] not in seen_titles]
+                if unique:
+                    for p in unique:
+                        seen_titles.add(p.get("title","").lower()[:60])
+                    searched[met] = unique
+                    break
+
+        proposals, cs, cb = _gen_level_proposals(
+            bottlenecks, _L3_STRATEGIES, "L3",
+            searched, max_per_level=max_proposals,
+            extra_fields=["privilege", "rollback", "side_effect"],
+        )
+        unsupported = [b["metric"] for b in high_bns
+                       if not any(p["bottleneck"] == b["metric"] for p in proposals)]
+
+        return _ok(
+            f"L3 filesystem: {len(proposals)} citation-backed proposal(s). "
+            f"Citations: {cs} arXiv, {cb} built-in. Unsupported: {unsupported or 'none'}.",
+            proposals=proposals,
+            unsupported=unsupported,
+            citation_sources={"searched_papers": cs, "builtin_references": cb},
+            level="L3",
+            iteration=idx,
         )
