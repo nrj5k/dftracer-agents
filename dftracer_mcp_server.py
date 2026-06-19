@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib
 import importlib.util
 import sys
 import types
@@ -43,11 +44,25 @@ REPO_ROOT = Path(__file__).resolve().parent
 
 
 # ---------------------------------------------------------------------------
-# Package context bootstrap (avoids needing a full pip install for dev use)
+# Package context bootstrap (dev / editable-install fallback only)
 # ---------------------------------------------------------------------------
 
+def _is_package_installed() -> bool:
+    """Return True if dftracer_agents is importable as an installed package."""
+    try:
+        importlib.import_module("dftracer_agents")
+        return True
+    except ImportError:
+        return False
+
+
 def _bootstrap_package_context() -> None:
-    """Inject synthetic package stubs so relative imports in service files work."""
+    """Inject synthetic package stubs so relative imports work in dev mode.
+
+    Only called when the package is NOT installed (dev / no-pip scenario).
+    When installed properly (pip install / pip install -e .) this function is
+    never executed — the real packages are on sys.path already.
+    """
     if "dftracer_agents" in sys.modules:
         return
 
@@ -93,11 +108,31 @@ def _bootstrap_package_context() -> None:
 
 
 def _load_module(name: str, path: Path):
-    mod_name = f"dftracer_agents.mcp_tools.tools.{name}"
-    sys.modules.pop(mod_name, None)
-    spec = importlib.util.spec_from_file_location(mod_name, path)
+    """Load a service module.
+
+    Strategy:
+    1. If the package is installed, import by full dotted name (no path needed).
+    2. Otherwise fall back to spec_from_file_location so dev-mode works without
+       a full pip install.
+
+    ``name`` must be a dotted sub-path under ``dftracer_agents.mcp_tools.tools``,
+    e.g. ``"dftracer.dftracer_utils_service"`` or ``"session.workspace"``.
+    """
+    full_name = f"dftracer_agents.mcp_tools.tools.{name}"
+
+    if full_name in sys.modules:
+        return sys.modules[full_name]
+
+    # Installed path — use the real package hierarchy.
+    if _is_package_installed():
+        return importlib.import_module(full_name)
+
+    # Dev / editable path — load directly from disk.
+    _bootstrap_package_context()
+    sys.modules.pop(full_name, None)
+    spec = importlib.util.spec_from_file_location(full_name, path)
     mod = importlib.util.module_from_spec(spec)
-    sys.modules[mod_name] = mod
+    sys.modules[full_name] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -108,7 +143,7 @@ def _load_module(name: str, path: Path):
 
 def _build_utils_server() -> FastMCP:
     path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "dftracer_utils_service.py"
-    mod = _load_module("dftracer_utils_service", path)
+    mod = _load_module("dftracer.dftracer_utils_service", path)
     service = mod.DftracerUtilsService()
 
     server = FastMCP("DFTracerUtils")
@@ -131,7 +166,7 @@ def _build_utils_server() -> FastMCP:
 
 def _build_analyzer_server() -> FastMCP:
     path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "dfanalyzer_service.py"
-    mod = _load_module("dfanalyzer_service", path)
+    mod = _load_module("dftracer.dfanalyzer_service", path)
     service = mod.DFAnalyzerService()
 
     server = FastMCP("DFAnalyzer")
@@ -142,7 +177,7 @@ def _build_analyzer_server() -> FastMCP:
 
 def _build_plot_server() -> FastMCP:
     path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "dftracer_plot_service.py"
-    mod = _load_module("dftracer_plot_service", path)
+    mod = _load_module("dftracer.dftracer_plot_service", path)
     service = mod.DFTracerPlotService()
 
     server = FastMCP("DFTracerPlot")
@@ -186,7 +221,9 @@ def _build_papers_server() -> FastMCP:
 
 def _build_session_server() -> FastMCP:
     session_dir = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "session"
-    # Load session submodules in dependency order so relative imports resolve
+    # Load session submodules in dependency order so relative imports resolve.
+    # In installed mode _load_module uses importlib.import_module and these are
+    # already on sys.path; in dev mode it loads by file path.
     for submod in ("workspace", "detection", "annotation", "build", "install",
                    "session_tools", "annotation_clang", "pipeline_tools"):
         _load_module(f"session.{submod}", session_dir / f"{submod}.py")
@@ -213,8 +250,6 @@ def _build_session_server() -> FastMCP:
 
 def build_server(service: str) -> FastMCP:
     """Build and return the combined FastMCP server for the requested service(s)."""
-    _bootstrap_package_context()
-
     if service == "utils":
         return _build_utils_server()
 

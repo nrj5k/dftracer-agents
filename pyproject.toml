@@ -13,6 +13,7 @@ dependencies = [
     "dftracer-analyzer @ git+https://github.com/llnl/dfanalyzer.git@develop",
     "dfdiagnoser @ git+https://github.com/llnl/DFDiagnoser.git@main",
     "libclang>=18.1.0",
+    "matplotlib",
 ]
 
 [project.optional-dependencies]
@@ -26,8 +27,27 @@ profile = [
 ]
 
 [project.scripts]
-dftracer-mcp-server = "dftracer_mcp_server:main"
+dftracer-mcp-server    = "dftracer_mcp_server:main"
+dftracer-install-skills = "dftracer_agents.skills:main"
 
 [tool.setuptools]
 py-modules = ["dftracer_mcp_server"]
-packages = []
+packages = [
+    "dftracer_agents",
+    "dftracer_agents.mcp_tools",
+    "dftracer_agents.mcp_tools.tools",
+    "dftracer_agents.mcp_tools.tools.dftracer",
+    "dftracer_agents.mcp_tools.tools.papers",
+    "dftracer_agents.mcp_tools.tools.session",
+]
+
+[tool.setuptools.package-dir]
+"dftracer_agents"                          = "dftracer-agents"
+"dftracer_agents.mcp_tools"               = "dftracer-agents/mcp-tools"
+"dftracer_agents.mcp_tools.tools"         = "dftracer-agents/mcp-tools/tools"
+"dftracer_agents.mcp_tools.tools.dftracer" = "dftracer-agents/mcp-tools/tools/dftracer"
+"dftracer_agents.mcp_tools.tools.papers"  = "dftracer-agents/mcp-tools/tools/papers"
+"dftracer_agents.mcp_tools.tools.session" = "dftracer-agents/mcp-tools/tools/session"
+
+[tool.setuptools.package-data]
+"dftracer_agents" = [".agents/skills/*/SKILL.md"]

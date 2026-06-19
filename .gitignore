@@ -21,3 +21,5 @@ node_modules
 .gitignore
 package.json
 build
+venv-test
+dftracer-agents/.agents
