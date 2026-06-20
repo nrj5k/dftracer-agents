@@ -393,15 +393,100 @@ If yes:
     │  L3 (filesystem):   <storage/system config change>          │
     └─────────────────────────────────────────────────────────────┘
 
-8d. Apply proposals (user's choice, can be selective):
+8d. ITERATIVE OPTIMIZATION LOOP  (max 10 iterations)
 
-    session_optimize_l1_app(run_id=RUN_ID)         # application-level
-    session_optimize_l2_software(run_id=RUN_ID)    # middleware / library
-    session_optimize_l3_filesystem(run_id=RUN_ID)  # filesystem / storage
+    Run up to 10 full optimization cycles. Each cycle applies ALL THREE
+    layers (L1 → L2 → L3) then re-profiles to discover new bottlenecks.
+    Stop early only if the termination conditions in 8f are met.
 
-8e. After each applied optimization, re-run session_optimization_iteration
-    with optimization_applied="<description of change>" and compare delta
-    (improved / regressed / resolved bottlenecks) before moving to the next.
+    Maintain a loop state table across iterations:
+
+      ITER  | applied_opts          | new_bottlenecks | resolved | raw_rate
+      ------|-----------------------|-----------------|----------|----------
+      0     | baseline              | <list>          | —        | <val>
+      1     | <L1+L2+L3 changes>    | <list>          | <list>   | <val>
+      ...
+
+    For each iteration i = 1 … 10:
+
+    8d-i.  Apply all three layers in sequence:
+
+        session_optimize_l1_app(run_id=RUN_ID)
+        session_optimize_l2_software(run_id=RUN_ID)
+        session_optimize_l3_filesystem(run_id=RUN_ID)
+
+        If any layer reports "no applicable optimizations", record that
+        layer as exhausted for this iteration but still run the remaining
+        layers. Do NOT skip the re-profile step.
+
+    8d-ii. Re-profile with the applied changes:
+
+        session_optimization_iteration(run_id=RUN_ID, command=SMOKE_CMD,
+          app_name=APP_NAME, data_dir="all",
+          env_extra=DFTRACER_INIT_ENV,
+          optimization_applied="iter-<i>: L1+L2+L3",
+          rebuild=True)
+
+        This rebuilds the annotated binary, runs the benchmark, splits
+        traces, diagnoses bottlenecks, and searches for new papers.
+        Store the trace path for this iteration as TRACE_ITER_<i>.
+
+    8d-iii. Compare this iteration against the previous one using the
+        dftracer comparator MCP tool:
+
+        comparator(
+          trace_a = TRACE_ITER_<i-1>,   # previous iteration's trace path
+          trace_b = TRACE_ITER_<i>       # current iteration's trace path
+        )
+
+        The comparator output includes per-metric deltas (improved /
+        regressed / unchanged) and a ranked list of changes. Use this
+        output — not manual arithmetic — as the authoritative source for:
+          • Which bottlenecks were resolved between iterations
+          • Which metrics worsened (regression check for 8e)
+          • The raw rate and observed completion time delta to show in
+            the loop state table
+
+        For the baseline comparison (i = 1), use TRACE_ITER_0 as trace_a.
+
+    8d-iv. Generate updated proposals for newly surfaced bottlenecks:
+
+        session_generate_optimization_proposals(run_id=RUN_ID, iteration=i)
+
+        Score and rank candidate papers per 8b-i. Present any new
+        proposals using the format in 8c. Skip bottlenecks that were
+        already fully addressed in a prior iteration (no new proposals
+        means no proposal box for that bottleneck).
+
+    8d-v. Update the loop state table and print a one-line delta summary
+        derived from the comparator output:
+
+        "Iter <i>: resolved=<n> bottlenecks, new=<m>, raw_rate <before>→<after> GB/s (comparator: <overall verdict>)"
+
+8e. Check termination conditions after each iteration:
+
+    Stop the loop early (before reaching 10 iterations) if ANY of:
+
+      EXHAUSTED  — All three layers report "no applicable optimizations"
+                   for every active bottleneck in this iteration.
+      CONVERGED  — No new bottlenecks surfaced AND no resolved bottlenecks
+                   changed severity compared to the previous iteration.
+      REGRESSED  — The comparator reports that raw write rate or observed
+                   completion time worsened by > 5% versus the previous
+                   iteration. Use the comparator's metric delta output as
+                   the authoritative source — do not recompute manually.
+                   (Roll back the last iteration's changes, mark as
+                   "regressed", and stop.)
+      MAX_ITERS  — 10 iterations completed.
+
+    On stopping, print the reason:
+      "Optimization loop ended after <i> iterations: <reason>"
+
+8f. Final all-layers summary after the loop:
+
+    Print the completed loop state table (all iterations).
+    Identify the iteration with the best raw write rate as the
+    "recommended configuration" and note which optimizations it includes.
 
 
 ══════════════════════════════════════════════════════════════════════
@@ -457,14 +542,25 @@ Document each step that succeeded as a numbered flow:
 6. **Smoke test** — ran `<command>`, completed in <time>
 7. **Trace collection** — <N> trace files, <M> events, <K> KB
 8. **Trace analysis** — bottlenecks found: <list>
-9. **Optimization** — <N> proposals, <M> applied; final speedup: <X>
+9. **Optimization loop** — <N> iterations (stopped: <reason>); best speedup at iter <K>
 
-For each optimization applied, include a sub-section:
+Include the full iteration table:
 
-### Optimization: <name> (L1/L2/L3)
-- **What changed:** <code or config change>
-- **Evidence:** <paper title>, <authors>, <year> — <URL>
+| Iter | L1 applied | L2 applied | L3 applied | New bottlenecks | Resolved | Raw rate |
+|------|-----------|-----------|-----------|-----------------|----------|----------|
+| 0    | baseline  | baseline  | baseline  | <list>          | —        | <val>    |
+| 1    | <change>  | <change>  | <change>  | <list>          | <list>   | <val>    |
+| …    |           |           |           |                 |          |          |
+
+For each iteration's applied optimizations, include a sub-section:
+
+### Iteration <N> — <L1/L2/L3 summary>
+- **L1 (app):** <code or config change>
+- **L2 (middleware):** <library/runtime tuning>
+- **L3 (filesystem):** <storage/system config>
+- **Evidence:** <paper title>, <authors>, <year>, score=<N>/100 — <URL>
 - **Result:** Before: <metric=val>, After: <metric=val>, Δ = <pct>%
+- **Stop reason (if last iter):** <EXHAUSTED / CONVERGED / REGRESSED / MAX_ITERS>
 
 ---
 
@@ -491,7 +587,8 @@ For each pitfall encountered, include a sub-section:
 | Files annotated | <N> |
 | Functions annotated | <N> |
 | Bottlenecks diagnosed | <N> (high: N, medium: N) |
-| Optimizations applied | <N> |
+| Optimization iterations | <N> (max 10, stopped: <reason>) |
+| Optimizations applied | <N> (L1=N, L2=N, L3=N) |
 | Raw write rate improvement | <pct>% |
 | Observed completion improvement | <pct>% |
 | Papers cited (avg relevance score) | <N> (avg <X>/100) |
@@ -545,6 +642,7 @@ TOOL REFERENCE
 | Apply L1 app optimizations       | session_optimize_l1_app         |
 | Apply L2 software optimizations  | session_optimize_l2_software    |
 | Apply L3 filesystem optimizations| session_optimize_l3_filesystem  |
+| Compare two trace runs           | comparator                      |
 
 NEVER use:
   • Read / Write / Edit tools to manually insert macros into source files
