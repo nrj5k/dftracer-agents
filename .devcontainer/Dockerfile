@@ -7,6 +7,12 @@ RUN apt-get update
 RUN apt-get install -y --no-install-recommends bash ca-certificates curl git less procps sudo iproute2 jq vim
 RUN apt-get install -y --no-install-recommends python3 python3-pip python3-venv python3-dev build-essential
 RUN apt-get install -y --no-install-recommends clang vim jq
+RUN apt-get install -y --no-install-recommends \
+    libopenmpi-dev openmpi-bin \
+    libhdf5-openmpi-dev hdf5-tools \
+    libyaml-cpp-dev \
+    libuv1-dev \
+    zlib1g-dev
 RUN rm -rf /var/lib/apt/lists/*
 
 # Node.js 20.x (goose tui requires node >=20)

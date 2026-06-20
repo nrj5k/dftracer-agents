@@ -497,12 +497,29 @@ def _collect_braceless(
 
     if kind == "IfStmt":
         # inner: [condition, then-body]  or  [condition, then-body, else-body]
-        # Always skip inner[0] (condition) regardless of its AST kind — using
-        # position-based indexing avoids false positives when the condition is
-        # reported as RecoveryExpr or any other un-listed kind.
+        # Always skip inner[0] (condition) regardless of its AST kind.
+        #
+        # Guard 1 — assert()-style macro expansion:
+        #   assert(expr) typically expands to  if (expr) ; else __assert_fail()
+        #   The then-body is a NullStmt (the bare ";").  Adding braces at the
+        #   macro call-site line corrupts the multi-line macro arguments.
+        #   When we detect this pattern, skip ALL bodies of the IfStmt.
+        #
+        # Guard 2 — else-if chains:
+        #   For else-body (index >= 2) that is itself an IfStmt (else-if),
+        #   do NOT wrap the whole else-if in braces — a stand-alone "{"
+        #   inserted before "else" on its own line breaks the if-else chain.
+        #   Recursion below handles the inner IfStmt's own bodies.
+        _then_is_null = (len(inner) >= 2 and inner[1].get("kind") == "NullStmt")
         for i, child in enumerate(inner):
             if i == 0:
                 continue  # condition — never a body
+            if _then_is_null:
+                # assert()-style: skip all bodies to avoid corrupting macro
+                continue
+            if i >= 2 and child.get("kind") == "IfStmt":
+                # else-if: skip wrapping; recurse will add braces inside it
+                continue
             _maybe_add(child)
 
     elif kind in ("WhileStmt",):

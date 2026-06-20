@@ -71,6 +71,271 @@ R8  If annotated code contains explicit DFTRACER_C_INIT() / DFTRACER_CPP_INIT()
 <!-- New entries are appended below this line by the pipeline recipe -->
 
 ---
+date: 2026-06-20
+app: general
+context: HDF5 1.10.x silently degrades optimization effectiveness — always use 1.14
+error: |
+  H5Pset_page_buffer_size() had no effect; H5Fcreate_async() fell back to sync;
+  posix_close_ops_slope bottleneck could not be fully resolved despite correct hints.
+root_cause: |
+  HDF5 1.10.x (latest Debian/Ubuntu package at time of writing) does not support
+  page buffering with the MPI-IO VFD and the async VOL is not available.
+  Applications that call H5Pset_page_buffer_size on an MPIO fapl in 1.10.x get
+  a silent no-op; H5Fcreate_async is a stub that falls through to synchronous create.
+  This means several L2 optimizations compile and run without error but have zero effect.
+fix: |
+  Always build with HDF5 ≥ 1.14.x for parallel I/O projects.
+  Install from source with --enable-parallel:
+    wget https://github.com/HDFGroup/hdf5/releases/download/hdf5_1.14.4/hdf5-1.14.4.tar.gz
+    tar xf hdf5-1.14.4.tar.gz && cd hdf5-1.14.4
+    CC=mpicc ./configure \
+      --prefix=<ws>/hdf5_1.14 --enable-parallel --enable-shared \
+      --enable-build-mode=production --with-zlib=/usr
+    make -j$(nproc) && make install
+  Then rebuild the application with HDF5_DIR pointing at 1.14 install.
+  Verify: h5cc -showconfig | grep "Version:"  → should show 1.14.x
+tags: [hdf5, version, page-buffer, async-vol, parallel-io, best-practice]
+
+---
+date: 2026-06-20
+app: https://github.com/hariharan-devarajan/h5bench (main)
+context: clang_annotate_project / clang_add_braces corrupts assert() macro call-sites
+error: |
+  After brace insertion, assert(pconfig->version == 0) was split into:
+    assert(pconfig->version ==
+    {
+    0)
+    }
+  Compiler: "error: expected ')' before '{' token"
+root_cause: |
+  glibc's assert(expr) expands to: if (expr) ; else __assert_fail(...)
+  The Clang AST reports this IfStmt with a NullStmt then-body (the bare ";").
+  _collect_braceless was treating the NullStmt as an unbraced body and inserting
+  {/} at the macro call-site line, splitting multi-line macro arguments.
+fix: |
+  In source_parser.py _collect_braceless(), add a NullStmt guard:
+    if kind == "IfStmt":
+        _then_is_null = (len(inner) >= 2 and inner[1].get("kind") == "NullStmt")
+        for i, child in enumerate(inner):
+            if i == 0: continue  # condition
+            if _then_is_null: continue  # assert()-style — skip ALL bodies
+            ...
+  When the then-body (child[1]) is a NullStmt, the entire IfStmt comes from a
+  macro expansion like assert(). Skip adding braces to all bodies of that IfStmt.
+tags: [c, clang, brace-insertion, assert, macro, mcp-tool-fix]
+
+---
+date: 2026-06-20
+app: https://github.com/hariharan-devarajan/h5bench (main)
+context: clang_add_braces inserts standalone "{" before "else if", producing illegal C
+error: |
+  After brace insertion, else-if chains became:
+    } else
+    {
+    if (condition) {
+  Compiler: "error: expected expression before '{' token"
+root_cause: |
+  In _collect_braceless, when an IfStmt's else-body (index >= 2) is itself an
+  IfStmt (the else-if case), _maybe_add was wrapping it. This inserted a standalone
+  "{" line BEFORE the "else" keyword — producing "{ else if (...)" which is
+  illegal C syntax.
+fix: |
+  In source_parser.py _collect_braceless(), add an else-if guard:
+    if i >= 2 and child.get("kind") == "IfStmt":
+        continue  # else-if: skip wrapping; recursion handles inner IfStmt
+  The recursion already visits the inner IfStmt's own bodies; wrapping the outer
+  else-body is never needed and always breaks else-if chains.
+tags: [c, clang, brace-insertion, else-if, mcp-tool-fix]
+
+---
+date: 2026-06-20
+app: https://github.com/hariharan-devarajan/h5bench (main)
+context: DFTRACER_C_INIT(NULL, NULL, -1) causes segfault — third arg must be NULL not -1
+error: |
+  Segmentation fault in initialize_main() at fgets call immediately after startup.
+  Stack: main → read_config_from_file → fgets → SIGSEGV
+root_cause: |
+  DFTRACER_C_INIT macro passes its third argument directly to initialize_main(log,
+  dirs, int *process_id). Passing the integer -1 is implicitly cast to (int*)0xffffffffffffffff,
+  which initialize_main then dereferences → immediate segfault.
+fix: |
+  Always use NULL (not -1 or any integer) for the process_id argument:
+    DFTRACER_C_INIT(NULL, NULL, NULL)
+  NULL is a valid int* meaning "auto-detect PID". The pipeline skill init_args
+  default was updated from "NULL, NULL, -1" to "NULL, NULL, NULL".
+tags: [c, dftracer-init, segfault, init-args, pipeline-skill]
+
+---
+date: 2026-06-20
+app: https://github.com/hariharan-devarajan/h5bench (main)
+context: CMake library name mismatch — dftracer installs as libdftracer_core.so not libdftracer.so
+error: |
+  /usr/bin/ld: cannot find -ldftracer: No such file or directory
+root_cause: |
+  dftracer's installed library filename is libdftracer_core.so (not libdftracer.so).
+  session_install_dftracer patches CMake to link -ldftracer, but the actual soname
+  is dftracer_core. This causes linker failure on all targets.
+fix: |
+  After session_install_dftracer completes, patch both CMakeCache.txt and all
+  generated link.txt files:
+    sed -i 's/-ldftracer\b/-ldftracer_core/g' build_ann/CMakeCache.txt
+    find build_ann/CMakeFiles -name "link.txt" \
+      -exec sed -i 's/-ldftracer\b/-ldftracer_core/g' {} \;
+  Verify: grep -r "ldftracer[^_]" build_ann/ → should return nothing
+  Note: session_build_annotated should be updated to auto-apply this fix.
+tags: [c, cmake, linker, dftracer-install, libdftracer_core]
+
+---
+date: 2026-06-20
+app: https://github.com/hariharan-devarajan/h5bench (main)
+context: -ldftracer_core on its own line in link.txt causes cmake_link_script to ignore it
+error: |
+  All -ldftracer_core flags were silently dropped; linker still reported undefined
+  reference to initialize_region after the fix was applied.
+root_cause: |
+  When appending -ldftracer_core to link.txt using "echo -n >> file", the file
+  already had a trailing newline, so the flag ended up on its own line.
+  cmake -E cmake_link_script executes each line as a separate command; a line
+  containing only " -ldftracer_core" is not a valid command and is silently ignored.
+fix: |
+  When patching link.txt, join the flag to the SAME line as the cc command:
+    # Remove from current position first, then re-append properly:
+    find build_ann/CMakeFiles -name "link.txt" | while read f; do
+      sed -i 's/ -ldftracer_core / /g' "$f"
+      # Remove trailing newline from last line, append flag, add newline
+      content=$(head -n -1 "$f" | tr -d '\n')  # if on its own line
+      echo "${content} -ldftracer_core" > "$f"
+    done
+tags: [cmake, link-order, link-txt, cmake_link_script, dftracer_core]
+
+---
+date: 2026-06-20
+app: https://github.com/hariharan-devarajan/h5bench (main)
+context: Link order error — -ldftracer_core before .o files causes undefined references
+error: |
+  undefined reference to `initialize_region'
+  undefined reference to `update_metadata_string'
+  undefined reference to `finalize_region'
+  (symbols DO exist in libdftracer_core.so per nm)
+root_cause: |
+  The linker processes libraries left-to-right. When -ldftracer_core appears BEFORE
+  the .o object files that need it, no symbols are requested yet so the linker
+  skips pulling them in. When the .o files are processed later, the library is
+  already past and symbols are not found.
+fix: |
+  Ensure -ldftracer_core appears AFTER all .o files in the link command.
+  When CMake places it before the objects (via CMAKE_EXE_LINKER_FLAGS), patch
+  the generated link.txt files to move the flag to the end:
+    sed -i 's/ -ldftracer_core//g' link.txt
+    # append at end of the line (see lesson above about same-line appending)
+tags: [c, cmake, linker, link-order, undefined-reference, dftracer_core]
+
+---
+date: 2026-06-20
+app: https://github.com/hariharan-devarajan/h5bench (main)
+context: Patching CMakeCache.txt triggers cmake re-run that loses MPI detection
+error: |
+  CMake re-ran configure after CMakeCache.txt was edited; MPI was not found:
+  "Could NOT find MPI_C" / "Could NOT find MPI_CXX"
+root_cause: |
+  Modifying CMakeCache.txt causes cmake's cmake_check_build_system to re-run
+  configure. The re-run could not find MPI because it looked for mpich/openmpi
+  in the wrong place in a container environment.
+fix: |
+  After editing CMakeCache.txt, also add these entries to skip MPI re-detection:
+    MPI_C_WORKS:BOOL=TRUE
+    MPI_CXX_WORKS:BOOL=TRUE
+  This tells cmake that MPI was already verified and prevents the re-check.
+tags: [cmake, mpi, cmake-cache, re-configure, container]
+
+---
+date: 2026-06-20
+app: https://github.com/hariharan-devarajan/h5bench (main)
+context: h5bench_write expects an INI key=value config file, not the JSON sample files
+error: |
+  Passing samples/sync-write-1d-contig-contig.json as the config file caused a
+  segfault inside fgets() — the JSON was parsed as INI and file handle was corrupted.
+root_cause: |
+  The JSON files in h5bench/samples/ are for the h5bench Python runner (h5bench.py),
+  which reads them and generates a temporary key=value INI file. h5bench_write itself
+  only accepts a simple KEY=VALUE text file (one pair per line, no sections).
+fix: |
+  Create a minimal INI-style config directly:
+    cat > /tmp/h5bench.cfg << 'EOF'
+    MEM_PATTERN=CONTIG
+    FILE_PATTERN=CONTIG
+    TIMESTEPS=3
+    DELAYED_CLOSE_TIMESTEPS=0
+    COLLECTIVE_DATA=NO
+    COLLECTIVE_METADATA=NO
+    NUM_DIMS=1
+    DIM_1=1048576
+    DIM_2=1
+    DIM_3=1
+    EOF
+    mpirun -np 2 ./h5bench_write /tmp/h5bench.cfg /tmp/test.h5
+  The h5bench.py runner auto-generates this file from JSON; to invoke h5bench_write
+  directly, create the INI file manually.
+tags: [h5bench, config, ini, json, segfault, smoke-test]
+
+---
+date: 2026-06-20
+app: https://github.com/hariharan-devarajan/h5bench (main)
+context: Missing DFTRACER_DATA_DIR=all silently drops I/O events outside the workspace dir
+error: |
+  Trace files written but dfanalyzer shows low or zero file I/O event count;
+  events for /tmp and other non-workspace paths are missing.
+root_cause: |
+  dftracer's DFTRACER_DATA_DIR defaults to watching only specific directories.
+  When benchmarks write to /tmp, /scratch, or any path outside the default scope,
+  those events are silently excluded from the trace.
+fix: |
+  Always pass DFTRACER_DATA_DIR=all when collecting traces:
+    DFTRACER_ENABLE=1 DFTRACER_DATA_DIR=all DFTRACER_INC_METADATA=1 \
+      DFTRACER_LOG_FILE=<prefix> DFTRACER_INIT=FUNCTION ./binary ...
+  This ensures ALL file paths are traced regardless of location.
+  Applies to both session_run_with_dftracer (pass data_dir="all") and manual runs.
+tags: [dftracer, data_dir, trace-missing, DFTRACER_DATA_DIR, best-practice]
+
+---
+date: 2026-06-20
+app: general
+context: Missing DFTRACER_INC_METADATA=1 omits metadata events from trace
+error: |
+  Trace events are missing process/thread name metadata and custom key=value fields
+  set via DFTRACER_C_FUNCTION_UPDATE_STR even though the annotations compiled fine.
+root_cause: |
+  dftracer's metadata events (process name, thread name, custom key=value pairs
+  set via UPDATE_STR/UPDATE_INT) are only recorded when DFTRACER_INC_METADATA=1
+  is set in the environment. Without it, only timing events are captured.
+fix: |
+  Always set DFTRACER_INC_METADATA=1 alongside other dftracer env vars:
+    DFTRACER_ENABLE=1 DFTRACER_DATA_DIR=all DFTRACER_INC_METADATA=1 \
+      DFTRACER_LOG_FILE=<prefix> DFTRACER_INIT=FUNCTION ./binary ...
+  The comp=, filename=, count= etc. metadata set via UPDATE_STR will not appear
+  in the trace without this flag — the span start/end timestamps will be there
+  but the custom attributes won't.
+tags: [dftracer, metadata, DFTRACER_INC_METADATA, UPDATE_STR, best-practice]
+
+---
+date: 2026-06-20
+app: https://github.com/hariharan-devarajan/h5bench (main)
+context: DFTRACER_ENABLE=1 is required when explicit DFTRACER_C_INIT() calls are used
+error: |
+  No trace files written to DFTRACER_LOG_FILE path after h5bench_write run.
+  Application completed successfully but /tmp/h5bench_trace* was empty.
+root_cause: |
+  When the annotated code contains explicit DFTRACER_C_INIT() calls, dftracer's
+  default initialization mode (without DFTRACER_ENABLE=1) may not write traces
+  unless explicitly enabled via the environment.
+fix: |
+  Always set both DFTRACER_ENABLE=1 and DFTRACER_LOG_FILE when running:
+    DFTRACER_ENABLE=1 DFTRACER_LOG_FILE=/tmp/my_trace \
+      DFTRACER_INIT=FUNCTION ./h5bench_write cfg out.h5
+  Trace files are written as: <LOG_FILE>-<hash>-app.pfw.gz
+tags: [dftracer, DFTRACER_ENABLE, trace-missing, h5bench, smoke-test]
+
+---
 date: 2026-06-17
 app: https://github.com/llnl/ior (tag 4.0.0)
 context: Inserting DFTRACER_C_FUNCTION_END into braceless single-line if (dryRun pattern)

@@ -27,11 +27,11 @@ profile = [
 ]
 
 [project.scripts]
-dftracer-mcp-server    = "dftracer_mcp_server:main"
+dftracer-mcp-server     = "dftracer_agents.mcp_server:main"
+dftracer-configure-mcp  = "dftracer_agents.mcp_setup:main"
 dftracer-install-skills = "dftracer_agents.skills:main"
 
 [tool.setuptools]
-py-modules = ["dftracer_mcp_server"]
 packages = [
     "dftracer_agents",
     "dftracer_agents.mcp_tools",
@@ -50,4 +50,4 @@ packages = [
 "dftracer_agents.mcp_tools.tools.session" = "dftracer-agents/mcp-tools/tools/session"
 
 [tool.setuptools.package-data]
-"dftracer_agents" = [".agents/skills/*/SKILL.md"]
+"dftracer_agents" = [".agents/skills/*/SKILL.md", "*.sh"]

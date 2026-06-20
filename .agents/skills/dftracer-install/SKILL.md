@@ -3,6 +3,41 @@ name: dftracer-install
 description: Install and privilege rules for dftracer sessions — never use sudo, always install to userspace paths; autotools pkg-config integration
 ---
 
+## HDF5 Version Requirement
+
+**Always use HDF5 1.14.x for h5bench and any parallel I/O project.**
+
+HDF5 1.14 is required to enable:
+- `H5Pset_page_buffer_size` with the MPI-IO VFD (broken/unsupported in 1.10.x)
+- The async VOL connector (`H5Fcreate_async`, `H5Dwrite_async`, etc.)
+- Full collective metadata API (`H5Pset_all_coll_metadata_ops`)
+- Improved chunk cache and metadata cache flush control
+
+Using HDF5 1.10.x silently degrades performance:
+- `H5Pset_page_buffer_size` is a no-op with the MPIO VFD in 1.10.x
+- `H5Fcreate_async` is a stub that falls back to synchronous I/O
+- The posix_close_ops_slope bottleneck worsens because metadata is flushed per-operation
+
+### How to install HDF5 1.14 from source (userspace, with MPI)
+
+```bash
+wget https://github.com/HDFGroup/hdf5/releases/download/hdf5_1.14.4/hdf5-1.14.4.tar.gz
+tar xf hdf5-1.14.4.tar.gz && cd hdf5-1.14.4
+CC=mpicc ./configure \
+  --prefix=<session_ws>/hdf5_1.14 \
+  --enable-parallel \
+  --enable-shared \
+  --enable-build-mode=production \
+  --with-zlib=/usr
+make -j$(nproc) && make install
+export HDF5_DIR=<session_ws>/hdf5_1.14
+export LD_LIBRARY_PATH=$HDF5_DIR/lib:$LD_LIBRARY_PATH
+```
+
+Then rebuild the application with `-I$HDF5_DIR/include -L$HDF5_DIR/lib -lhdf5`.
+
+---
+
 ## Autotools + dftracer Integration
 
 dftracer is **CMake-only** — no `dftracer.pc` ships by default.

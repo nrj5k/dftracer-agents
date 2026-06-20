@@ -40,7 +40,8 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
-REPO_ROOT = Path(__file__).resolve().parent
+PKG_ROOT = Path(__file__).resolve().parent   # dftracer-agents/
+REPO_ROOT = PKG_ROOT  # alias used by dev-mode path builders below
 
 
 # ---------------------------------------------------------------------------
@@ -66,13 +67,13 @@ def _bootstrap_package_context() -> None:
     if "dftracer_agents" in sys.modules:
         return
 
-    tools_dir = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools"
+    tools_dir = PKG_ROOT / "mcp-tools" / "tools"
 
     pkg = types.ModuleType("dftracer_agents")
-    pkg.__path__ = [str(REPO_ROOT / "dftracer-agents")]
+    pkg.__path__ = [str(PKG_ROOT)]
 
     mcp_pkg = types.ModuleType("dftracer_agents.mcp_tools")
-    mcp_pkg.__path__ = [str(REPO_ROOT / "dftracer-agents" / "mcp-tools")]
+    mcp_pkg.__path__ = [str(PKG_ROOT / "mcp-tools")]
 
     tools_pkg = types.ModuleType("dftracer_agents.mcp_tools.tools")
     tools_pkg.__path__ = [str(tools_dir)]
@@ -87,7 +88,7 @@ def _bootstrap_package_context() -> None:
     papers_pkg.__path__ = [str(tools_dir / "papers")]
 
     # Real MCPServiceFactory from disk
-    factory_path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "mcp_service_factory.py"
+    factory_path = PKG_ROOT / "mcp-tools" / "mcp_service_factory.py"
     factory_mod = types.ModuleType("dftracer_agents.mcp_service_factory")
     spec = importlib.util.spec_from_file_location(
         "dftracer_agents.mcp_service_factory", factory_path
@@ -99,12 +100,20 @@ def _bootstrap_package_context() -> None:
     sys.modules["dftracer_agents.mcp_tools.mcp_service_factory"] = factory_mod
     spec.loader.exec_module(factory_mod)
 
+    annotations_pkg = types.ModuleType("dftracer_agents.mcp_tools.tools.annotations")
+    annotations_pkg.__path__ = [str(tools_dir / "annotations")]
+
+    optimizations_pkg = types.ModuleType("dftracer_agents.mcp_tools.tools.optimizations")
+    optimizations_pkg.__path__ = [str(tools_dir / "optimizations")]
+
     sys.modules["dftracer_agents"] = pkg
     sys.modules["dftracer_agents.mcp_tools"] = mcp_pkg
     sys.modules["dftracer_agents.mcp_tools.tools"] = tools_pkg
     sys.modules["dftracer_agents.mcp_tools.tools.dftracer"] = dftracer_pkg
     sys.modules["dftracer_agents.mcp_tools.tools.session"] = session_pkg
     sys.modules["dftracer_agents.mcp_tools.tools.papers"] = papers_pkg
+    sys.modules["dftracer_agents.mcp_tools.tools.annotations"] = annotations_pkg
+    sys.modules["dftracer_agents.mcp_tools.tools.optimizations"] = optimizations_pkg
 
 
 def _load_module(name: str, path: Path):
@@ -142,7 +151,7 @@ def _load_module(name: str, path: Path):
 # ---------------------------------------------------------------------------
 
 def _build_utils_server() -> FastMCP:
-    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "dftracer_utils_service.py"
+    path = PKG_ROOT / "mcp-tools" / "tools" / "dftracer" / "dftracer_utils_service.py"
     mod = _load_module("dftracer.dftracer_utils_service", path)
     service = mod.DftracerUtilsService()
 
@@ -165,7 +174,7 @@ def _build_utils_server() -> FastMCP:
 
 
 def _build_analyzer_server() -> FastMCP:
-    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "dfanalyzer_service.py"
+    path = PKG_ROOT / "mcp-tools" / "tools" / "dftracer" / "dfanalyzer_service.py"
     mod = _load_module("dftracer.dfanalyzer_service", path)
     service = mod.DFAnalyzerService()
 
@@ -176,7 +185,7 @@ def _build_analyzer_server() -> FastMCP:
 
 
 def _build_plot_server() -> FastMCP:
-    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "dftracer_plot_service.py"
+    path = PKG_ROOT / "mcp-tools" / "tools" / "dftracer" / "dftracer_plot_service.py"
     mod = _load_module("dftracer.dftracer_plot_service", path)
     service = mod.DFTracerPlotService()
 
@@ -187,7 +196,7 @@ def _build_plot_server() -> FastMCP:
 
 
 def _build_docs_server() -> FastMCP:
-    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "docs_service.py"
+    path = PKG_ROOT / "mcp-tools" / "tools" / "dftracer" / "docs_service.py"
     mod = _load_module("dftracer.docs_service", path)
     service = mod.DFTracerDocsService()
 
@@ -198,7 +207,7 @@ def _build_docs_server() -> FastMCP:
 
 
 def _build_diagnoser_server() -> FastMCP:
-    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "dfdiagnoser_service.py"
+    path = PKG_ROOT / "mcp-tools" / "tools" / "dftracer" / "dfdiagnoser_service.py"
     mod = _load_module("dftracer.dfdiagnoser_service", path)
     service = mod.DFDiagnoserService()
 
@@ -209,7 +218,7 @@ def _build_diagnoser_server() -> FastMCP:
 
 
 def _build_papers_server() -> FastMCP:
-    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "papers" / "academic_service.py"
+    path = PKG_ROOT / "mcp-tools" / "tools" / "papers" / "academic_service.py"
     mod = _load_module("papers.academic_service", path)
     service = mod.AcademicPapersService()
 
@@ -220,15 +229,24 @@ def _build_papers_server() -> FastMCP:
 
 
 def _build_session_server() -> FastMCP:
-    session_dir = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "session"
+    session_dir = PKG_ROOT / "mcp-tools" / "tools" / "session"
+    annotations_dir = PKG_ROOT / "mcp-tools" / "tools" / "annotations"
+    optimizations_dir = PKG_ROOT / "mcp-tools" / "tools" / "optimizations"
     # Load session submodules in dependency order so relative imports resolve.
     # In installed mode _load_module uses importlib.import_module and these are
     # already on sys.path; in dev mode it loads by file path.
     for submod in ("workspace", "detection", "annotation", "build", "install",
-                   "session_tools", "annotation_clang", "pipeline_tools"):
+                   "session_tools", "annotation_clang", "annotation_python",
+                   "annotation_ai", "pipeline_tools"):
         _load_module(f"session.{submod}", session_dir / f"{submod}.py")
+    for submod in ("annotate_c", "annotate_cpp", "annotate_python"):
+        _load_module(f"annotations.{submod}", annotations_dir / f"{submod}.py")
+    _load_module("annotations", annotations_dir / "__init__.py")
+    for submod in ("diagnose", "iteration", "levels", "strategies"):
+        _load_module(f"optimizations.{submod}", optimizations_dir / f"{submod}.py")
+    _load_module("optimizations", optimizations_dir / "__init__.py")
 
-    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "dftracer_service.py"
+    path = PKG_ROOT / "mcp-tools" / "tools" / "dftracer" / "dftracer_service.py"
     mod = _load_module("dftracer.dftracer_service", path)
     service = mod.DFTracerSessionService()
 
@@ -239,6 +257,8 @@ def _build_session_server() -> FastMCP:
         "daemon_subservice",
         "clang_subservice",
         "annotation_api_subservice",
+        "annotation_subservice",
+        "optimization_subservice",
     ):
         sub = getattr(service, sub_name, None)
         if sub is None:

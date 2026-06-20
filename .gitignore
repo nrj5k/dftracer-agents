@@ -23,3 +23,5 @@ package.json
 build
 venv-test
 dftracer-agents/.agents
+test/data/dftracer-sample
+package-lock.json
