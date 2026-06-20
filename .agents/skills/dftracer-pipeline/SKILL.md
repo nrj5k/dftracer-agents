@@ -3,15 +3,14 @@ name: dftracer-pipeline
 description: >
   Interactive dftracer annotation pipeline for goose session.
   Asks the user for inputs, sets up the workspace via MCP tools,
-  annotates each source file sequentially, verifies correctness,
+  annotates all source files in parallel, verifies correctness,
   confirms with the user, then collects and analyzes traces.
 ---
 
 You are the dftracer annotation pipeline. Follow these steps in order.
 Ask questions one at a time and wait for the user to reply before continuing.
 
-Recipe files are at: /workspaces/dftracer-agents/dftracer-agents/recipes/
-Lessons file:        /workspaces/dftracer-agents/.agents/skills/dftracer-annotation-lessons/SKILL.md
+Lessons file: /workspaces/dftracer-agents/.agents/skills/dftracer-annotation-lessons/SKILL.md
 
 
 ══════════════════════════════════════════════════════════════════════
@@ -64,44 +63,26 @@ Print the file counts.
 
 
 ══════════════════════════════════════════════════════════════════════
-STEP 4 — ANNOTATE FILES  (one file at a time, sequentially)
+STEP 4 — ANNOTATE FILES  (all files in parallel)
 ══════════════════════════════════════════════════════════════════════
 
-Before annotating any file, read the lessons file:
-  /workspaces/dftracer-agents/.agents/skills/dftracer-annotation-lessons/SKILL.md
+These tools live in the DFTracerAnnotation sub-service.
 
-For each file, read the matching language recipe for the annotation rules:
-  C files   → /workspaces/dftracer-agents/dftracer-agents/recipes/annotate-c.yaml
-  C++ files → /workspaces/dftracer-agents/dftracer-agents/recipes/annotate-cpp.yaml
-  Py files  → /workspaces/dftracer-agents/dftracer-agents/recipes/annotate-python.yaml
+Issue ALL annotation calls simultaneously — one call per file, do not
+wait for one to finish before starting the next:
 
-Also read the shared rules:
-  /workspaces/dftracer-agents/dftracer-agents/recipes/_inc-top.inc
-  /workspaces/dftracer-agents/dftracer-agents/recipes/_inc-bottom.inc (if present)
-  /workspaces/dftracer-agents/dftracer-agents/recipes/_inc-report.inc
+  C files   → session_annotate_c_file(run_id=RUN_ID, filepath=<file>)
+  C++ files → session_annotate_cpp_file(run_id=RUN_ID, filepath=<file>)
+  Py files  → session_annotate_python_file(run_id=RUN_ID, filepath=<file>)
 
-For EACH file in the list:
+Each call returns a structured context and a procedure for the agent to
+follow for that file. Execute each procedure as directed, then collect
+the per-file report it produces.
 
-  a. session_read_file(run_id=RUN_ID, filepath=<file>, subfolder="annotated")
-     Record original line count.
+After all per-file calls have completed and their procedures are done,
+call session_annotation_report(run_id=RUN_ID) to generate the summary.
 
-  b. Classify every function: MANDATORY / ANNOTATE / SKIP (per recipe rules).
-
-  c. Map all exit paths before writing.
-
-  d. Apply the annotation pattern (per language recipe).
-
-  e. session_write_file(run_id=RUN_ID, filepath=<file>,
-       content=<COMPLETE annotated file>, subfolder="annotated")
-     Verify: written line count > original line count.
-
-  f. Run the language-specific coverage verification bash commands from the recipe.
-
-  g. Print per-file summary:
-       FILE: <path>  STATUS: DONE/PARTIAL  ANNOTATED: <n>  SKIPPED: <n>
-
-After all files:
-  Print the full summary table: | File | Status | Annotated | Skipped |
+Print the summary table: | File | Status | Annotated | Skipped |
 
 
 ══════════════════════════════════════════════════════════════════════
@@ -160,11 +141,46 @@ session_run_with_dftracer(run_id=RUN_ID, command=SMOKE_CMD,
 
 APP_NAME = first component of RUN_ID (before "/")
 session_split_traces(run_id=RUN_ID, app_name=APP_NAME)
+  — this tool is in DFTracerUtilsService.session_subservice
+
 session_analyze_traces(run_id=RUN_ID, query_type="summary")
 
 
 ══════════════════════════════════════════════════════════════════════
-STEP 8 — UPDATE LESSONS LEARNED
+STEP 8 — OPTIMIZATION PIPELINE  (optional, MCP tools)
+══════════════════════════════════════════════════════════════════════
+
+If the user wants optimization recommendations, run in order:
+
+1. session_diagnose_bottlenecks(run_id=RUN_ID)
+     — in DFDiagnoserService.session_subservice
+
+2. session_search_optimization_papers(run_id=RUN_ID)
+     — in DFTracerOptimization sub-service
+
+3. session_generate_optimization_proposals(run_id=RUN_ID)
+     — in DFTracerOptimization
+
+4. Apply proposals at each layer (can be run in any order or selectively):
+   session_optimize_l1_app(run_id=RUN_ID)         — application-level changes
+   session_optimize_l2_software(run_id=RUN_ID)    — software/middleware changes
+   session_optimize_l3_filesystem(run_id=RUN_ID)  — filesystem/storage changes
+     — all three are in DFTracerOptimization
+
+
+══════════════════════════════════════════════════════════════════════
+STEP 9 — DFTRACER PC GENERATION  (if needed)
+══════════════════════════════════════════════════════════════════════
+
+To generate a dftracer performance counter configuration:
+
+  session_generate_dftracer_pc(run_id=RUN_ID)
+    — registered in DFTracerSessionService.session_subservice
+      via register_install_session_tools
+
+
+══════════════════════════════════════════════════════════════════════
+STEP 10 — UPDATE LESSONS LEARNED
 ══════════════════════════════════════════════════════════════════════
 
 Append any new lessons (annotation errors, pitfalls, fixes discovered
@@ -176,7 +192,7 @@ Use the format defined at the top of that file. Do not duplicate existing entrie
 
 
 ══════════════════════════════════════════════════════════════════════
-STEP 9 — FINAL REPORT
+STEP 11 — FINAL REPORT
 ══════════════════════════════════════════════════════════════════════
 
   ╔═══════════════════════════════════════════════════════════╗

@@ -73,6 +73,16 @@ install_skills("/path/to/project", overwrite=False)
 
 ---
 
+## Pipeline
+
+The full annotation → trace → diagnosis → optimization pipeline is documented with a Mermaid flowchart:
+
+**[docs/pipeline.md](docs/pipeline.md)**
+
+It covers every MCP tool call in order, which sub-service owns each one, the workspace directory layout, and how per-file annotation parallelism and L1 optimization iterations work.
+
+---
+
 ## Running the tests
 
 Tests call the real MCP tool functions and compare output against direct subprocess calls — no mocking.
