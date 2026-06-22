@@ -1391,7 +1391,7 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
 
         result = _install_dftracer_pip_direct(
             dftracer_ref=dftracer_ref,
-            features=features,
+            features={**features, "dftracer_pip_env": info.get("dftracer_pip_env", {})},
             python_exe=venv_python_str,
             jobs=jobs,
             ws=ws,

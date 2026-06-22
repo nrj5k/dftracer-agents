@@ -932,24 +932,29 @@ def _install_dftracer_pip_direct(
     if not pip.exists():
         pip = Path(sys.executable).parent / "pip3"
 
-    env: Dict[str, str] = {
-        "DFTRACER_BUILD_TYPE": "RelWithDebInfo",
-        "DFTRACER_ENABLE_TESTS": "OFF",
-        "DFTRACER_ENABLE_DLIO_BENCHMARK_TESTS": "OFF",
-        "DFTRACER_ENABLE_PAPER_TESTS": "OFF",
-        "JOBS": str(jobs),
-        "CMAKE_BUILD_PARALLEL_LEVEL": str(jobs),
-    }
+    # Start from the detection-produced pip_env (contains MPICC, MPICXX,
+    # DFTRACER_CMAKE_ARGS, HDF5_ROOT, etc.).  Fall back to manual defaults
+    # for keys not already set.
+    env: Dict[str, str] = dict(features.get("dftracer_pip_env") or {})
+
+    env.setdefault("DFTRACER_BUILD_TYPE", "RelWithDebInfo")
+    env.setdefault("DFTRACER_ENABLE_TESTS", "OFF")
+    env.setdefault("DFTRACER_ENABLE_DLIO_BENCHMARK_TESTS", "OFF")
+    env.setdefault("DFTRACER_ENABLE_PAPER_TESTS", "OFF")
+    env["JOBS"] = str(jobs)
+    env["CMAKE_BUILD_PARALLEL_LEVEL"] = str(jobs)
+
+    # Fill gaps if dftracer_pip_env was absent (legacy callers)
     if features.get("mpi"):
-        env["DFTRACER_ENABLE_MPI"] = "ON"
+        env.setdefault("DFTRACER_ENABLE_MPI", "ON")
     if features.get("hdf5"):
-        env["DFTRACER_ENABLE_HDF5"] = "ON"
+        env.setdefault("DFTRACER_ENABLE_HDF5", "ON")
         hdf5_prefix = (features.get("hdf5_system") or {}).get("prefix") or os.environ.get("HDF5_ROOT", "")
         if not hdf5_prefix:
             hdf5_prefix = os.environ.get("HDF5", "")
         if hdf5_prefix:
-            env["HDF5_ROOT"] = hdf5_prefix
-            env["HDF5_DIR"] = hdf5_prefix
+            env.setdefault("HDF5_ROOT", hdf5_prefix)
+            env.setdefault("HDF5_DIR", hdf5_prefix)
 
     # When HDF5 is enabled, clone locally and patch brahma type mismatches
     # before building.  The generated hdf5.h in develop uses raw `int` for
@@ -1109,6 +1114,31 @@ def _install_dftracer_pip_direct(
                         ),
                     )
                     brahma_hdf5.write_text(bc)
+            # Patch dependency/CMakeLists.txt to forward MPI_C_COMPILER to
+            # brahma's ExternalProject so that brahma's cmake FindMPI picks up
+            # the implementation-branded wrapper (e.g. mpicc.openmpi).  Without
+            # this, brahma detects MPI implementation as "UNKNOWN" because the
+            # generic /usr/bin/mpicc path doesn't contain "openmpi" and mpicc -v
+            # prints GCC info rather than "Open MPI".
+            mpicc_path = env.get("MPICC")
+            dep_cmake = clone_dir / "dependency" / "CMakeLists.txt"
+            if mpicc_path and dep_cmake.exists():
+                dep_content = dep_cmake.read_text()
+                # Inject after the BRAHMA_BUILD_WITH_MPI=ON append so the
+                # MPI_C_COMPILER hint is included in BRAHMA_CONFIGURE_ARGS.
+                old_mpi_args = 'string(APPEND BRAHMA_CONFIGURE_ARGS "-DBRAHMA_BUILD_WITH_MPI=ON")'
+                new_mpi_args = (
+                    old_mpi_args + "\n"
+                    "  # Forward implementation-branded MPI wrapper to brahma so\n"
+                    "  # its FindMPI picks the right compiler for impl detection.\n"
+                    "  if(NOT \"${BRAHMA_CONFIGURE_ARGS}\" STREQUAL \"\")\n"
+                    "    string(APPEND BRAHMA_CONFIGURE_ARGS \";\")\n"
+                    "  endif()\n"
+                    f'  string(APPEND BRAHMA_CONFIGURE_ARGS "-DMPI_C_COMPILER={mpicc_path}")\n'
+                )
+                if old_mpi_args in dep_content:
+                    dep_cmake.write_text(dep_content.replace(old_mpi_args, new_mpi_args))
+
             # Install from patched local clone
             r = _run(
                 [str(pip), "install", "-v", "--no-cache-dir", "--upgrade", str(clone_dir)],
@@ -1693,7 +1723,8 @@ class DFTracerSessionService(MCPService):
                     dftracer_ref=dftracer_ref,
                     jobs=jobs,
                     install_mode="cmake",
-                    features=info.get("features", {}),
+                    features={**info.get("features", {}),
+                               "dftracer_pip_env": info.get("dftracer_pip_env", {})},
                 )
                 if not result["success"]:
                     return _err(
@@ -1726,7 +1757,8 @@ class DFTracerSessionService(MCPService):
                     dftracer_ref=dftracer_ref,
                     jobs=jobs,
                     install_mode="pip",
-                    features=info.get("features", {}),
+                    features={**info.get("features", {}),
+                               "dftracer_pip_env": info.get("dftracer_pip_env", {})},
                     python_exe=str(venv_python),
                 )
                 if not result["success"]:

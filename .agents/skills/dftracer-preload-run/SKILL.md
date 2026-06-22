@@ -17,13 +17,17 @@ Source: https://dftracer.readthedocs.io/en/latest/api.html
 
 | Mode     | When to use                                      | DFTRACER_INIT | Source annotations needed |
 |----------|--------------------------------------------------|---------------|--------------------------|
-| FUNCTION | App profiling only — no I/O interception        | `FUNCTION`    | DFTRACER_C_INIT + FINI + START/END macros |
-| PRELOAD  | Transparent I/O capture without source changes  | `PRELOAD`     | None |
-| HYBRID   | Function profiling AND I/O interception together | `HYBRID`      | DFTRACER_C_INIT + DFTRACER_C_FINI (both required) |
+| FUNCTION | **Default for annotated apps.** Source has INIT+FINI+START/END macros. No LD_PRELOAD needed. | `FUNCTION` | DFTRACER_C_INIT + FINI + START/END macros |
+| PRELOAD  | No annotations — transparent I/O capture via LD_PRELOAD only. | `PRELOAD` | None |
+| HYBRID   | Annotated source (INIT+FINI) AND transparent I/O via LD_PRELOAD on top. Use only when explicitly needed. | `HYBRID` | DFTRACER_C_INIT + DFTRACER_C_FINI (both required) |
 
-**HYBRID rule:** Use `DFTRACER_INIT=HYBRID` only when the annotated source
-contains **both** `DFTRACER_C_INIT(...)` and `DFTRACER_C_FINI()`. If only one
-is present, use `PRELOAD` instead (missing FINI leaves the trace open).
+**Mode selection rules:**
+- Source has **both** `DFTRACER_C_INIT(...)` and `DFTRACER_C_FINI()` → use **`FUNCTION`** (default)
+- Source has INIT but **no FINI** → use **`PRELOAD`** (missing FINI leaves trace open)
+- Source has **no annotations** → use **`PRELOAD`**
+- User explicitly wants I/O interception ON TOP of annotated source → use **`HYBRID`** (has both INIT+FINI)
+
+**HYBRID is not the default for annotated code.** Use `FUNCTION` first; upgrade to `HYBRID` only if the user needs LD_PRELOAD I/O interception in addition to function-level profiling.
 
 ---
 

@@ -602,6 +602,26 @@ def _install_dftracer_pip_direct(
     if features.get("hwloc"):
         pip_env.setdefault("DFTRACER_DISABLE_HWLOC", "OFF")
 
+    # When MPI is enabled, point CC/CXX at the MPI compiler wrappers so that
+    # the dftracer C extension and cmake subbuilds pick up the correct MPI ABI.
+    # Prefer the wrapper paths already detected (MPICC/MPICXX from detection),
+    # then fall back to shutil.which so this works even without a prior detect step.
+    if pip_env.get("DFTRACER_ENABLE_MPI") == "ON":
+        import shutil as _shutil_cc
+        _mpicc = pip_env.get("MPICC") or _shutil_cc.which("mpicc") or ""
+        _mpicxx = pip_env.get("MPICXX") or _shutil_cc.which("mpicxx") or ""
+        if _mpicc:
+            pip_env.setdefault("CC", _mpicc)
+        if _mpicxx:
+            pip_env.setdefault("CXX", _mpicxx)
+
+    # cmake 4.x removed compatibility with cmake_minimum_required < 3.5.
+    # The gotcha dependency (fetched transitively by brahma) ships an old
+    # CMakeLists.txt that triggers this.  Setting CMAKE_POLICY_VERSION_MINIMUM
+    # as an env var propagates through all cmake ExternalProject sub-invocations
+    # (subprocesses inherit it) so gotcha configures successfully under cmake 4.x.
+    pip_env.setdefault("CMAKE_POLICY_VERSION_MINIMUM", "3.5")
+
     # Build parallelism
     pip_env["JOBS"] = str(jobs)
     pip_env["CMAKE_BUILD_PARALLEL_LEVEL"] = str(jobs)
@@ -610,12 +630,370 @@ def _install_dftracer_pip_direct(
     if pip_env_override:
         pip_env.update(pip_env_override)
 
-    r = _run(
-        [py, "-m", "pip", "install", "-v", "--no-cache-dir", "--upgrade",
-         f"git+https://github.com/llnl/dftracer.git@{dftracer_ref}"],
-        env=pip_env,
-        timeout=900,
-    )
+    # cmake's FindMPI (4.x) does NOT check $ENV{MPICC}.  It discovers the MPI
+    # compiler with find_program(NAMES mpicc ...) via PATH.  brahma v1.0.6 then
+    # detects the MPI implementation by checking whether MPI_C_COMPILER MATCHES
+    # "openmpi".  If the canonical /usr/bin/mpicc is a generic wrapper whose path
+    # doesn't contain "openmpi", brahma falls back to UNKNOWN and skips all
+    # MPI_File_* virtual overrides.
+    #
+    # Fix: when we know the OpenMPI wrapper (MPICC=.../mpicc.openmpi), create a
+    # symlink at /tmp/dftracer-openmpi/bin/mpicc → that wrapper and prepend the
+    # directory to PATH.  cmake FindMPI then stores the full path
+    # "/tmp/dftracer-openmpi/bin/mpicc" (which MATCHES "openmpi") in
+    # MPI_C_COMPILER, and brahma correctly detects OpenMPI.
+    mpicc_path = pip_env.get("MPICC", "")
+    if mpicc_path and "openmpi" in mpicc_path:
+        # cmake's FindMPI derives _MPI_BASE_DIR from mpiexec's location and then
+        # searches that dir with NO_DEFAULT_PATH — so patching PATH alone won't
+        # work.  And brahma v1.0.6 guards ALL MPI_File_* implementations with a
+        # version check (e.g. BRAHMA_MPI_VERSION >= 400106) derived by parsing
+        # "mpicc -v" output for "Open MPI) X.Y.Z".  Since /usr/bin/mpicc.openmpi
+        # is an opal_wrapper that outputs GCC info on -v/--version, brahma falls
+        # back to the MPI standard version (300100) and the guards fail.
+        #
+        # Fix: create a synthetic MPI_HOME at /tmp/dftracer-openmpi/ and populate
+        # it with:
+        #   bin/mpicc  — a shell script that emits "mpicc (Open MPI) X.Y.Z" on -v
+        #                and delegates all compilation to the real mpicc.openmpi
+        #   bin/mpicxx — same for C++
+        #   bin/mpiexec — symlink to mpiexec.openmpi
+        # Setting MPI_HOME makes cmake's FindMPI search there first (NO_DEFAULT_PATH)
+        # so MPI_C_COMPILER = /tmp/dftracer-openmpi/bin/mpicc (path MATCHES "openmpi").
+        # brahma then also gets "Open MPI) 4.1.6" from -v, extracts version 400106,
+        # and all MPI_File_* GOTCHA hooks are compiled in.
+        from pathlib import Path as _Path
+        import shutil as _shutil
+        import subprocess as _sp
+
+        # Detect installed OpenMPI version string (e.g. "4.1.6")
+        try:
+            _ompi_ver_out = _sp.run(
+                ["ompi_info", "--version"], capture_output=True, text=True, timeout=10
+            ).stdout
+            import re as _re
+            _m = _re.search(r"Open MPI v?(\d+\.\d+\.\d+)", _ompi_ver_out)
+            ompi_version = _m.group(1) if _m else "4.1.6"
+        except Exception:
+            ompi_version = "4.1.6"
+
+        wrapper_dir = _Path("/tmp/dftracer-openmpi/bin")
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+
+        for cc_name, cc_real in [("mpicc", mpicc_path), ("mpicxx", pip_env.get("MPICXX", ""))]:
+            if not cc_real:
+                continue
+            script = wrapper_dir / cc_name
+            # Shell wrapper: emit "mpicc/mpicxx (Open MPI) X.Y.Z" on -v/--version
+            # so brahma's cmake can extract the vendor version; for all other
+            # invocations delegate straight to the real OpenMPI wrapper.
+            script.write_text(
+                "#!/bin/bash\n"
+                f'REAL="{cc_real}"\n'
+                f'OMPI_VER="{ompi_version}"\n'
+                "if [[ \"$*\" == *\"-v\"* ]] || [[ \"$*\" == *\"--version\"* ]]; then\n"
+                f"  echo \"{cc_name} (Open MPI) $OMPI_VER\"\n"
+                'fi\n'
+                'exec "$REAL" "$@"\n'
+            )
+            script.chmod(0o755)
+
+        # Add mpiexec symlink so cmake can derive the MPI base directory
+        mpiexec_real = _shutil.which("mpiexec.openmpi") or _shutil.which("mpiexec") or ""
+        if mpiexec_real:
+            link = wrapper_dir / "mpiexec"
+            if link.is_symlink():
+                link.unlink()
+            link.symlink_to(mpiexec_real)
+
+        pip_env["MPI_HOME"] = str(wrapper_dir.parent)
+
+        # Clone dftracer so we can patch dependency/CMakeLists.txt to:
+        # 1. Forward MPI_C_COMPILER to brahma so it detects OpenMPI 4.1.6
+        # 2. Use brahma's master branch instead of v1.0.6 — v1.0.6 has a bug
+        #    where MPI_Errhandler_create declarations collide with OpenMPI 4.1.x's
+        #    removal-macro (#define MPI_Errhandler_create(...) static_assert(0,...)).
+        #    brahma's master has the deprecated function removed.
+        import tempfile as _tempfile, shutil as _shutil2
+
+        # Pre-clean any previously installed dftracer from the session venv so
+        # stale headers (old cpplogger #define macros vs new enum API, stale
+        # zconf.h referencing missing zlib_name_mangling.h, brahma without MPI)
+        # don't get picked up by the new cmake build via CMAKE_PREFIX_PATH.
+        _run([py, "-m", "pip", "uninstall", "-y", "dftracer"], timeout=60)
+        _dftracer_sp = _Path(py).parent.parent / "lib" / "python3.12" / "site-packages" / "dftracer"
+        if _dftracer_sp.exists():
+            import shutil as _shutil_sp
+            _shutil_sp.rmtree(str(_dftracer_sp), ignore_errors=True)
+
+        clone_dir = _Path(_tempfile.mkdtemp(prefix="dftracer_src_"))
+        r_clone = _run(
+            ["git", "clone", "--depth=1", "--branch", dftracer_ref,
+             "https://github.com/llnl/dftracer.git", str(clone_dir)],
+            timeout=600,
+        )
+        if r_clone["success"]:
+            # dftracer develop's generated src/dftracer/core/brahma/mpi.h was
+            # generated against an MPICH-style MPI where handles are plain
+            # integers (MPI_Comm = int, MPI_Datatype = int, etc.).  OpenMPI
+            # uses opaque pointer types (MPI_Comm = struct ompi_communicator_t*
+            # etc.), so every override declaration in that file either:
+            #   a) shadows a typedef by declaring a method with the same name
+            #      as the type (e.g. "MPI_Comm MPI_Comm(int)") → GCC 13
+            #      -Wchanges-meaning error, then "not a type" for every later
+            #      use of that type in the class, or
+            #   b) has an int/int* parameter where brahma's virtual uses
+            #      MPI_Comm/MPI_Comm*, causing hundreds of "does not override"
+            #      errors.
+            #
+            # MPI-IO tracing (MPI_File_*) lives in mpiio.h which was correctly
+            # generated for OpenMPI pointer types and compiles cleanly.
+            # Replace mpi.h and mpi.cpp with a minimal stub class that:
+            #   • compiles with OpenMPI
+            #   • satisfies dftracer_main.cpp (get_instance, bind, unbind, finalize)
+            #   • leaves mpiio.h fully functional for MPI_File_* tracing
+            _mpi_h = clone_dir / "src" / "dftracer" / "core" / "brahma" / "mpi.h"
+            _mpi_cpp = clone_dir / "src" / "dftracer" / "core" / "brahma" / "mpi.cpp"
+            _MPI_H_STUB = """\
+#ifndef DFTRACER_MPI_H
+#define DFTRACER_MPI_H
+
+#include <brahma/brahma.h>
+#include <dftracer/core/common/constants.h>
+#include <dftracer/core/common/logging.h>
+#include <dftracer/core/common/typedef.h>
+
+#ifdef BRAHMA_ENABLE_MPI
+#include <dftracer/core/df_logger.h>
+#include <mpi.h>
+
+namespace brahma {
+
+// Minimal stub: the dftracer-generated mpi.h was built against MPICH integer
+// handles and is incompatible with OpenMPI opaque pointer types.
+// MPI-IO tracing (MPI_File_*) is handled by MPIIODFTracer (mpiio.h).
+class MPIDFTracer : public MPI {
+ private:
+  static std::shared_ptr<MPIDFTracer> instance;
+  static bool stop_trace;
+  std::shared_ptr<DFTLogger> logger;
+
+ public:
+  MPIDFTracer() : MPI() { logger = DFT_LOGGER_INIT(); }
+
+  virtual ~MPIDFTracer() {}
+
+  static std::shared_ptr<MPIDFTracer> get_instance() {
+    if (!stop_trace && instance == nullptr) {
+      instance = std::make_shared<MPIDFTracer>();
+      MPI::set_instance(instance);
+    }
+    return instance;
+  }
+
+  void finalize() { stop_trace = true; }
+};
+
+}  // namespace brahma
+
+#endif  // BRAHMA_ENABLE_MPI
+
+#endif  // DFTRACER_MPI_H
+"""
+            _MPI_CPP_STUB = """\
+#include <dftracer/core/brahma/mpi.h>
+
+#ifdef BRAHMA_ENABLE_MPI
+namespace brahma {
+std::shared_ptr<MPIDFTracer> MPIDFTracer::instance = nullptr;
+bool MPIDFTracer::stop_trace = false;
+}  // namespace brahma
+#endif  // BRAHMA_ENABLE_MPI
+"""
+            if _mpi_h.exists():
+                _mpi_h.write_text(_MPI_H_STUB)
+            if _mpi_cpp.exists():
+                _mpi_cpp.write_text(_MPI_CPP_STUB)
+
+            # Pre-clone brahma v1.0.6 and patch its mpi.h so the
+            # MPI_Errhandler_create removal macro (defined by OpenMPI 4.1.x
+            # AFTER #include <mpi.h>) does not break brahma's class body.
+            #
+            # Why -UMPI_Errhandler_create does NOT work: the compiler flag
+            # -U only removes the macro as it would exist before compilation
+            # starts. <mpi.h> REDEFINES it during compilation and the -U has
+            # no effect on later #define directives inside included files.
+            # The only reliable fix is to patch brahma's header to explicitly
+            # #undef the symbol right after <mpi.h> is processed.
+            #
+            # MPI_Errhandler_create IS still present as a linker symbol in
+            # libmpi.so, so the GOTCHA binding registered by brahma at runtime
+            # will succeed — we just prevent the header-level macro clash.
+            brahma_src_dir = _Path(_tempfile.mkdtemp(prefix="brahma_src_"))
+            r_brahma = _run(
+                ["git", "clone", "--depth=1", "--branch", "v1.0.6",
+                 "https://github.com/hariharan-devarajan/brahma.git",
+                 str(brahma_src_dir)],
+                timeout=300,
+            )
+            brahma_local_url = None
+            if r_brahma["success"]:
+                _brahma_mpi_h = (brahma_src_dir / "include" / "brahma"
+                                 / "interface" / "mpi.h")
+                if _brahma_mpi_h.exists():
+                    _bh = _brahma_mpi_h.read_text()
+                    # OpenMPI 4.x in C++11 mode sets OMPI_OMIT_MPI1_COMPAT_DECLS=1
+                    # and OMPI_REMOVED_USE_STATIC_ASSERT=1, which:
+                    #   1. Omits the MPI_Handler_function typedef from <mpi.h>
+                    #   2. Omits the MPI_Errhandler_create function declaration
+                    #   3. Defines #define MPI_Errhandler_create(...) static_assert(0,...)
+                    # Brahma v1.0.6's class body uses both as types → compile error.
+                    # Fix:
+                    #   a) #undef the static_assert macro so the identifier is free
+                    #   b) Provide the missing MPI_Handler_function typedef
+                    #   c) Re-declare MPI_Errhandler_create as a plain extern "C"
+                    #      so GOTCHA_MACRO_TYPEDEF can use decltype(&fn)
+                    # The symbol still exists in libmpi.so so the binding works
+                    # at runtime.
+                    _bh = _bh.replace(
+                        "#include <mpi.h>",
+                        "#include <mpi.h>\n"
+                        "#ifdef MPI_Errhandler_create\n"
+                        "#undef MPI_Errhandler_create\n"
+                        "#endif\n"
+                        "#ifndef MPI_Handler_function\n"
+                        "typedef void (MPI_Handler_function)(MPI_Comm *, int *, ...);\n"
+                        "#endif\n"
+                        "extern \"C\" int MPI_Errhandler_create"
+                        "(MPI_Handler_function *, MPI_Errhandler *);\n",
+                    )
+                    _brahma_mpi_h.write_text(_bh)
+
+                # Patch brahma's CMakeLists.txt: fix OpenMPI version detection.
+                # brahma runs `mpicc -v` to detect OpenMPI impl version, but on
+                # Ubuntu mpicc.openmpi -v outputs GCC verbose info, not "Open MPI
+                # X.Y.Z". brahma falls back to the MPI standard version (3.1 →
+                # 300100). All mpiio.cpp methods are guarded by:
+                #   #if (BRAHMA_MPI_IMPL_OPENMPI && BRAHMA_MPI_VERSION >= 400106)
+                # so with BRAHMA_MPI_VERSION=300100 every MPI_File_* method is
+                # compiled out. Fix: after the fallback, read ompi/version.h
+                # directly to get the OpenMPI implementation version (4.1.6 →
+                # 400106).
+                # Detect OpenMPI implementation version via MPI C API at
+                # Python time (reliable: reads OMPI_MAJOR/MINOR/RELEASE_VERSION
+                # from the real mpi.h, not from mpicc -v which outputs GCC info).
+                # We pass this as -DBRAHMA_MPI_VERSION=N to brahma's cmake so it
+                # skips the unreliable mpicc -v detection and uses our value.
+                # Brahma's cmake else() block is patched to honour an externally
+                # supplied BRAHMA_MPI_VERSION rather than always overwriting it.
+                import subprocess as _sp_mpi, re as _re_mpi
+                _brahma_mpi_ver = 0
+                try:
+                    _ompi_out = _sp_mpi.run(
+                        ["ompi_info", "--version"],
+                        capture_output=True, text=True, timeout=10,
+                    ).stdout
+                    _m_ompi = _re_mpi.search(
+                        r"Open MPI v?(\d+)\.(\d+)\.(\d+)", _ompi_out
+                    )
+                    if _m_ompi:
+                        _brahma_mpi_ver = (
+                            int(_m_ompi.group(1)) * 100000
+                            + int(_m_ompi.group(2)) * 100
+                            + int(_m_ompi.group(3))
+                        )
+                except Exception:
+                    pass
+
+                # Patch brahma's cmake else() block so that when BRAHMA_MPI_VERSION
+                # is already set (from -D on the cmake command line), the
+                # auto-detection is skipped and our value is used.
+                _brahma_cmake = brahma_src_dir / "CMakeLists.txt"
+                if _brahma_cmake.exists():
+                    _bc = _brahma_cmake.read_text()
+                    _old_fallback = (
+                        "        convert_version_to_number"
+                        '("${MPI_C_VERSION}" BRAHMA_MPI_VERSION)\n'
+                        "        message(STATUS "
+                        '"[${PROJECT_NAME}] MPI library version (fallback):'
+                        ' ${MPI_C_VERSION} (${BRAHMA_MPI_VERSION})")\n'
+                    )
+                    _new_fallback = (
+                        "        if (NOT BRAHMA_MPI_VERSION)\n"
+                        "          convert_version_to_number"
+                        '("${MPI_C_VERSION}" BRAHMA_MPI_VERSION)\n'
+                        "          message(STATUS "
+                        '"[${PROJECT_NAME}] MPI library version (fallback):'
+                        ' ${MPI_C_VERSION} (${BRAHMA_MPI_VERSION})")\n'
+                        "        else()\n"
+                        "          message(STATUS "
+                        '"[${PROJECT_NAME}] Using provided'
+                        ' BRAHMA_MPI_VERSION: ${BRAHMA_MPI_VERSION}")\n'
+                        "        endif()\n"
+                    )
+                    if _old_fallback in _bc:
+                        _bc = _bc.replace(_old_fallback, _new_fallback)
+                        _brahma_cmake.write_text(_bc)
+
+                _run(["git", "-C", str(brahma_src_dir), "config",
+                      "user.email", "build@local"], timeout=10)
+                _run(["git", "-C", str(brahma_src_dir), "config",
+                      "user.name", "build"], timeout=10)
+                _run(["git", "-C", str(brahma_src_dir), "add", "-A"],
+                     timeout=10)
+                _run(["git", "-C", str(brahma_src_dir), "commit", "-m",
+                      "undef MPI_Errhandler_create after mpi.h"], timeout=15)
+                _run(["git", "-C", str(brahma_src_dir), "tag", "v1.0.6-fix"],
+                     timeout=10)
+                brahma_local_url = f"file://{brahma_src_dir}"
+
+            dep_cmake = clone_dir / "dependency" / "CMakeLists.txt"
+            if dep_cmake.exists():
+                dc = dep_cmake.read_text()
+                # If we have a patched local brahma, redirect dftracer's cmake
+                # to use it instead of fetching v1.0.6 from GitHub.
+                if brahma_local_url:
+                    dc = dc.replace(
+                        "https://github.com/hariharan-devarajan/brahma.git v1.0.6",
+                        f"{brahma_local_url} v1.0.6-fix",
+                    )
+                # Inject BRAHMA_MPI_VERSION into BRAHMA_CONFIGURE_ARGS so that
+                # brahma's cmake receives the true OpenMPI implementation version
+                # (e.g. 400106 for OpenMPI 4.1.6) rather than falling back to the
+                # MPI standard version (300100 for MPI 3.1) which mpicc -v yields.
+                # brahma's cmake else() block is patched above to honour this value.
+                if _brahma_mpi_ver > 0:
+                    dc = dc.replace(
+                        'dftracer_install_external_project(brahma',
+                        f'string(APPEND BRAHMA_CONFIGURE_ARGS '
+                        f'";-DBRAHMA_MPI_VERSION={_brahma_mpi_ver}")\n'
+                        'dftracer_install_external_project(brahma',
+                    )
+                dep_cmake.write_text(dc)
+
+            r = _run(
+                [py, "-m", "pip", "install", "-v", "--no-cache-dir", "--upgrade",
+                 str(clone_dir)],
+                env=pip_env,
+                timeout=1800,
+            )
+            _shutil2.rmtree(str(clone_dir), ignore_errors=True)
+        else:
+            # Clone failed — fall back to direct git+ install (MPI_Errhandler issue
+            # will cause build failure if using OPENMPI 4.1.x, but nothing we can do)
+            r = _run(
+                [py, "-m", "pip", "install", "-v", "--no-cache-dir", "--upgrade",
+                 f"git+https://github.com/llnl/dftracer.git@{dftracer_ref}"],
+                env=pip_env,
+                timeout=900,
+            )
+    else:
+        r = _run(
+            [py, "-m", "pip", "install", "-v", "--no-cache-dir", "--upgrade",
+             f"git+https://github.com/llnl/dftracer.git@{dftracer_ref}"],
+            env=pip_env,
+            timeout=900,
+        )
     if ws is not None:
         _write_artifact_log(ws, 6, "session_install_dftracer", {
             "python_exe": py,

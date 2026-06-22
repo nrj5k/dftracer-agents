@@ -227,19 +227,26 @@ STEP 5 — BUILD ANNOTATED VERSION  (MCP tools)
     FINI_COUNT=$(grep -r "DFTRACER_C_FINI\|DFTRACER_CPP_FINI\|dftracer.finalize_log" \
       <WS>/annotated/ 2>/dev/null | wc -l)
 
-    INIT_COUNT > 0 AND FINI_COUNT > 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "HYBRID"}
-      (source has both INIT and FINI: function profiling + I/O interception)
+    INIT_COUNT > 0 AND FINI_COUNT > 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "FUNCTION"}
+      (source has both INIT and FINI: use FUNCTION mode — function-level profiling,
+       no LD_PRELOAD needed)
 
     INIT_COUNT > 0 AND FINI_COUNT == 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "PRELOAD"}
-      (missing FINI — HYBRID would leave traces open; fall back to preload-only)
+      (missing FINI — FUNCTION/HYBRID would leave traces open; fall back to preload-only)
 
     INIT_COUNT == 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "PRELOAD"}
-      (no annotations — preload-only I/O interception)
+      (no annotations — preload-only transparent I/O interception)
+
+    HYBRID mode is NOT the default for annotated code. Use HYBRID only when the
+    user explicitly requests BOTH function-level profiling AND I/O interception
+    via LD_PRELOAD on top of annotated source that has both INIT and FINI.
 
     Important: NEVER set DFTRACER_INIT=0 — it disables POSIX-level
-    tracing. Valid values: HYBRID (annotated source with both INIT+FINI),
-    PRELOAD (transparent I/O only, no annotations), FUNCTION (annotations only,
-    no I/O interception). All values are CASE-SENSITIVE uppercase strings.
+    tracing. Valid values: FUNCTION (annotated source with both INIT+FINI,
+    default for annotated apps), PRELOAD (transparent I/O only, no annotations
+    or missing FINI), HYBRID (annotated source with both INIT+FINI AND
+    LD_PRELOAD for I/O interception, only on explicit user request).
+    All values are CASE-SENSITIVE uppercase strings.
 
 5b. Build and install annotated version:
 

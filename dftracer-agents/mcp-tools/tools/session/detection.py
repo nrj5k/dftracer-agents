@@ -29,6 +29,11 @@ dftracer's ``setup.py``.  All options supported by setup.py are covered:
   DFTRACER_ENABLE_TESTS            OFF (always)
   DFTRACER_ENABLE_DLIO_BENCHMARK_TESTS  OFF (always)
   DFTRACER_ENABLE_PAPER_TESTS      OFF (always)
+  CMAKE_ARGS                       explicit -D flags for MPI and HDF5 to prevent
+                                   cmake auto-detection failures; includes
+                                   -DMPI_C_COMPILER, -DMPI_CXX_COMPILER, and
+                                   -DHDF5_ROOT pointing to the correct (parallel)
+                                   HDF5 variant when both MPI and HDF5 are present
   JOBS / CMAKE_BUILD_PARALLEL_LEVEL    set at install time from jobs param
 
 Detection is intentionally conservative: a feature is reported as present only
@@ -41,11 +46,13 @@ each carry a 10-second timeout so the detection phase cannot block the pipeline.
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 #: Filesystem paths searched for the ``hdf5.h`` header when no pkg-config or
@@ -398,6 +405,321 @@ def _detect_system_mpi() -> Dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# MPI implementation detection via compiled C probe
+# ---------------------------------------------------------------------------
+
+#: Small C program that calls MPI_Get_library_version() to get the vendor
+#: string. This is the most reliable way to detect OpenMPI vs MPICH vs
+#: MVAPICH2 vs Cray-MPICH — string matching on mpirun output can be fooled
+#: by wrapper scripts, but the MPI ABI itself always tells the truth.
+_MPI_VERSION_C_SRC = r"""
+#include <stdio.h>
+#include <mpi.h>
+int main(int argc, char** argv) {
+    char version[MPI_MAX_LIBRARY_VERSION_STRING];
+    int len = 0;
+    MPI_Init(&argc, &argv);
+    MPI_Get_library_version(version, &len);
+    MPI_Finalize();
+    if (len > 0) {
+        printf("%s\n", version);
+    }
+    return 0;
+}
+"""
+
+#: Candidate mpicc wrapper names to search for MPI C compiler, ordered from
+#: most specific (implementation-branded) to least specific (plain ``mpicc``).
+_MPICC_CANDIDATES: List[str] = [
+    "mpicc.openmpi",   # Debian/Ubuntu OpenMPI
+    "mpicc.mpich",     # Debian/Ubuntu MPICH
+    "mpicc.mpich3",    # older Debian MPICH
+    "mpicc",           # generic / Cray / MVAPICH / PATH-resolved
+]
+
+#: Corresponding C++ compiler wrappers in the same priority order.
+_MPICXX_CANDIDATES: List[str] = [
+    "mpicxx.openmpi",
+    "mpic++.openmpi",
+    "mpicxx.mpich",
+    "mpicxx.mpich3",
+    "mpicxx",
+    "mpic++",
+]
+
+
+def _probe_mpi_via_c(mpicc: str) -> Optional[Dict[str, Any]]:
+    """Compile and run a small C program that calls ``MPI_Get_library_version``.
+
+    Returns a dict with ``impl``, ``version``, and ``version_str`` if
+    successful, or ``None`` if compilation or execution fails.
+
+    Args:
+        mpicc: Path to the MPI C compiler wrapper (e.g. ``/usr/bin/mpicc``).
+
+    Returns:
+        Dict with keys ``impl`` (``"openmpi"``, ``"mpich"``, ``"mvapich"``,
+        ``"craympich"``, or ``"unknown"``), ``version`` (dotted string), and
+        ``brahma_int`` (BRAHMA_MPI_VERSION integer), or ``None``.
+    """
+    try:
+        with tempfile.TemporaryDirectory(prefix="dftracer_mpi_probe_") as tmpdir:
+            src = os.path.join(tmpdir, "mpi_version.c")
+            exe = os.path.join(tmpdir, "mpi_version")
+            with open(src, "w") as f:
+                f.write(_MPI_VERSION_C_SRC)
+
+            r = subprocess.run(
+                [mpicc, src, "-o", exe],
+                capture_output=True, text=True, timeout=30,
+            )
+            if r.returncode != 0:
+                return None
+
+            # Run with a single process; MPI_Init is needed but we do not
+            # spawn real workers — any single-process MPI runtime handles this.
+            r2 = subprocess.run(
+                [exe],
+                capture_output=True, text=True, timeout=15,
+            )
+            if r2.returncode != 0:
+                return None
+
+            output = r2.stdout.strip()
+            if not output:
+                return None
+
+            return _parse_mpi_library_version(output)
+
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+
+
+def _parse_mpi_library_version(output: str) -> Optional[Dict[str, Any]]:
+    """Parse the string returned by ``MPI_Get_library_version``.
+
+    Handles the most common vendor strings:
+
+    - ``Open MPI v4.1.6``       → openmpi  4.1.6
+    - ``MVAPICH2 2.3.6``        → mvapich  2.3.6
+    - ``MPICH Version:  3.4.3`` → mpich    3.4.3
+    - ``MPI VERSION = Cray MPICH version 8.1.28`` → craympich 8.1.28
+
+    Returns ``None`` if no recognisable pattern is found.
+    """
+    patterns = [
+        (r"Open MPI[^\d]*(\d+\.\d+\.\d+)", "openmpi"),
+        (r"MVAPICH2?[^\d]*(\d+\.\d+\.\d+)", "mvapich"),
+        (r"Cray MPICH[^\d]*(\d+\.\d+\.\d+)", "craympich"),
+        (r"MPICH[^\d]*(\d+\.\d+\.\d+)", "mpich"),
+    ]
+    for pattern, impl in patterns:
+        m = re.search(pattern, output, re.I)
+        if m:
+            version_str = m.group(1)
+            try:
+                major, minor, patch = (int(x) for x in version_str.split("."))
+                brahma_int = _mpi_to_brahma_int(major, minor, patch)
+            except (ValueError, AttributeError):
+                brahma_int = 0
+            return {"impl": impl, "version": version_str, "brahma_int": brahma_int}
+    return None
+
+
+def _find_mpi_compilers() -> Tuple[Optional[str], Optional[str]]:
+    """Locate the best available MPI C and C++ compiler wrappers.
+
+    Tries implementation-branded names first (``mpicc.openmpi``, etc.) so
+    that on systems with multiple MPI installs the dominant one wins.
+
+    Returns:
+        Tuple ``(mpicc_path, mpicxx_path)`` where each element is either a
+        resolved absolute path or ``None`` if nothing was found.
+    """
+    mpicc = next((shutil.which(c) for c in _MPICC_CANDIDATES if shutil.which(c)), None)
+    mpicxx = next((shutil.which(c) for c in _MPICXX_CANDIDATES if shutil.which(c)), None)
+    return mpicc, mpicxx
+
+
+def _detect_mpi_impl() -> Dict[str, Any]:
+    """Detect MPI implementation, version, and compiler wrappers.
+
+    Uses :func:`_probe_mpi_via_c` (``MPI_Get_library_version``) as the primary
+    strategy and falls back to the text-based :func:`_detect_system_mpi` probes.
+
+    Returns a dict with keys:
+
+    - ``found`` (bool)
+    - ``impl`` (str or None): ``"openmpi"``, ``"mpich"``, ``"mvapich"``,
+      ``"craympich"``, or ``"unknown"``
+    - ``version`` (str or None): dotted version string
+    - ``brahma_int`` (int): BRAHMA_MPI_VERSION integer (0 if unknown)
+    - ``compatible`` (bool)
+    - ``mpicc`` (str or None): path to MPI C compiler wrapper
+    - ``mpicxx`` (str or None): path to MPI C++ compiler wrapper
+    - ``cmake_flags`` (List[str]): ``-D`` flags for cmake FindMPI
+    """
+    mpicc, mpicxx = _find_mpi_compilers()
+
+    # Primary: compile and run a C probe (most accurate)
+    probe: Optional[Dict[str, Any]] = None
+    if mpicc:
+        probe = _probe_mpi_via_c(mpicc)
+
+    # Fallback: text-based detection
+    if probe is None:
+        text_info = _detect_system_mpi()
+        if text_info["found"]:
+            version_str = text_info.get("version") or ""
+            impl = text_info.get("impl") or "unknown"
+            try:
+                major, minor, patch = (int(x) for x in version_str.split("."))
+                brahma_int = _mpi_to_brahma_int(major, minor, patch)
+            except (ValueError, AttributeError):
+                brahma_int = 0
+            probe = {"impl": impl, "version": version_str, "brahma_int": brahma_int}
+
+    if probe is None or not mpicc:
+        return {
+            "found": bool(mpicc or probe),
+            "impl": probe.get("impl") if probe else None,
+            "version": probe.get("version") if probe else None,
+            "brahma_int": probe.get("brahma_int", 0) if probe else 0,
+            "compatible": False,
+            "mpicc": mpicc,
+            "mpicxx": mpicxx,
+            "cmake_flags": [],
+        }
+
+    impl = probe.get("impl") or "unknown"
+    version = probe.get("version")
+    brahma_int = probe.get("brahma_int", 0)
+    compat = _mpi_version_compatible(impl, version or "")
+
+    cmake_flags: List[str] = []
+    if mpicc:
+        cmake_flags.append(f"-DMPI_C_COMPILER={mpicc}")
+    if mpicxx:
+        cmake_flags.append(f"-DMPI_CXX_COMPILER={mpicxx}")
+
+    return {
+        "found": True,
+        "impl": impl,
+        "version": version,
+        "brahma_int": brahma_int,
+        "compatible": compat,
+        "mpicc": mpicc,
+        "mpicxx": mpicxx,
+        "cmake_flags": cmake_flags,
+    }
+
+
+#: Architecture-specific parallel HDF5 library paths searched when both MPI
+#: and HDF5 are required. Key is arch substring, value is path pattern list.
+_PARALLEL_HDF5_SEARCH: List[str] = [
+    "/usr/lib/x86_64-linux-gnu/hdf5/openmpi",
+    "/usr/lib/aarch64-linux-gnu/hdf5/openmpi",
+    "/usr/lib/arm-linux-gnueabihf/hdf5/openmpi",
+    "/usr/lib/powerpc64le-linux-gnu/hdf5/openmpi",
+    "/usr/local/hdf5-parallel",
+    "/opt/hdf5-parallel",
+]
+
+
+def _detect_parallel_hdf5() -> Optional[Dict[str, Any]]:
+    """Detect a parallel (MPI-enabled) HDF5 installation.
+
+    Prefers architecture-specific parallel HDF5 directories (e.g.
+    ``/usr/lib/aarch64-linux-gnu/hdf5/openmpi``) over the generic install
+    prefix reported by ``h5pcc``, because cmake's ``HDF5_ROOT`` works best
+    when it points to a directory that contains both ``include/hdf5.h`` and
+    ``libhdf5.so`` directly — the arch-specific paths satisfy that requirement
+    while the generic ``/usr`` prefix may not.
+
+    Falls back to ``h5pcc -showconfig`` when no arch-specific path is found.
+
+    Returns a dict with ``prefix``, ``version``, ``include_dir``, and
+    ``lib_dir`` if found, or ``None``.
+    """
+    # 1. Architecture-specific parallel HDF5 directories (preferred for cmake)
+    for candidate in _PARALLEL_HDF5_SEARCH:
+        p = Path(candidate)
+        if p.exists() and (p / "libhdf5.so").exists():
+            inc_link = p / "include"
+            # The include/ dir may be a symlink to the real header directory
+            inc = str(inc_link) if inc_link.exists() else None
+            if inc:
+                # Resolve symlink to get the real path for the header read
+                real_inc = str(inc_link.resolve())
+                if not Path(real_inc, "hdf5.h").exists():
+                    inc = None
+            if not inc:
+                inc = _find_hdf5_include_under("/usr")
+            version = _read_hdf5_version_from_header(inc) if inc else None
+            return {
+                "prefix": str(p),
+                "version": version,
+                "include_dir": inc,
+                "lib_dir": str(p),
+            }
+
+    # 2. h5pcc wrapper fallback
+    if shutil.which("h5pcc"):
+        try:
+            r = subprocess.run(
+                ["h5pcc", "-showconfig"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0:
+                m_ver = re.search(r"HDF5 Version:\s+(\S+)", r.stdout)
+                m_pfx = re.search(r"Installation point:\s+(\S+)", r.stdout)
+                version = m_ver.group(1) if m_ver else None
+                prefix = m_pfx.group(1) if m_pfx else None
+                if prefix:
+                    inc = _find_hdf5_include_under(prefix)
+                    return {
+                        "prefix": prefix, "version": version,
+                        "include_dir": inc,
+                        "lib_dir": os.path.join(prefix, "lib"),
+                    }
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+    return None
+
+
+def _find_hdf5_include_under(prefix: str) -> Optional[str]:
+    """Return the HDF5 include directory under *prefix* or its standard variants."""
+    candidates = [
+        os.path.join(prefix, "include", "hdf5", "openmpi"),
+        os.path.join(prefix, "include", "hdf5", "serial"),
+        os.path.join(prefix, "include", "hdf5"),
+        os.path.join(prefix, "include"),
+    ]
+    for c in candidates:
+        if Path(c, "hdf5.h").exists():
+            return c
+    return None
+
+
+def _read_hdf5_version_from_header(include_dir: str) -> Optional[str]:
+    """Extract the HDF5 version string from ``H5public.h``."""
+    h5pub = Path(include_dir) / "H5public.h"
+    if not h5pub.exists():
+        return None
+    try:
+        text = h5pub.read_text(errors="ignore")
+        major = re.search(r"#define\s+H5_VERS_MAJOR\s+(\d+)", text)
+        minor = re.search(r"#define\s+H5_VERS_MINOR\s+(\d+)", text)
+        release = re.search(r"#define\s+H5_VERS_RELEASE\s+(\d+)", text)
+        if major and minor and release:
+            return f"{major.group(1)}.{minor.group(1)}.{release.group(1)}"
+    except OSError:
+        pass
+    return None
+
+
 #: Header search paths for hwloc (hardware locality library).
 _HWLOC_HEADER_SEARCH = [
     "/usr/include/hwloc.h",
@@ -544,6 +866,24 @@ def _detect_info(source_dir: Path) -> Dict[str, Any]:
         "openmp":   bool(re.search(r"omp\.h|#pragma omp|import openmp", all_text, re.I)),
     }
 
+    # Detect MPI implementation via compiled C probe so we get the exact
+    # vendor string and can pass explicit cmake compiler hints.
+    mpi_impl_info: Dict[str, Any] = {}
+    if features["mpi"]:
+        mpi_impl_info = _detect_mpi_impl()
+
+    # For MPI+HDF5 combinations prefer the parallel (MPI-enabled) HDF5 build.
+    parallel_hdf5: Optional[Dict[str, Any]] = None
+    if features["mpi"] and features["hdf5"]:
+        parallel_hdf5 = _detect_parallel_hdf5()
+
+    # Resolve the HDF5 root to use: parallel variant > serial system prefix
+    hdf5_root: Optional[str] = None
+    if parallel_hdf5:
+        hdf5_root = parallel_hdf5["prefix"]
+    elif hdf5_system.get("prefix"):
+        hdf5_root = hdf5_system["prefix"]
+
     # Complete pip env dict covering every setup.py-supported env var.
     # JOBS / CMAKE_BUILD_PARALLEL_LEVEL are set at install time (jobs param).
     dftracer_pip_env: Dict[str, str] = {
@@ -554,29 +894,59 @@ def _detect_info(source_dir: Path) -> Dict[str, Any]:
     }
     if features["mpi"]:
         dftracer_pip_env["DFTRACER_ENABLE_MPI"] = "ON"
+        # MPICC/MPICXX env vars tell cmake's FindMPI which wrapper to interrogate.
+        # brahma v1.0.6 detects the MPI implementation by checking whether
+        # MPI_C_COMPILER's path contains "openmpi" / "mpich" etc.  Using the
+        # implementation-branded wrapper (mpicc.openmpi) ensures that check passes
+        # and BRAHMA_MPI_IMPL_OPENMPI gets defined, which gates the MPI_File_*
+        # virtual function overrides.
+        mpicc_path = mpi_impl_info.get("mpicc")
+        mpicxx_path = mpi_impl_info.get("mpicxx")
+        if mpicc_path:
+            dftracer_pip_env["MPICC"] = mpicc_path
+        if mpicxx_path:
+            dftracer_pip_env["MPICXX"] = mpicxx_path
     if features["hdf5"]:
         dftracer_pip_env["DFTRACER_ENABLE_HDF5"] = "ON"
-        hdf5_prefix = hdf5_system.get("prefix") or ""
-        if hdf5_prefix:
-            dftracer_pip_env["HDF5_ROOT"] = hdf5_prefix
-            dftracer_pip_env["HDF5_DIR"] = hdf5_prefix
+        if hdf5_root:
+            dftracer_pip_env["HDF5_ROOT"] = hdf5_root
+            dftracer_pip_env["HDF5_DIR"] = hdf5_root
     if features["hip"]:
         dftracer_pip_env["DFTRACER_ENABLE_HIP_TRACING"] = "ON"
     if hwloc_found:
         dftracer_pip_env["DFTRACER_DISABLE_HWLOC"] = "OFF"
 
-    # Map features → dftracer cmake flags (legacy; pip install is preferred)
-    dftracer_cmake_flags: List[str] = ["-DDFTRACER_ENABLE_TESTS=OFF"]
+    # Build CMAKE_ARGS with explicit compiler and path hints so that cmake's
+    # FindMPI and FindHDF5 don't auto-detect the wrong variant (e.g. picking
+    # the MPI standard version instead of the vendor version for brahma).
+    cmake_args_parts: List[str] = ["-DDFTRACER_ENABLE_TESTS=OFF"]
     if features["python"]:
-        dftracer_cmake_flags.append("-DDFTRACER_ENABLE_PYTHON=ON")
+        cmake_args_parts.append("-DDFTRACER_ENABLE_PYTHON=ON")
     if features["mpi"]:
-        dftracer_cmake_flags.append("-DDFTRACER_ENABLE_MPI=ON")
+        cmake_args_parts.append("-DDFTRACER_ENABLE_MPI=ON")
+        for flag in mpi_impl_info.get("cmake_flags", []):
+            cmake_args_parts.append(flag)
     if features["hdf5"]:
-        dftracer_cmake_flags.append("-DDFTRACER_ENABLE_HDF5=ON")
-        if hdf5_system.get("cmake_hint"):
-            dftracer_cmake_flags.append(hdf5_system["cmake_hint"])
+        cmake_args_parts.append("-DDFTRACER_ENABLE_HDF5=ON")
+        if hdf5_root:
+            cmake_args_parts.append(f"-DHDF5_ROOT={hdf5_root}")
     if features["hip"]:
-        dftracer_cmake_flags.append("-DDFTRACER_ENABLE_HIP_TRACING=ON")
+        cmake_args_parts.append("-DDFTRACER_ENABLE_HIP_TRACING=ON")
+    if hwloc_found:
+        cmake_args_parts.append("-DDFTRACER_DISABLE_HWLOC=OFF")
+
+    # Set DFTRACER_CMAKE_ARGS env var — consumed by dftracer's setup.py.
+    # v2.0.3 splits on ";", develop splits on whitespace.  We store both
+    # forms under the same key using ";" (semicolon) as the separator:
+    # v2.0.3 will split correctly; develop treats the whole string as one
+    # unknown flag (harmless).  The real per-compiler hints are forwarded
+    # via MPICC / MPICXX env vars (cmake FindMPI checks these env vars
+    # before falling back to searching PATH), so the important MPI
+    # compiler hint reaches brahma even without DFTRACER_CMAKE_ARGS parsing.
+    dftracer_pip_env["DFTRACER_CMAKE_ARGS"] = ";".join(cmake_args_parts)
+
+    # Map features → dftracer cmake flags (for cmake-based installs)
+    dftracer_cmake_flags: List[str] = list(cmake_args_parts)
 
     key_files = sorted(n for n in names if n in {
         "CMakeLists.txt", "configure.ac", "setup.py", "pyproject.toml",
@@ -596,6 +966,8 @@ def _detect_info(source_dir: Path) -> Dict[str, Any]:
         "languages": languages,
         "build_tool": build_tool,
         "features": features,
+        "mpi_impl": mpi_impl_info if features["mpi"] else {},
+        "parallel_hdf5": parallel_hdf5,
         "dftracer_pip_env": dftracer_pip_env,
         "dftracer_cmake_flags": dftracer_cmake_flags,
         "key_files": key_files,
