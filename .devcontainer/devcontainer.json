@@ -1,0 +1,29 @@
+fix this {
+  "name": "dftracer-agents",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "runArgs": [
+    "--add-host=host.docker.internal:host-gateway"
+  ],
+  "containerEnv": {
+    "OLLAMA_HOST": "http://host.docker.internal:11434",
+    "TMPDIR": "/tmp/goose"
+  },
+  "forwardPorts": [5000],
+  "postCreateCommand": "bash .devcontainer/postCreate.sh",
+  "postStartCommand": "bash .devcontainer/link-goose-config.sh && bash .devcontainer/start-mcp-server.sh",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/bin/python3",
+        "goose.binaryPath": "/usr/local/bin/goose"
+      },
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance"
+      ]
+    }
+  }
+}

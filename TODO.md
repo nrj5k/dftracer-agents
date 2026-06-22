@@ -1,0 +1,1 @@
+[ ]the annoate through clang and syntax check mcp tools should be used. Update the skills for pipeline to instruct to use mcp tools for annoatting whole project which in turn should discover and call annotate through clang for each file which should extract functions check cost and then apply annotations.

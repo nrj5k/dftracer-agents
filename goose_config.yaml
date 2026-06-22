@@ -1,0 +1,42 @@
+# Goose configuration for the DFTracer MCP Server.
+#
+# The MCP server runs as an HTTP service (streamable-http) on port 5000.
+# Start it before launching Goose:
+#
+#   dftracer-mcp-server                    # HTTP on 0.0.0.0:5000 (default)
+#   dftracer-mcp-server --port 8080        # custom port
+#   dftracer-mcp-server --service utils    # only dftracer_utils tools
+#
+# The devcontainer starts it automatically via postStartCommand.
+
+# ── Option A: HTTP transport (recommended) ────────────────────────────────────
+extensions:
+  dftracer:
+    type: streamable_http
+    uri: http://localhost:5000/mcp
+    enabled: true
+    description: >
+      DFTracer I/O tracing toolkit — dftracer_utils + dfanalyzer tools.
+      Server must be running: dftracer-mcp-server
+
+# ── Option B: legacy stdio (launches a new process per session) ───────────────
+# Uncomment if you prefer the stdio transport (no pre-started server needed).
+#
+# extensions:
+#   dftracer:
+#     type: stdio
+#     cmd: dftracer-mcp-server
+#     args: [--transport, stdio]
+#     enabled: true
+
+# ── Option C: point directly at the venv Python (no install needed) ───────────
+#
+# extensions:
+#   dftracer:
+#     type: stdio
+#     cmd: /workspaces/dftracer-agents/venv/bin/python
+#     args:
+#       - /workspaces/dftracer-agents/dftracer_mcp_server.py
+#       - --transport
+#       - stdio
+#     enabled: true

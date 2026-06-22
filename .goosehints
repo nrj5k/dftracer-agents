@@ -1,0 +1,128 @@
+# DFTracer Goose Hints
+
+## Standing Orders (read first, apply always)
+
+0. **Full annotation coverage is mandatory — no exceptions.** Every non-trivial
+   function in every target file MUST be annotated before the session is complete.
+   "Coverage" means 100% of functions that touch I/O, memory, CPU, or network —
+   not just the named public API. This includes:
+   - All storage-backend functions in `aiori-*.c` and equivalent files
+   - Lifecycle functions (`*_init`, `*_fini`, `*_initialize`, `*_finalize`,
+     `*_Sync`, `*_Fsync`, `*_Delete`, `*_Rename`) even if the body is short
+   - Internal helpers that contain any syscall trigger (open, read, write, close,
+     mknod, mkstemp, ioctl, gpfs_fcntl, cuFileHandleRegister, beegfs_*, llapi_*)
+   - Vendor-specific functions under `#ifdef` guards (gpfs_*, beegfs_*, lustre_*)
+   The only permanent exemption is **Rule 0**: pure getter/setter ≤5 lines with
+   zero I/O and zero data movement. Everything else is annotated, period.
+   Difficulty, complexity, or "deprecated" status are NOT valid skip reasons.
+
+1. **Read the cheatsheet first.** Before any annotation session, read
+   `00-critical-cheatsheet.md` for the five critical rules (C1–C5), seven corner
+   cases (CC1–CC7), and ten known mistakes (M1–M10). These are drawn from real
+   failures and will save debugging time.
+
+2. **Check pitfalls before touching source.** Before annotating any file, scan
+   `02-annotation-pitfalls.md` for entries tagged with the file type or backend
+   you are annotating.
+
+3. **Update pitfalls immediately after every fix.** Whenever you encounter an
+   error and fix it, append a new entry to `02-annotation-pitfalls.md` using the
+   format defined there. Do this before moving to the next step.
+
+4. **Check lessons-learned before building.** Before any build, configure, or
+   install step, read `.goose/lessons-learned.md` and apply recorded fixes proactively.
+
+5. **Produce patch and annotation report after annotation.** Once all passes complete
+   and the build passes, write:
+   - `workspaces/<run_id>/annotation.patch` — `diff -urN source/ annotated/`
+   - `workspaces/<run_id>/annotation_logs/annotation_report.md` — full report
+   Maintain `annotation_logs/annotation_process.log` and `annotation_logs/annotation_status.md`
+   throughout (update after every function). Do not report complete until both exist.
+
+6. **Trace files must stay in the workspace.** `DFTRACER_LOG_FILE` is set by
+   `session_run_with_dftracer` to `workspaces/<run_id>/traces/<run_id>`. Never
+   override it to `/tmp/` — `session_split_traces` only reads from the workspace.
+
+7. **Critical rule C5 — DFTRACER_INIT conflict.** If Pass 1 added `DFTRACER_C_INIT()`
+   to source, pass `env_extra='{"DFTRACER_INIT":"0"}'` when running. Both active
+   simultaneously produces an empty trace file (no error, just empty output).
+
+8. **No function may remain skipped due to difficulty** (Rule D). Skip only pure
+   getters/setters ≤5 lines with no filesystem call. Use happy-path-only annotation
+   (Rule E) for complex error paths. PENDING/INCLUDE-ONLY functions MUST be retried.
+
+9. **Every annotated function requires `comp=TYPE` as the first UPDATE** (Critical rule C3).
+   Types: `"io"` (file ops), `"mem"` (mmap/buffers), `"cpu"` (compute), `"comm"`
+   (MPI/network). After each file: `grep -c FUNCTION_START` must equal `grep -c '"comp"'`.
+
+10. **Scan the whole file for internal helpers** (Rule F). After named API functions,
+    run the awk coverage scan and check every unannotated definition for syscall
+    triggers (open, mknod, mkstemp, ioctl, gpfs_fcntl, cuFileHandleRegister, etc.).
+
+11. **Get user confirmation before marking annotation done** (Pass 5, Step 1). After
+    all passes complete, present the Coverage Summary, Annotated, and Skipped tables
+    inline to the user and ask for explicit confirmation. Do NOT proceed to finalise
+    until the user replies "confirmed" or equivalent. If they request changes, apply,
+    rebuild, and re-present.
+
+12. **Extract new rules from every session** (Pass 5, Steps 2–4). After confirmation,
+    read `annotation_process.log` and `annotation_report.md`; extract every missed
+    function, wrong macro placement, wrong comp type, and user-correction pattern;
+    add each as a pitfall entry in `02-annotation-pitfalls.md`; promote generic patterns
+    to `01-annotation-rules-c.md` or `01-annotation-rules-general.md`; promote critical
+    silent-failure patterns to `00-critical-cheatsheet.md`. Append a `[RULES]` line to
+    `annotation_process.log`. The session is not complete until this is done.
+
+---
+
+---
+
+Topic files are maintained separately under `.goose/hints/` for easy editing.
+This file stitches them together via `@` references — Goose loads each file's
+full content automatically.
+
+## Critical Rules, Corner Cases, Known Mistakes — READ THIS FIRST
+@.goose/hints/00-critical-cheatsheet.md
+
+## Annotation Rules — General (Rule 0, applies to all languages)
+@.goose/hints/01-annotation-rules-general.md
+
+## Annotation Rules — C
+@.goose/hints/01-annotation-rules-c.md
+
+## Annotation Rules — C++
+@.goose/hints/01-annotation-rules-cpp.md
+
+## Annotation Rules — Python
+@.goose/hints/01-annotation-rules-python.md
+
+## Annotation Pitfalls (lessons learned)
+@.goose/hints/02-annotation-pitfalls.md
+
+## Manual Annotation Process (3-pass)
+@.goose/hints/03-annotation-process.md
+
+## Smoke Test Rules
+@.goose/hints/04-smoke-test-rules.md
+
+## Planning and Progress Reporting
+@.goose/hints/05-planning-progress.md
+
+## Build-Annotate-Run Iteration Loop
+@.goose/hints/06-build-run-iteration.md
+
+## DFTracer References and Artifact Logging
+@.goose/hints/07-references-logging.md
+
+## Install and Privilege Rules
+@.goose/hints/08-install-rules.md
+
+## Lessons-Learned Cache
+@.goose/hints/09-lessons-learned-cache.md
+
+## Repository Rules
+
+1. Do not scan or edit large trace/binary artifacts unless explicitly requested.
+2. Prefer source files under dftracer-agents/ and mcp-tools/ for implementation work.
+3. Keep tool calls namespaced when invoking Goose tools.
+4. Write fetched/scratch artifacts outside this repo (for example under /tmp/goose), not in the project root.

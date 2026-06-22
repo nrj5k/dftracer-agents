@@ -1,0 +1,4 @@
+[console_scripts]
+dftracer-configure-mcp = dftracer_agents.mcp_setup:main
+dftracer-install-skills = dftracer_agents.skills:main
+dftracer-mcp-server = dftracer_agents.mcp_server:main

@@ -1,33 +1,53 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=61.0", "wheel", "fastmcp"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "dftracer-agents"
 version = "0.1.0"
-description = "OpenAI Agents SDK + MCP pipeline for DFTracer instrumentation and analysis"
-readme = "README.md"
-requires-python = ">=3.10"
+description = "DFTracer MCP Services for Dataflow Analysis"
+requires-python = ">=3.9"
 dependencies = [
-  "libclang>=18.1.1",
-  "libcst>=1.4.0",
-  "ipywidgets>=8.1.0",
-  "jupyter>=1.1.0",
-  "matplotlib>=3.8.0",
-  "mcp>=1.10.0",
-  "openai-agents>=0.0.14",
-  "pandas>=2.2.0",
-  "PyYAML>=6.0.1",
-  "typer>=0.12.3",
+    "fastmcp>=0.1.0",
+    "dftracer-utils @ git+https://github.com/llnl/dftracer-utils.git@develop",
+    "dftracer-analyzer @ git+https://github.com/llnl/dfanalyzer.git@develop",
+    "dfdiagnoser @ git+https://github.com/llnl/DFDiagnoser.git@main",
+    "libclang>=18.1.0",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=24.0.0",
+    "flake8>=7.0.0",
+]
+profile = [
+    "mlflow",
 ]
 
 [project.scripts]
-dftracer-agents-mcp = "dftracer_agents.mcp_servers.server:main"
-dftracer-agents-run = "dftracer_agents.agent:main"
-dftracer-agents = "dftracer_agents.cli:app"
+dftracer-mcp-server     = "dftracer_agents.mcp_server:main"
+dftracer-configure-mcp  = "dftracer_agents.mcp_setup:main"
+dftracer-install-skills = "dftracer_agents.skills:main"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+packages = [
+    "dftracer_agents",
+    "dftracer_agents.mcp_tools",
+    "dftracer_agents.mcp_tools.tools",
+    "dftracer_agents.mcp_tools.tools.dftracer",
+    "dftracer_agents.mcp_tools.tools.papers",
+    "dftracer_agents.mcp_tools.tools.session",
+]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.setuptools.package-dir]
+"dftracer_agents"                          = "dftracer-agents"
+"dftracer_agents.mcp_tools"               = "dftracer-agents/mcp-tools"
+"dftracer_agents.mcp_tools.tools"         = "dftracer-agents/mcp-tools/tools"
+"dftracer_agents.mcp_tools.tools.dftracer" = "dftracer-agents/mcp-tools/tools/dftracer"
+"dftracer_agents.mcp_tools.tools.papers"  = "dftracer-agents/mcp-tools/tools/papers"
+"dftracer_agents.mcp_tools.tools.session" = "dftracer-agents/mcp-tools/tools/session"
+
+[tool.setuptools.package-data]
+"dftracer_agents" = [".agents/skills/*/SKILL.md", "*.sh"]
