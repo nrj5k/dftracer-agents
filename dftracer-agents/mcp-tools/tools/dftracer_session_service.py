@@ -262,7 +262,7 @@ def _detect_info(source_dir: Path) -> Dict[str, Any]:
         "openmp":   bool(re.search(r"omp\.h|#pragma omp|import openmp", all_text, re.I)),
     }
 
-    # Map features → dftracer cmake flags (aligns with autobuild.sh)
+    # Map features → dftracer cmake flags
     dftracer_cmake_flags: List[str] = ["-DDFTRACER_ENABLE_TESTS=OFF"]
     if features["python"]:
         dftracer_cmake_flags.append("-DDFTRACER_ENABLE_PYTHON=ON")
@@ -854,92 +854,290 @@ def _dftracer_utils_split(
     )
 
 
-def _install_dftracer_utils(pip: Path) -> Dict[str, Any]:
+def _ensure_session_venv(ws: Path) -> Path:
+    """Create an isolated venv at ``<ws>/venv/`` and return its Python executable.
+
+    Isolated from the MCP server's own Python environment so all packages
+    installed into it (dftracer, dftracer-utils, project deps) are confined to
+    the workspace directory.  Reuses an existing venv on subsequent calls.
+    """
+    venv_dir = ws / "venv"
+    python = venv_dir / "bin" / "python"
+    if not python.exists():
+        r = _run([sys.executable, "-m", "venv", "--clear", str(venv_dir)], timeout=120)
+        if not r["success"]:
+            raise RuntimeError(f"Failed to create session venv at {venv_dir}: {r['stderr']}")
+        _run(
+            [str(python), "-m", "pip", "install", "--no-cache-dir",
+             "--quiet", "--upgrade", "pip"],
+            timeout=120,
+        )
+    return python
+
+
+def _install_dftracer_utils(
+    pip: Path,
+    ws: Optional[Path] = None,
+    run_id: str = "",
+) -> Dict[str, Any]:
     """Install dftracer-utils from the develop branch into the given pip environment."""
-    return _run(
-        [str(pip), "install", "--upgrade",
+    r = _run(
+        [str(pip), "install", "-v", "--no-cache-dir", "--upgrade",
          "git+https://github.com/llnl/dftracer-utils.git@develop"],
         timeout=600,
     )
+    if ws is not None:
+        _write_artifact_log(ws, 6, "session_install_dftracer_utils",
+                            {"pip_cmd": str(pip), "pip_install_utils": r}, run_id)
+    return r
 
 
 # ---------------------------------------------------------------------------
 # dftracer install helper
 # ---------------------------------------------------------------------------
 
-def _install_dftracer_autobuild(
+def _install_dftracer_pip_direct(
     ws: Path,
     install_prefix: Path,
-    dftracer_ref: str = "v2.0.3",
+    dftracer_ref: str = "develop",
     jobs: int = 4,
-    install_mode: str = "cmake",
+    install_mode: str = "pip",
     features: Optional[Dict[str, Any]] = None,
     python_exe: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Clone dftracer and build+install it via autobuild.sh.
+    """Install dftracer via pip from GitHub source.
 
-    Uses the project's own autobuild.sh so that all dependency handling,
-    build flags, and install steps are exactly as dftracer intends.
+    Runs ``pip install --upgrade git+https://github.com/llnl/dftracer.git@<ref>``
+    with optional MPI/HDF5 environment variables derived from the features dict.
 
     Args:
-        ws:             Workspace root (dftracer_src/ cached here).
-        install_prefix: Where dftracer lands (-install-prefix).
-        dftracer_ref:   Git tag or branch to clone.
-        jobs:           Parallel build jobs (--jobs).
-        install_mode:   "cmake" for C/C++ projects (installs headers + lib);
-                        "pip"   for Python projects (installs Python package).
+        ws:             Workspace root (unused, kept for call-site compatibility).
+        install_prefix: Install prefix (used to locate venv pip if present).
+        dftracer_ref:   Git tag or branch to install.
+        jobs:           Unused (kept for call-site compatibility).
+        install_mode:   Accepted but ignored — pip is always used.
         features:       Detected project features dict (keys: mpi, hdf5, python, …).
-        python_exe:     Path to Python binary; passed as --python to enable Python
-                        bindings and select the target interpreter for pip mode.
+        python_exe:     Path to Python binary whose pip will be used.
     """
     features = features or {}
-    src = ws / "dftracer_src"
-    bld = ws / "dftracer_build"
-    bld.mkdir(exist_ok=True)
     steps: Dict[str, Any] = {}
 
-    # Clone once; reuse on subsequent calls (e.g. retry after a failure)
-    if not src.exists():
-        r = _run(
-            ["git", "clone", "--depth=1", "--branch", dftracer_ref,
-             "https://github.com/llnl/dftracer.git", str(src)],
-            timeout=600,
-        )
-        steps["clone"] = r
-        if not r["success"]:
-            return {"success": False, "steps": steps}
-    else:
-        steps["clone"] = {"status": "reused", "path": str(src)}
-
-    autobuild = src / "autobuild.sh"
-    if not autobuild.exists():
-        return {
-            "success": False,
-            "steps": steps,
-            "error": "autobuild.sh not found in cloned dftracer source",
-        }
-
-    cmd = [
-        "/bin/bash", str(autobuild),
-        "--install-prefix", str(install_prefix),
-        "--install-mode", install_mode,
-        "--build-type", "RelWithDebInfo",
-        "--jobs", str(jobs),
-        "--quiet",
-        "--skip-smoke-test",
-    ]
-
-    # Feature flags — mirror what autobuild.sh exposes
+    # Resolve pip executable — always use absolute paths so the env is unambiguous
     if python_exe:
-        cmd += ["--python", python_exe]
-    if features.get("mpi"):
-        cmd += ["--enable-mpi"]
-    if features.get("hdf5"):
-        cmd += ["--enable-hdf5"]
+        pip = Path(python_exe).parent / "pip"
+    else:
+        pip = install_prefix / "bin" / "pip"
+    if not pip.exists():
+        pip = Path(sys.executable).parent / "pip"
+    if not pip.exists():
+        pip = Path(sys.executable).parent / "pip3"
 
-    # BUILD_DIR via env so autobuild.sh places its build tree inside the workspace
-    r = _run(cmd, cwd=src, env={"BUILD_DIR": str(bld)}, timeout=1800)
-    steps["autobuild"] = r
+    env: Dict[str, str] = {
+        "DFTRACER_BUILD_TYPE": "RelWithDebInfo",
+        "DFTRACER_ENABLE_TESTS": "OFF",
+        "DFTRACER_ENABLE_DLIO_BENCHMARK_TESTS": "OFF",
+        "DFTRACER_ENABLE_PAPER_TESTS": "OFF",
+        "JOBS": str(jobs),
+        "CMAKE_BUILD_PARALLEL_LEVEL": str(jobs),
+    }
+    if features.get("mpi"):
+        env["DFTRACER_ENABLE_MPI"] = "ON"
+    if features.get("hdf5"):
+        env["DFTRACER_ENABLE_HDF5"] = "ON"
+        hdf5_prefix = (features.get("hdf5_system") or {}).get("prefix") or os.environ.get("HDF5_ROOT", "")
+        if not hdf5_prefix:
+            hdf5_prefix = os.environ.get("HDF5", "")
+        if hdf5_prefix:
+            env["HDF5_ROOT"] = hdf5_prefix
+            env["HDF5_DIR"] = hdf5_prefix
+
+    # When HDF5 is enabled, clone locally and patch brahma type mismatches
+    # before building.  The generated hdf5.h in develop uses raw `int` for
+    # callback types that brahma resolved with proper HDF5 typedefs
+    # (H5D_chunk_iter_op_t, H5ES_err_info_t, H5FD_init_t, etc.).  Without
+    # this patch the build fails with "'marked override, but does not override'"
+    # errors.  The H5*_MODULE defines also suppress async macro redefinitions in
+    # HDF5 1.14.x headers that conflict with class method declarations.
+    hdf5_enabled = env.get("DFTRACER_ENABLE_HDF5") == "ON"
+    if hdf5_enabled:
+        import shutil, tempfile
+        clone_dir = Path(tempfile.mkdtemp(prefix="dftracer_src_"))
+        r_clone = _run(
+            ["git", "clone", "--depth=1", "--branch", dftracer_ref,
+             "https://github.com/llnl/dftracer.git", str(clone_dir)],
+            timeout=300,
+        )
+        steps["git_clone"] = r_clone
+        if r_clone["success"]:
+            hdf5_h = clone_dir / "src" / "dftracer" / "core" / "brahma" / "hdf5.h"
+            hdf5_cpp = clone_dir / "src" / "dftracer" / "core" / "brahma" / "hdf5.cpp"
+            # Patch hdf5.h: add H5*_MODULE guards and fix brahma callback typedefs
+            if hdf5_h.exists():
+                content = hdf5_h.read_text()
+                # Prepend H5*_MODULE defines to suppress HDF5 1.14.x async macro redefs
+                guards = (
+                    "#ifndef H5A_MODULE\n#define H5A_MODULE 1\n#endif\n"
+                    "#ifndef H5D_MODULE\n#define H5D_MODULE 1\n#endif\n"
+                    "#ifndef H5F_MODULE\n#define H5F_MODULE 1\n#endif\n"
+                    "#ifndef H5G_MODULE\n#define H5G_MODULE 1\n#endif\n"
+                    "#ifndef H5L_MODULE\n#define H5L_MODULE 1\n#endif\n"
+                    "#ifndef H5M_MODULE\n#define H5M_MODULE 1\n#endif\n"
+                    "#ifndef H5O_MODULE\n#define H5O_MODULE 1\n#endif\n"
+                    "#ifndef H5R_MODULE\n#define H5R_MODULE 1\n#endif\n"
+                    "#ifndef H5S_MODULE\n#define H5S_MODULE 1\n#endif\n"
+                    "#ifndef H5T_MODULE\n#define H5T_MODULE 1\n#endif\n"
+                    "#ifndef H5VL_MODULE\n#define H5VL_MODULE 1\n#endif\n"
+                )
+                # Fix callback type mismatches: raw int → proper HDF5 typedef
+                content = content.replace(
+                    "H5Dchunk_iter(hid_t dset_id, hid_t dxpl_id, int cb,",
+                    "H5Dchunk_iter(hid_t dset_id, hid_t dxpl_id, H5D_chunk_iter_op_t cb,",
+                )
+                content = content.replace(
+                    "H5ESfree_err_info(size_t num_err_info, int* err_info)",
+                    "H5ESfree_err_info(size_t num_err_info, H5ES_err_info_t err_info[])",
+                )
+                content = content.replace(
+                    "H5ESget_err_info(hid_t es_id, size_t num_err_info, int* err_info,",
+                    "H5ESget_err_info(hid_t es_id, size_t num_err_info, H5ES_err_info_t err_info[],",
+                )
+                content = content.replace(
+                    "H5ESregister_complete_func(hid_t es_id, int func,",
+                    "H5ESregister_complete_func(hid_t es_id, H5ES_event_complete_func_t func,",
+                )
+                content = content.replace(
+                    "H5ESregister_insert_func(hid_t es_id, int func,",
+                    "H5ESregister_insert_func(hid_t es_id, H5ES_event_insert_func_t func,",
+                )
+                content = content.replace(
+                    "H5FDperform_init(int op)",
+                    "H5FDperform_init(H5FD_init_t op)",
+                )
+                content = content.replace(
+                    "H5Iiterate(H5I_type_t type, int op,",
+                    "H5Iiterate(H5I_type_t type, H5I_iterate_func_t op,",
+                )
+                content = content.replace(
+                    "H5Iregister_future(H5I_type_t type, const void* object, int realize_cb, int discard_cb)",
+                    "H5Iregister_future(H5I_type_t type, const void* object, H5I_future_realize_func_t realize_cb, H5I_future_discard_func_t discard_cb)",
+                )
+                # Fix H5Lget_info signatures (1/2 variants use H5L_info1_t / H5L_info2_t)
+                content = content.replace(
+                    "H5Lget_info1(hid_t loc_id, const char* name, int* linfo,",
+                    "H5Lget_info1(hid_t loc_id, const char* name, H5L_info1_t* linfo,",
+                )
+                content = content.replace(
+                    "H5Lget_info2(hid_t loc_id, const char* name, int* linfo,",
+                    "H5Lget_info2(hid_t loc_id, const char* name, H5L_info2_t* linfo,",
+                )
+                content = content.replace(
+                    "H5Lget_info_by_idx1(hid_t loc_id, const char* group_name, H5_index_t idx_type, H5_iter_order_t order, hsize_t n, int* linfo,",
+                    "H5Lget_info_by_idx1(hid_t loc_id, const char* group_name, H5_index_t idx_type, H5_iter_order_t order, hsize_t n, H5L_info1_t* linfo,",
+                )
+                content = content.replace(
+                    "H5Lget_info_by_idx2(hid_t loc_id, const char* group_name, H5_index_t idx_type, H5_iter_order_t order, hsize_t n, int* linfo,",
+                    "H5Lget_info_by_idx2(hid_t loc_id, const char* group_name, H5_index_t idx_type, H5_iter_order_t order, hsize_t n, H5L_info2_t* linfo,",
+                )
+                # Fix H5Literate/H5Lvisit callback types
+                for old_cb, new_cb in [
+                    ("H5Literate1(hid_t group_id, H5_index_t idx_type, H5_iter_order_t order, hsize_t* idx, int op,",
+                     "H5Literate1(hid_t group_id, H5_index_t idx_type, H5_iter_order_t order, hsize_t* idx, H5L_iterate1_t op,"),
+                    ("H5Literate2(hid_t group_id, H5_index_t idx_type, H5_iter_order_t order, hsize_t* idx, int op,",
+                     "H5Literate2(hid_t group_id, H5_index_t idx_type, H5_iter_order_t order, hsize_t* idx, H5L_iterate2_t op,"),
+                    ("H5Literate_async(hid_t group_id, H5_index_t idx_type, H5_iter_order_t order, hsize_t* idx, int op,",
+                     "H5Literate_async(hid_t group_id, H5_index_t idx_type, H5_iter_order_t order, hsize_t* idx, H5L_iterate2_t op,"),
+                    ("H5Literate_by_name1(hid_t loc_id, const char* group_name, H5_index_t idx_type, H5_iter_order_t order, hsize_t* idx, int op,",
+                     "H5Literate_by_name1(hid_t loc_id, const char* group_name, H5_index_t idx_type, H5_iter_order_t order, hsize_t* idx, H5L_iterate1_t op,"),
+                    ("H5Literate_by_name2(hid_t loc_id, const char* group_name, H5_index_t idx_type, H5_iter_order_t order, hsize_t* idx, int op,",
+                     "H5Literate_by_name2(hid_t loc_id, const char* group_name, H5_index_t idx_type, H5_iter_order_t order, hsize_t* idx, H5L_iterate2_t op,"),
+                    ("H5Lvisit1(hid_t group_id, H5_index_t idx_type, H5_iter_order_t order, int op,",
+                     "H5Lvisit1(hid_t group_id, H5_index_t idx_type, H5_iter_order_t order, H5L_iterate1_t op,"),
+                    ("H5Lvisit2(hid_t group_id, H5_index_t idx_type, H5_iter_order_t order, int op,",
+                     "H5Lvisit2(hid_t group_id, H5_index_t idx_type, H5_iter_order_t order, H5L_iterate2_t op,"),
+                    ("H5Lvisit_by_name1(hid_t loc_id, const char* group_name, H5_index_t idx_type, H5_iter_order_t order, int op,",
+                     "H5Lvisit_by_name1(hid_t loc_id, const char* group_name, H5_index_t idx_type, H5_iter_order_t order, H5L_iterate1_t op,"),
+                    ("H5Lvisit_by_name2(hid_t loc_id, const char* group_name, H5_index_t idx_type, H5_iter_order_t order, int op,",
+                     "H5Lvisit_by_name2(hid_t loc_id, const char* group_name, H5_index_t idx_type, H5_iter_order_t order, H5L_iterate2_t op,"),
+                ]:
+                    content = content.replace(old_cb, new_cb)
+                # Prepend module guards before the first include
+                first_include = content.find("#include")
+                if first_include >= 0:
+                    content = content[:first_include] + guards + content[first_include:]
+                hdf5_h.write_text(content)
+            # Patch hdf5.cpp: add H5*_MODULE defines at the top
+            if hdf5_cpp.exists():
+                content = hdf5_cpp.read_text()
+                cpp_guards = (
+                    "#define H5A_MODULE 1\n#define H5D_MODULE 1\n"
+                    "#define H5F_MODULE 1\n#define H5G_MODULE 1\n"
+                    "#define H5L_MODULE 1\n#define H5M_MODULE 1\n"
+                    "#define H5O_MODULE 1\n#define H5R_MODULE 1\n"
+                    "#define H5S_MODULE 1\n#define H5T_MODULE 1\n"
+                    "#define H5VL_MODULE 1\n"
+                )
+                if "#define H5A_MODULE" not in content:
+                    content = cpp_guards + content
+                hdf5_cpp.write_text(content)
+            # Also patch the venv brahma interface/hdf5.h for the same module guards
+            brahma_hdf5 = None
+            for candidate in [
+                Path(sys.executable).parent.parent / "lib",
+                Path(sys.executable).parent.parent / "lib64",
+            ]:
+                for f in candidate.glob("python*/site-packages/dftracer/include/brahma/interface/hdf5.h"):
+                    brahma_hdf5 = f
+                    break
+            if brahma_hdf5 and brahma_hdf5.exists():
+                bc = brahma_hdf5.read_text()
+                if "#define H5_DOXYGEN" in bc and "#define H5A_MODULE" not in bc[:500]:
+                    bc = bc.replace(
+                        "#define H5_DOXYGEN",
+                        (
+                            "#ifndef H5A_MODULE\n#define H5A_MODULE 1\n#endif\n"
+                            "#ifndef H5D_MODULE\n#define H5D_MODULE 1\n#endif\n"
+                            "#ifndef H5F_MODULE\n#define H5F_MODULE 1\n#endif\n"
+                            "#ifndef H5G_MODULE\n#define H5G_MODULE 1\n#endif\n"
+                            "#ifndef H5L_MODULE\n#define H5L_MODULE 1\n#endif\n"
+                            "#ifndef H5M_MODULE\n#define H5M_MODULE 1\n#endif\n"
+                            "#ifndef H5O_MODULE\n#define H5O_MODULE 1\n#endif\n"
+                            "#ifndef H5R_MODULE\n#define H5R_MODULE 1\n#endif\n"
+                            "#ifndef H5S_MODULE\n#define H5S_MODULE 1\n#endif\n"
+                            "#ifndef H5T_MODULE\n#define H5T_MODULE 1\n#endif\n"
+                            "#ifndef H5VL_MODULE\n#define H5VL_MODULE 1\n#endif\n"
+                            "#define H5_DOXYGEN"
+                        ),
+                    )
+                    brahma_hdf5.write_text(bc)
+            # Install from patched local clone
+            r = _run(
+                [str(pip), "install", "-v", "--no-cache-dir", "--upgrade", str(clone_dir)],
+                env=env,
+                timeout=1800,
+            )
+            shutil.rmtree(str(clone_dir), ignore_errors=True)
+        else:
+            # Clone failed — fall back to direct git+ URL
+            r = _run(
+                [str(pip), "install", "-v", "--no-cache-dir", "--upgrade",
+                 f"git+https://github.com/llnl/dftracer.git@{dftracer_ref}"],
+                env=env,
+                timeout=1800,
+            )
+    else:
+        r = _run(
+            [str(pip), "install", "-v", "--no-cache-dir", "--upgrade",
+             f"git+https://github.com/llnl/dftracer.git@{dftracer_ref}"],
+            env=env,
+            timeout=1800,
+        )
+    steps["pip_install"] = r
+    _write_artifact_log(ws, 6, "session_install_dftracer", {
+        "pip_cmd": str(pip),
+        "dftracer_ref": dftracer_ref,
+        "pip_env": str(env),
+        "pip_install": r,
+    }, "")
     return {"success": r["success"], "steps": steps, "prefix": str(install_prefix)}
 
 
@@ -1030,7 +1228,7 @@ class DFTracerSessionService(MCPService):
             for the cloned source in a session.
 
             Returns detailed JSON including readme excerpt, key files, and
-            recommended dftracer cmake flags derived from autobuild.sh options.
+            recommended dftracer cmake flags for the detected project features.
             """
             src = _ws(run_id) / "source"
             if not src.exists():
@@ -1167,7 +1365,7 @@ class DFTracerSessionService(MCPService):
                 )
                 r = _run([str(src / "configure")] + flags, cwd=build, timeout=300)
             elif bt == "python":
-                venv_r = _run(["python3", "-m", "venv", str(install)], timeout=60)
+                venv_r = _run([sys.executable, "-m", "venv", str(install)], timeout=60)
                 if not venv_r["success"]:
                     return _err("venv creation failed", **venv_r)
                 pip = install / "bin" / "pip"
@@ -1454,105 +1652,9 @@ class DFTracerSessionService(MCPService):
             )
 
         @self.session_subservice.tool()
-        def session_autobuild_dftracer(
-            run_id: str,
-            dftracer_ref: str = "v2.0.3",
-            install_mode: str = "auto",
-            jobs: int = 4,
-        ) -> str:
-            """
-            Clone dftracer and build+install it via its own autobuild.sh script.
-
-            This is the low-level build tool behind session_install_dftracer.
-            Call it directly when you want fine-grained control over the build
-            (e.g. forcing cmake mode on a Python project, or changing the ref).
-
-            autobuild.sh flags driven by detected project features:
-              --enable-mpi    added when MPI is detected in the project source
-              --enable-hdf5   added when HDF5 is detected in the project source
-              --python <exe>  added when Python is detected (pip mode) or when
-                              the project has Python bindings (cmake mode)
-
-            install_mode choices:
-              "cmake" — builds and installs the full C/C++ library + headers into
-                        <workspace>/install_ann/.  Required for C/C++ projects so
-                        find_package(dftracer) works in the annotated build.
-              "pip"   — installs the Python package into the project venv at
-                        <workspace>/install/.  Used for Python projects.
-              "auto"  — "cmake" for cmake/autotools/make projects, "pip" for Python.
-
-            Build tree is placed at <workspace>/dftracer_build/ and the dftracer
-            source is cached at <workspace>/dftracer_src/ so subsequent calls
-            (e.g. after a failed first attempt) skip the clone step.
-
-            Args:
-                run_id:       Session identifier.
-                dftracer_ref: Git tag or branch to build (default: v2.0.3).
-                install_mode: "cmake", "pip", or "auto" (default: auto).
-                jobs:         Parallel build jobs (default: 4).
-            """
-            ws = _ws(run_id)
-            state = _load_state(run_id)
-            info = state.get("detection") or _detect_info(ws / "source")
-            bt = info.get("build_tool", "unknown")
-            features = info.get("features", {})
-
-            # Resolve "auto" mode
-            if install_mode == "auto":
-                install_mode = "pip" if bt == "python" else "cmake"
-
-            if install_mode == "cmake":
-                install_prefix = ws / "install_ann"
-                install_prefix.mkdir(exist_ok=True)
-                python_exe = None
-                if features.get("python"):
-                    venv_py = ws / "install" / "bin" / "python3"
-                    python_exe = str(venv_py) if venv_py.exists() else sys.executable
-            else:  # pip
-                install_prefix = ws / "install"
-                install_prefix.mkdir(exist_ok=True)
-                venv_py = ws / "install" / "bin" / "python3"
-                python_exe = str(venv_py) if venv_py.exists() else sys.executable
-
-            result = _install_dftracer_autobuild(
-                ws=ws,
-                install_prefix=install_prefix,
-                dftracer_ref=dftracer_ref,
-                jobs=jobs,
-                install_mode=install_mode,
-                features=features,
-                python_exe=python_exe,
-            )
-
-            if not result["success"]:
-                return _err(
-                    f"dftracer autobuild.sh failed (mode={install_mode})",
-                    ref=dftracer_ref,
-                    prefix=str(install_prefix),
-                    steps=result["steps"],
-                )
-
-            _save_state(run_id, {"dftracer_install_prefix": str(install_prefix)})
-
-            # Also install dftracer-utils from develop so dftracer_split is available
-            # for compacting traces produced by the annotated app.
-            utils_pip = (install_prefix / "bin" / "pip")
-            if not utils_pip.exists():
-                utils_pip = Path(sys.executable).parent / "pip"
-            utils_r = _install_dftracer_utils(utils_pip)
-
-            return _ok(
-                f"dftracer built and installed via autobuild.sh (mode={install_mode})",
-                ref=dftracer_ref,
-                prefix=str(install_prefix),
-                dftracer_utils_installed=utils_r["success"],
-                steps=result["steps"],
-            )
-
-        @self.session_subservice.tool()
         def session_install_dftracer(
             run_id: str,
-            dftracer_ref: str = "v2.0.3",
+            dftracer_ref: str = "develop",
             jobs: int = 4,
         ) -> str:
             """
@@ -1574,7 +1676,7 @@ class DFTracerSessionService(MCPService):
 
             Args:
                 run_id:       Session identifier.
-                dftracer_ref: Git tag or branch (default: v2.0.3).
+                dftracer_ref: Git tag or branch (default: develop).
                 jobs:         Parallel make jobs for cmake build (default: 4).
             """
             ws = _ws(run_id)
@@ -1585,7 +1687,7 @@ class DFTracerSessionService(MCPService):
             if bt in {"cmake", "autotools", "make"}:
                 install_ann = ws / "install_ann"
                 install_ann.mkdir(exist_ok=True)
-                result = _install_dftracer_autobuild(
+                result = _install_dftracer_pip_direct(
                     ws=ws,
                     install_prefix=install_ann,
                     dftracer_ref=dftracer_ref,
@@ -1595,28 +1697,32 @@ class DFTracerSessionService(MCPService):
                 )
                 if not result["success"]:
                     return _err(
-                        "dftracer autobuild (cmake mode) failed",
+                        "dftracer pip install (cmake mode) failed",
                         prefix=str(install_ann),
                         ref=dftracer_ref,
                         steps=result["steps"],
                     )
                 _save_state(run_id, {"dftracer_install_prefix": str(install_ann)})
                 return _ok(
-                    "dftracer installed via autobuild.sh (cmake mode)",
+                    "dftracer installed via pip install (cmake mode)",
                     prefix=str(install_ann),
                     ref=dftracer_ref,
                     steps=result["steps"],
                 )
 
             if bt == "python":
-                venv_python = ws / "install" / "bin" / "python3"
-                if not venv_python.exists():
-                    venv_python = Path(sys.executable)
-                install_dir = ws / "install"
-                install_dir.mkdir(exist_ok=True)
-                result = _install_dftracer_autobuild(
+                # Always use the session-isolated venv, not the project venv,
+                # so dftracer is confined to the workspace and doesn't pollute
+                # or reuse the MCP server's environment.
+                try:
+                    venv_python = _ensure_session_venv(ws)
+                except RuntimeError as exc:
+                    return _err(f"session venv creation failed: {exc}")
+                _save_state(run_id, {"session_venv_python": str(venv_python)})
+
+                result = _install_dftracer_pip_direct(
                     ws=ws,
-                    install_prefix=install_dir,
+                    install_prefix=ws / "venv",
                     dftracer_ref=dftracer_ref,
                     jobs=jobs,
                     install_mode="pip",
@@ -1625,14 +1731,16 @@ class DFTracerSessionService(MCPService):
                 )
                 if not result["success"]:
                     return _err(
-                        "dftracer autobuild (pip mode) failed",
+                        "dftracer pip install failed",
                         ref=dftracer_ref,
+                        venv=str(ws / "venv"),
                         steps=result["steps"],
                     )
-                _save_state(run_id, {"dftracer_install_prefix": str(install_dir)})
+                _save_state(run_id, {"dftracer_install_prefix": str(ws / "venv")})
                 return _ok(
-                    "dftracer installed via autobuild.sh (pip mode)",
+                    "dftracer installed via pip into session venv",
                     ref=dftracer_ref,
+                    venv=str(ws / "venv"),
                     steps=result["steps"],
                 )
 
@@ -1659,15 +1767,25 @@ class DFTracerSessionService(MCPService):
             Args:
                 run_id: Session identifier (used only for state tracking).
             """
-            # Prefer the session venv pip; fall back to the server's own pip
             ws = _ws(run_id)
-            pip = ws / "install" / "bin" / "pip"
-            if not pip.exists():
-                pip = Path(sys.executable).parent / "pip"
-            if not pip.exists():
-                pip = Path("pip3")
+            state = _load_state(run_id)
 
-            r = _install_dftracer_utils(pip)
+            # Use the session venv created by session_install_dftracer; create
+            # it now if this tool is called standalone first.
+            venv_python_str = state.get("session_venv_python", "")
+            if venv_python_str and Path(venv_python_str).exists():
+                pip = Path(venv_python_str).parent / "pip"
+            else:
+                try:
+                    venv_python = _ensure_session_venv(ws)
+                    _save_state(run_id, {"session_venv_python": str(venv_python)})
+                    pip = venv_python.parent / "pip"
+                except RuntimeError:
+                    pip = Path(sys.executable).parent / "pip"
+            if not pip.exists():
+                pip = Path(sys.executable).parent / "pip3"
+
+            r = _install_dftracer_utils(pip, ws=ws, run_id=run_id)
             _save_state(run_id, {"dftracer_utils_installed": r["success"]})
             if r["success"]:
                 return _ok("dftracer-utils installed from develop", **r)
@@ -1767,7 +1885,7 @@ class DFTracerSessionService(MCPService):
             elif bt == "python":
                 pip = ws / "install" / "bin" / "pip"
                 if not pip.exists():
-                    pip = Path("pip3")
+                    pip = Path(sys.executable).parent / "pip"
                 r_bld = _run([str(pip), "install", "-e", str(ann)], timeout=300)
                 steps["pip_install"] = r_bld
                 if not r_bld["success"]:
@@ -1784,7 +1902,7 @@ class DFTracerSessionService(MCPService):
             run_id: str,
             command: str,
             subfolder: str = "build_ann",
-            data_dir: Optional[str] = None,
+            data_dir: str = "all",
             timeout: int = 600,
             env_extra: Optional[str] = None,
         ) -> str:
@@ -1799,14 +1917,14 @@ class DFTracerSessionService(MCPService):
               DFTRACER_ENABLE=1        — activate tracing
               DFTRACER_INC_METADATA=1  — include process/thread metadata in traces
               DFTRACER_LOG_FILE=<workspace>/traces/<run_id>  (prefix; dftracer appends .<pid>.pfw)
-              DFTRACER_DATA_DIR=<data_dir or source/>
+              DFTRACER_DATA_DIR=all    — captures I/O on any file path (default)
               DFTRACER_INIT=1          — auto-initialise without explicit API call
 
             Args:
                 run_id:    Session identifier.
                 command:   Shell command to run (via /bin/sh -c).
                 subfolder: Working directory inside the workspace (default: build_ann).
-                data_dir:  Path to monitor for I/O tracing (defaults to source/).
+                data_dir:  Value for DFTRACER_DATA_DIR. Defaults to "all" (trace all paths).
                 timeout:   Seconds before killing the command.
                 env_extra: JSON object of additional env vars to merge/override.
             """
@@ -1829,7 +1947,7 @@ class DFTracerSessionService(MCPService):
                 "DFTRACER_ENABLE": "1",
                 "DFTRACER_INC_METADATA": "1",
                 "DFTRACER_LOG_FILE": log_file_prefix,
-                "DFTRACER_DATA_DIR": data_dir or str(ws / "source"),
+                "DFTRACER_DATA_DIR": data_dir,
                 "DFTRACER_INIT": "1",
             }
             if env_extra:
@@ -1966,7 +2084,7 @@ class DFTracerSessionService(MCPService):
             jobs: int = 4,
             run_id: Optional[str] = None,
             skip_annotation: bool = False,
-            dftracer_ref: str = "v2.0.3",
+            dftracer_ref: str = "develop",
         ) -> str:
             """
             Full dftracer annotation + smoke-test pipeline.
@@ -1999,7 +2117,7 @@ class DFTracerSessionService(MCPService):
                 jobs:               Parallel make jobs.
                 run_id:             Optional fixed RUN-ID; UUID generated if omitted.
                 skip_annotation:    If True, stop after step 5 (original smoke test).
-                dftracer_ref:       dftracer git tag/branch to install (default: v2.0.3).
+                dftracer_ref:       dftracer git tag/branch to install (default: develop).
             """
             report: Dict[str, Any] = {}
 
@@ -2056,7 +2174,7 @@ class DFTracerSessionService(MCPService):
                     _run(["autoreconf", "-fi"], cwd=src, timeout=120)
                 cfg_r = _run([str(src / "configure"), f"--prefix={install}"], cwd=build, timeout=300)
             elif bt == "python":
-                cfg_r = _run(["python3", "-m", "venv", str(install)], timeout=60)
+                cfg_r = _run([sys.executable, "-m", "venv", str(install)], timeout=60)
                 if cfg_r["success"]:
                     pip = install / "bin" / "pip"
                     cfg_r = _run([str(pip), "install", "-e", str(src)], timeout=300)
@@ -2196,7 +2314,7 @@ class DFTracerSessionService(MCPService):
 
             dft_prefix: Optional[str] = None
             if bt in {"cmake", "autotools", "make"}:
-                dft_r = _install_dftracer_autobuild(
+                dft_r = _install_dftracer_pip_direct(
                     ws=ws,
                     install_prefix=install_ann,
                     dftracer_ref=dftracer_ref,
@@ -2212,17 +2330,21 @@ class DFTracerSessionService(MCPService):
                 }
                 _write_artifact_log(ws, 9, "session_install_dftracer", report["step_8_5_install_dftracer"], rid)
                 if not dft_r["success"]:
-                    return _err("Step 8.5 failed: dftracer autobuild (cmake mode)", step="8.5", report=report)
+                    return _err("Step 8.5 failed: dftracer pip install (cmake mode)", step="8.5", report=report)
                 dft_prefix = str(install_ann)
             elif bt == "python":
-                venv_python = ws / "install" / "bin" / "python3"
-                if not venv_python.exists():
-                    venv_python = Path(sys.executable)
-                install_dir = ws / "install"
-                install_dir.mkdir(exist_ok=True)
-                dft_r = _install_dftracer_autobuild(
+                # Use the session-isolated venv so dftracer is confined to the
+                # workspace and doesn't pollute the MCP server's environment.
+                try:
+                    venv_python = _ensure_session_venv(ws)
+                except RuntimeError as exc:
+                    return _err(f"Step 8.5 failed: session venv creation: {exc}",
+                                step="8.5", report=report)
+                _save_state(rid, {"session_venv_python": str(venv_python)})
+
+                dft_r = _install_dftracer_pip_direct(
                     ws=ws,
-                    install_prefix=install_dir,
+                    install_prefix=ws / "venv",
                     dftracer_ref=dftracer_ref,
                     jobs=jobs,
                     install_mode="pip",
@@ -2231,13 +2353,14 @@ class DFTracerSessionService(MCPService):
                 )
                 report["step_8_5_install_dftracer"] = {
                     "ref": dftracer_ref,
+                    "venv": str(ws / "venv"),
                     "steps": dft_r["steps"],
                     "success": dft_r["success"],
                 }
                 _write_artifact_log(ws, 9, "session_install_dftracer", report["step_8_5_install_dftracer"], rid)
                 if not dft_r["success"]:
-                    return _err("Step 8.5 failed: dftracer autobuild (pip mode)", step="8.5", report=report)
-                dft_prefix = str(install_dir)
+                    return _err("Step 8.5 failed: dftracer pip install failed", step="8.5", report=report)
+                dft_prefix = str(ws / "venv")
 
             _save_state(rid, {"dftracer_install_prefix": dft_prefix})
 
@@ -2250,7 +2373,7 @@ class DFTracerSessionService(MCPService):
                 "DFTRACER_ENABLE": "1",
                 "DFTRACER_INC_METADATA": "1",
                 "DFTRACER_LOG_FILE": str(traces_dir / "trace"),
-                "DFTRACER_DATA_DIR": str(src),
+                "DFTRACER_DATA_DIR": "all",
                 "DFTRACER_INIT": "1",
             }
             ann_smoke_cwd = build_ann if build_ann.exists() else ann
@@ -2309,7 +2432,7 @@ class DFTracerSessionService(MCPService):
                 elif bt == "python":
                     pip = ws / "install" / "bin" / "pip"
                     if not pip.exists():
-                        pip = Path("pip3")
+                        pip = Path(sys.executable).parent / "pip"
                     r_ab = _run([str(pip), "install", "-e", str(ann)], timeout=300)
                     build_step["build"] = r_ab
                     build_ok = r_ab["success"]

@@ -29,7 +29,7 @@ from .build import (
     _find_python_entry_points, _guess_smoke_test,
 )
 from .install import (
-    _install_dftracer_autobuild, _dftracer_utils_split,
+    _ensure_session_venv, _install_dftracer_pip_direct, _dftracer_utils_split,
 )
 
 
@@ -45,7 +45,7 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         run_id: Optional[str] = None,
         skip_annotation: bool = False,
         annotation_confirmed: bool = False,
-        dftracer_ref: str = "v2.0.3",
+        dftracer_ref: str = "develop",
     ) -> str:
         """
         Full dftracer annotation + smoke-test pipeline.
@@ -146,7 +146,7 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                     _run(["autoreconf", "-fi"], cwd=src, timeout=120)
                 cfg_r = _run([str(src / "configure"), f"--prefix={install}"], cwd=build, timeout=300)
             elif bt == "python":
-                cfg_r = _run(["python3", "-m", "venv", str(install)], timeout=60)
+                cfg_r = _run([sys.executable, "-m", "venv", str(install)], timeout=60)
                 if cfg_r["success"]:
                     pip = install / "bin" / "pip"
                     cfg_r = _run([str(pip), "install", "-e", str(src)], timeout=300)
@@ -321,30 +321,36 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
             )
         report["resumed_from"] = "step_8_5"
 
-        # --- Step 8.5: install dftracer into install_ann/ (C/C++) or venv (Python) ---
+        # --- Step 8.5: create session venv + install dftracer ---
         build_ann = ws / "build_ann"
         install_ann = ws / "install_ann"
         build_ann.mkdir(exist_ok=True)
         install_ann.mkdir(exist_ok=True)
 
-        # Always use pip — cmake mode is fragile across autobuild.sh versions
-        dft_r = _install_dftracer_autobuild(
-            ws=ws,
-            install_prefix=install_ann,
+        # Create an isolated venv inside the workspace so dftracer and its
+        # dependencies do not pollute or reuse the MCP server's environment.
+        try:
+            venv_python = _ensure_session_venv(ws)
+        except RuntimeError as exc:
+            return _err(f"Step 8.5 failed: session venv creation: {exc}",
+                        step="8.5", report=report)
+        _save_state(rid, {"session_venv_python": str(venv_python)})
+
+        dft_r = _install_dftracer_pip_direct(
             dftracer_ref=dftracer_ref,
-            jobs=jobs,
-            install_mode="pip",
             features=info.get("features", {}),
-            python_exe=sys.executable,
+            python_exe=str(venv_python),
+            jobs=jobs,
         )
         report["step_8_5_install_dftracer"] = {
             "ref": dftracer_ref,
+            "venv": str(ws / "venv"),
             "steps": dft_r["steps"],
             "success": dft_r["success"],
         }
         _write_artifact_log(ws, 9, "session_install_dftracer", report["step_8_5_install_dftracer"], rid)
         if not dft_r["success"]:
-            return _err("Step 8.5 failed: dftracer autobuild (pip mode)", step="8.5", report=report)
+            return _err("Step 8.5 failed: dftracer pip install", step="8.5", report=report)
         dft_prefix = str(install_ann)
 
         _save_state(rid, {"dftracer_install_prefix": dft_prefix})
@@ -417,7 +423,7 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
             elif bt == "python":
                 pip = ws / "install" / "bin" / "pip"
                 if not pip.exists():
-                    pip = Path("pip3")
+                    pip = Path(sys.executable).parent / "pip"
                 r_ab = _run([str(pip), "install", "-e", str(ann)], timeout=300)
                 build_step["build"] = r_ab
                 build_ok = r_ab["success"]

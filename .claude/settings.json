@@ -62,7 +62,6 @@
       "mcp__dftracer__session_annotate_cpp_file",
       "mcp__dftracer__session_annotate_python_file",
       "mcp__dftracer__session_annotation_report",
-      "mcp__dftracer__session_autobuild_dftracer",
       "mcp__dftracer__session_build_annotated",
       "mcp__dftracer__session_build_install",
       "mcp__dftracer__session_collect_system_info",

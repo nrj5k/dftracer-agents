@@ -34,8 +34,7 @@ make decisions, and recover from failures before proceeding.
         * ``session_annotation_report`` — coverage report comparing source/ vs annotated/
 
     dftracer install & annotated build
-        * ``session_install_dftracer``       — build/install dftracer into install_ann/ or venv
-        * ``session_autobuild_dftracer``     — low-level autobuild.sh wrapper with mode control
+        * ``session_install_dftracer``       — pip install dftracer with detected features
         * ``session_install_dftracer_utils`` — install dftracer-utils from the develop branch
         * ``session_build_annotated``        — build the annotated source with dftracer linked
 
@@ -85,7 +84,15 @@ from .workspace import (
     _ws, _load_state, _save_state, _write_artifact_log,
     _ok, _err, _new_run_id, _create_run, _run, _workspaces_root,
 )
-from .detection import _detect_info
+from .detection import (
+    _detect_info,
+    _detect_system_mpi,
+    _detect_system_hdf5,
+    _mpi_version_compatible,
+    _hdf5_version_compatible,
+    _MPI_COMPATIBLE_DISPLAY,
+    _HDF5_COMPATIBLE_SERIES,
+)
 from .annotation import (
     _strip_mpi_launcher,
     _generate_annotation_report,
@@ -95,7 +102,8 @@ from .build import (
     _patch_autotools_makefile,
 )
 from .install import (
-    _install_dftracer_autobuild, _dftracer_utils_split, _dftracer_utils_comparator,
+    _ensure_session_venv, _install_dftracer_pip_direct,
+    _dftracer_utils_split, _dftracer_utils_comparator,
     _dftracer_info_uncompressed_bytes, _install_dftracer_utils, _find_dftracer_dirs,
 )
 
@@ -201,7 +209,7 @@ def _session_build_annotated_impl(
     elif bt == "python":
         pip = ws / "install" / "bin" / "pip"
         if not pip.exists():
-            pip = Path("pip3")
+            pip = Path(sys.executable).parent / "pip"
         r_bld = _run([str(pip), "install", "-e", str(ann)], timeout=300)
         steps["pip_install"] = r_bld
         if not r_bld["success"]:
@@ -496,7 +504,7 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         ``session_build_install``, ``session_run_smoke_test``,
         ``session_copy_annotated``, ``session_patch_build``,
         ``session_annotation_report``,
-        ``session_autobuild_dftracer``, ``session_install_dftracer``,
+        ``session_install_dftracer``,
         ``session_install_dftracer_utils``, ``session_build_annotated``,
         ``session_run_with_dftracer``, ``session_split_traces``,
         ``session_analyze_traces``, ``session_status``,
@@ -617,8 +625,8 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
                   ``"make"``, ``"python"``, or ``"unknown"``.
                 * ``features`` — dict of detected optional features
                   (``{"mpi": bool, "hdf5": bool, "python": bool, ...}``).
-                * ``dftracer_cmake_flags`` — recommended ``-D`` flags for cmake
-                  derived from autobuild.sh option analysis.
+                * ``dftracer_cmake_flags`` — recommended ``-D`` flags for cmake.
+                * ``dftracer_pip_env`` — complete env var dict for pip install.
                 * Additional keys from ``_detect_info`` (readme excerpt, key files, etc.).
 
         Raises:
@@ -864,7 +872,7 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             ] + (extra_configure_flags.split() if extra_configure_flags else [])
             r = _run([str(src / "configure")] + flags, cwd=build, timeout=300)
         elif bt == "python":
-            venv_r = _run(["python3", "-m", "venv", str(install)], timeout=60)
+            venv_r = _run([sys.executable, "-m", "venv", str(install)], timeout=60)
             if not venv_r["success"]:
                 return _err("venv creation failed", **venv_r)
             pip = install / "bin" / "pip"
@@ -1269,236 +1277,156 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         )
 
     @mcp.tool()
-    def session_autobuild_dftracer(
-        run_id: str,
-        dftracer_ref: str = "v2.0.3",
-        install_mode: str = "auto",
-        jobs: int = 4,
-    ) -> str:
-        """Clone dftracer and build/install it via its own ``autobuild.sh`` script.
-
-        This is the low-level build tool underlying ``session_install_dftracer``.
-        Call it directly when fine-grained control is needed — for example, to
-        force cmake mode on a Python project, to change the installed ref, or
-        to diagnose a failed ``session_install_dftracer`` call.
-
-        The dftracer source is cloned once and cached at
-        ``<workspace>/dftracer_src/``; subsequent calls skip the clone step.
-        Build artefacts land in ``<workspace>/dftracer_build/``.
-
-        ``autobuild.sh`` flags are derived from the features detected in the
-        project source:
-
-        * ``--enable-mpi``     — added when MPI is detected in the project.
-        * ``--enable-hdf5``    — added when HDF5 is detected in the project.
-        * ``--python <exe>``   — added for Python projects (pip mode) or when
-          the project has Python bindings (cmake mode).
-
-        *install_mode* choices:
-
-        * ``"cmake"`` — builds and installs the full C/C++ library and headers
-          into ``<workspace>/install_ann/``.  Required for C/C++ projects so
-          that ``find_package(dftracer)`` resolves in the annotated cmake build.
-        * ``"pip"`` — installs the Python package into the project venv at
-          ``<workspace>/install/``.  Used for Python-only projects.
-        * ``"auto"`` — selects ``"cmake"`` for cmake/autotools/make projects
-          and ``"pip"`` for Python projects.
-
-        After a successful build, ``dftracer-utils`` is also installed from the
-        ``develop`` branch so that ``dftracer_split`` is available for trace
-        compaction.
-
-        Side effects:
-            * Clones dftracer source into ``<workspace>/dftracer_src/`` (first
-              call only).
-            * Builds dftracer in ``<workspace>/dftracer_build/``.
-            * Installs dftracer headers/libs into *install_prefix*.
-            * Persists ``{"dftracer_install_prefix": str(install_prefix)}`` to
-              ``session.json``.
-            * Installs ``dftracer-utils`` from the ``develop`` branch into the
-              resolved pip environment.
-
-        Args:
-            run_id: Session identifier returned by ``session_create``.
-            dftracer_ref: Git tag or branch of dftracer to build.
-                Defaults to ``"v2.0.3"``.
-            install_mode: One of ``"cmake"``, ``"pip"``, or ``"auto"``.
-                Defaults to ``"auto"``.
-            jobs: Parallel build jobs passed to ``make``.  Defaults to ``4``.
-
-        Returns:
-            JSON string with keys:
-                * ``status`` (``"ok"`` or ``"error"``).
-                * ``message`` — outcome description.
-                * ``ref`` — the dftracer ref that was built.
-                * ``prefix`` — absolute path of the install prefix used.
-                * ``dftracer_utils_installed`` — ``true`` if dftracer-utils
-                  was successfully installed.
-                * ``steps`` — list of step dicts (name, success, stdout, stderr)
-                  from autobuild.sh execution.
-
-        Raises:
-            Returns ``{"status": "error"}`` when ``autobuild.sh`` exits
-            non-zero, with ``steps`` detailing which stage failed.
-
-        Note:
-            Prefer ``session_install_dftracer`` for the normal workflow.  Use
-            this tool only when the default mode selection or install location
-            need to be overridden.
-        """
-        ws = _ws(run_id)
-        state = _load_state(run_id)
-        info = state.get("detection") or _detect_info(ws / "source")
-        bt = info.get("build_tool", "unknown")
-        features = info.get("features", {})
-
-        # "auto" picks cmake for C/C++ projects, pip for Python projects.
-        if install_mode == "auto":
-            install_mode = "pip" if bt == "python" else "cmake"
-
-        install_prefix = ws / "install_ann"
-        install_prefix.mkdir(exist_ok=True)
-        python_exe = sys.executable
-
-        result = _install_dftracer_autobuild(
-            ws=ws,
-            install_prefix=install_prefix,
-            dftracer_ref=dftracer_ref,
-            jobs=jobs,
-            install_mode=install_mode,
-            features=features,
-            python_exe=python_exe,
-            cmake_flags=info.get("dftracer_cmake_flags", []),
-        )
-
-        if not result["success"]:
-            return _err(
-                f"dftracer autobuild.sh failed (mode={install_mode})",
-                ref=dftracer_ref,
-                prefix=str(install_prefix),
-                steps=result["steps"],
-            )
-
-        _save_state(run_id, {"dftracer_install_prefix": str(install_prefix)})
-
-        # Also install dftracer-utils from develop so dftracer_split is available
-        # for compacting traces produced by the annotated app.
-        utils_pip = (install_prefix / "bin" / "pip")
-        if not utils_pip.exists():
-            utils_pip = Path(sys.executable).parent / "pip"
-        utils_r = _install_dftracer_utils(utils_pip)
-
-        return _ok(
-            f"dftracer built and installed via autobuild.sh (mode={install_mode})",
-            ref=dftracer_ref,
-            prefix=str(install_prefix),
-            dftracer_utils_installed=utils_r["success"],
-            steps=result["steps"],
-        )
-
-    @mcp.tool()
     def session_install_dftracer(
         run_id: str,
-        dftracer_ref: str = "v2.0.3",
+        dftracer_ref: str = "develop",
         jobs: int = 4,
     ) -> str:
-        """Install dftracer into the session's annotated install directory.
+        """Install dftracer via pip for all project types, then locate dirs in site-packages.
 
-        Selects the correct install mode based on the build tool detected by
-        ``session_detect`` and invokes ``_install_dftracer_autobuild`` which
-        clones the dftracer repository and runs its ``autobuild.sh`` script:
+        Always uses ``pip install git+https://github.com/llnl/dftracer.git@<ref>``
+        regardless of whether the project is C/C++ or Python.  Feature flags
+        detected from the application source are forwarded as environment
+        variables so the dftracer wheel's C extension is built with the correct
+        support compiled in:
 
-        * **C/C++ projects (cmake / autotools / make)** — clones
-          ``https://github.com/llnl/dftracer.git`` at *dftracer_ref*, builds
-          with cmake, and installs into ``<workspace>/install_ann/``.  The
-          install prefix is stored in session state so that
-          ``session_build_annotated`` automatically passes
-          ``CMAKE_PREFIX_PATH`` / ``pkg-config`` flags.
+        * ``DFTRACER_ENABLE_MPI=ON``   — when MPI is detected in the project
+        * ``DFTRACER_ENABLE_HDF5=ON``  — when HDF5 is detected in the project
+        * ``HDF5_ROOT=<prefix>``       — when the system HDF5 prefix is known
+        * ``HDF5_DIR=<prefix>``        — same as ``HDF5_ROOT`` for cmake backends
 
-        * **Python projects** — installs dftracer via pip into the project
-          venv at ``<workspace>/install/``.  Tries PyPI first; falls back to
-          the git source build.
+        After a successful install, include and lib directories are discovered
+        by probing the dftracer package inside site-packages (no cmake prefix
+        assumed).  The resolved paths are stored in session state so that
+        ``session_build_annotated`` can pass them as ``CMAKE_PREFIX_PATH`` /
+        ``pkg-config`` search paths.
+
+        Feature detection reads ``session_detect`` results from session state,
+        or re-runs detection inline if not yet stored.
 
         Side effects:
-            * Populates ``<workspace>/install_ann/`` (C/C++) or
-              ``<workspace>/install/`` (Python) with dftracer headers, libs,
-              and/or the Python package.
-            * Persists ``{"dftracer_install_prefix": str(<prefix>)}`` to
-              ``session.json``.
+            * Installs dftracer into the current Python environment's site-packages.
+            * Persists ``dftracer_install_prefix``, ``dftracer_pip_include_dir``,
+              and ``dftracer_pip_lib_dir`` to ``session.json``.
 
         Args:
             run_id: Session identifier returned by ``session_create``.
             dftracer_ref: Git tag or branch of dftracer to install.
-                Defaults to ``"v2.0.3"``.
-            jobs: Parallel make jobs for the cmake build.  Defaults to ``4``.
+                Defaults to ``"develop"``.
+            jobs: Unused (kept for API compatibility).  Defaults to ``4``.
 
         Returns:
             JSON string with keys:
-                * ``status`` (``"ok"`` or ``"error"``).
-                * ``message`` — outcome description including install mode.
-                * ``prefix`` — absolute path to the install directory (C/C++).
+                * ``status`` — ``"ok"`` or ``"error"``.
+                * ``message`` — outcome description.
+                * ``features_enabled`` — list of detected features that were
+                  activated (e.g. ``["mpi", "hdf5=1.14.3"]``).
                 * ``ref`` — the dftracer ref that was installed.
-                * ``steps`` — list of step dicts from autobuild.sh.
-
-        Raises:
-            Returns ``{"status": "error"}`` when ``autobuild.sh`` fails or
-            when the build tool is not one of the supported values
-            (``"cmake"``, ``"autotools"``, ``"make"``, ``"python"``).
-
-        Note:
-            Must be called after annotation is complete (goose recipe subagents
-            or manual ``session_read_file`` + ``session_write_file``) and before
-            ``session_build_annotated``.
+                * ``include_dir`` — resolved dftracer include path in site-packages.
+                * ``lib_dir`` — resolved dftracer lib path in site-packages.
+                * ``lib_name`` — shared library filename found.
+                * ``steps`` — ``{"pip_install": <run result>}``.
         """
         ws = _ws(run_id)
         state = _load_state(run_id)
         info = state.get("detection") or _detect_info(ws / "source")
-        bt = info.get("build_tool", "unknown")
+        features = info.get("features", {})
 
-        # autotools/cmake/make → cmake mode (builds libdftracer_core.so + headers)
-        # python → pip mode (installs Python package; C library not needed)
-        install_mode = "pip" if bt == "python" else "cmake"
+        features_enabled = []
+        compat_warnings: list = []
 
-        install_dir = ws / "install_ann"
-        install_dir.mkdir(exist_ok=True)
-        result = _install_dftracer_autobuild(
-            ws=ws,
-            install_prefix=install_dir,
+        # --- MPI version check ---
+        if features.get("mpi"):
+            features_enabled.append("mpi")
+            mpi_info = _detect_system_mpi()
+            if mpi_info["found"]:
+                impl = mpi_info.get("impl", "unknown")
+                ver  = mpi_info.get("version", "unknown")
+                compat = mpi_info.get("compatible", False)
+                if not compat:
+                    compat_range = _MPI_COMPATIBLE_DISPLAY.get(impl, "see dftracer docs")
+                    compat_warnings.append(
+                        f"MPI-IO tracing DISABLED: detected {mpi_info.get('impl_display', impl)} "
+                        f"{ver} is not in a dftracer-compatible range "
+                        f"({compat_range}). "
+                        f"Upgrade or downgrade your MPI installation to enable MPI-IO event capture. "
+                        f"Report unsupported versions at https://github.com/llnl/dftracer/issues"
+                    )
+            else:
+                compat_warnings.append(
+                    "MPI detected in source but MPI runtime could not be probed — "
+                    "MPI-IO tracing may not work."
+                )
+
+        # --- HDF5 version check ---
+        if features.get("hdf5"):
+            hdf5_sys = features.get("hdf5_system") or _detect_system_hdf5()
+            hdf5_ver = hdf5_sys.get("version", "")
+            features_enabled.append(f"hdf5{('=' + hdf5_ver) if hdf5_ver else ''}")
+            if hdf5_ver and not _hdf5_version_compatible(hdf5_ver):
+                compat_series = ", ".join(
+                    f"1.{m}" for (_, m) in sorted(_HDF5_COMPATIBLE_SERIES)
+                )
+                compat_warnings.append(
+                    f"HDF5 tracing may be DEGRADED: detected HDF5 {hdf5_ver} is not in a "
+                    f"dftracer-compatible series (1.{{{compat_series}}}). "
+                    f"Compatible series: {compat_series}."
+                )
+
+        if features.get("hip"):
+            features_enabled.append("hip")
+        if features.get("hwloc"):
+            features_enabled.append("hwloc")
+
+        # Create (or reuse) a fresh isolated venv inside the workspace so that
+        # dftracer and its dependencies are completely separate from the MCP
+        # server's own Python environment.
+        try:
+            venv_python = _ensure_session_venv(ws)
+        except RuntimeError as exc:
+            return _err(f"session venv creation failed: {exc}")
+
+        venv_python_str = str(venv_python)
+        _save_state(run_id, {"session_venv_python": venv_python_str})
+
+        result = _install_dftracer_pip_direct(
             dftracer_ref=dftracer_ref,
+            features=features,
+            python_exe=venv_python_str,
             jobs=jobs,
-            install_mode=install_mode,
-            features=info.get("features", {}),
-            python_exe=sys.executable,
-            cmake_flags=info.get("dftracer_cmake_flags", []),
+            ws=ws,
+            run_id=run_id,
         )
         if not result["success"]:
             return _err(
-                f"dftracer autobuild ({install_mode} mode) failed",
+                "dftracer pip install failed",
+                features_enabled=features_enabled,
                 ref=dftracer_ref,
+                venv=str(ws / "venv"),
                 steps=result["steps"],
             )
 
-        if install_mode == "pip":
-            _save_state(run_id, {"dftracer_install_prefix": str(install_dir)})
-            return _ok(
-                "dftracer installed via pip (python project)",
-                ref=dftracer_ref,
-                steps=result["steps"],
-            )
+        # Locate include/lib dirs inside the venv's site-packages
+        dirs = _find_dftracer_dirs(python_exe=venv_python_str) or {}
 
-        # Locate include/lib dirs — check cmake prefix first, then site-packages.
-        dirs = _find_dftracer_dirs(
-            python_exe=sys.executable,
-            cmake_prefix=install_dir,
-        ) or {}
+        install_dir = ws / "install_ann"
+        install_dir.mkdir(exist_ok=True)
         _save_state(run_id, {
-            "dftracer_install_prefix":  str(install_dir),
+            "dftracer_install_prefix":  dirs.get("lib_dir", str(install_dir)),
             "dftracer_pip_include_dir": dirs.get("include_dir", ""),
             "dftracer_pip_lib_dir":     dirs.get("lib_dir", ""),
         })
+        msg = f"dftracer installed via pip into session venv (features={features_enabled})"
+        if compat_warnings:
+            msg += "\n\nCOMPATIBILITY WARNINGS:\n" + "\n".join(
+                f"  • {w}" for w in compat_warnings
+            )
         return _ok(
-            f"dftracer installed via autobuild.sh (cmake mode, build_tool={bt})",
+            msg,
+            features_enabled=features_enabled,
+            compat_warnings=compat_warnings,
             ref=dftracer_ref,
+            venv=str(ws / "venv"),
             include_dir=dirs.get("include_dir", "(not found)"),
             lib_dir=dirs.get("lib_dir", "(not found)"),
             lib_name=dirs.get("lib_name", "libdftracer_core.so"),
@@ -1550,19 +1478,28 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         Note:
             Call once per session before ``session_split_traces`` if you want to
             guarantee the ``develop``-branch version of ``dftracer-utils`` is
-            active.  The ``session_autobuild_dftracer`` tool also installs
-            ``dftracer-utils`` automatically after a successful build, so this
-            tool is only needed when ``session_autobuild_dftracer`` was not used.
+            active.  Call this after ``session_install_dftracer`` to ensure the
+            latest ``develop``-branch version of ``dftracer-utils`` is installed.
         """
-        # Prefer the session venv pip; fall back to the server's own pip
         ws = _ws(run_id)
-        pip = ws / "install" / "bin" / "pip"
-        if not pip.exists():
-            pip = Path(sys.executable).parent / "pip"
-        if not pip.exists():
-            pip = Path("pip3")
+        state = _load_state(run_id)
 
-        r = _install_dftracer_utils(pip)
+        # Use the session venv created by session_install_dftracer; create it
+        # now if this tool is called standalone before session_install_dftracer.
+        venv_python_str = state.get("session_venv_python", "")
+        if venv_python_str and Path(venv_python_str).exists():
+            pip = Path(venv_python_str).parent / "pip"
+        else:
+            try:
+                venv_python = _ensure_session_venv(ws)
+                _save_state(run_id, {"session_venv_python": str(venv_python)})
+                pip = venv_python.parent / "pip"
+            except RuntimeError:
+                pip = Path(sys.executable).parent / "pip"
+        if not pip.exists():
+            pip = Path(sys.executable).parent / "pip3"
+
+        r = _install_dftracer_utils(pip, ws=_ws(run_id), run_id=run_id)
         _save_state(run_id, {"dftracer_utils_installed": r["success"]})
         if r["success"]:
             return _ok("dftracer-utils installed from develop", **r)

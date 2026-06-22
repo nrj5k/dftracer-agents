@@ -46,8 +46,7 @@ the tool, then show key output lines **after** it completes.
 | `session_configure` (cmake/autotools) | 10–60 s | build tool, any configure warnings |
 | `session_build_install` (make) | 30 s – 10 min | exit code, last 5 lines of stdout |
 | `session_run_smoke_test` | 5–120 s | exit code, full stdout if short |
-| `session_autobuild_dftracer` | 5–30 min | clone status, build exit code, install prefix |
-| `session_install_dftracer` / `session_install_dftracer_utils` | 1–10 min | pip/cmake exit code |
+| `session_install_dftracer` / `session_install_dftracer_utils` | 1–10 min | pip install exit code, features_enabled list |
 | `session_build_annotated` (each attempt) | 30 s – 10 min | attempt number, exit code, first compiler error if any |
 | `session_run_with_dftracer` (each attempt) | 5–120 s | attempt number, exit code, trace files created |
 | `session_split_traces` | 5–60 s | output directory, file count |

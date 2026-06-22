@@ -1,17 +1,19 @@
 """
-dftracer install helpers — autobuild.sh wrapper and dftracer-utils installer.
+dftracer install helpers — pip installer, cmake builder, and dftracer-utils installer.
 
-This module handles the two external installation concerns of the dftracer
-session pipeline:
+This module handles the external installation concerns of the dftracer pipeline:
 
-1. **dftracer itself** (:func:`_install_dftracer_autobuild`) — clones the
-   dftracer repository at a requested Git ref and delegates the entire build
-   and install process to the project's own ``autobuild.sh`` script.  Using
-   the upstream script ensures that all dependency detection, CMake flag
-   handling, and install-tree layout are exactly as the dftracer project
-   intends, rather than being re-implemented here.
+1. **dftracer via pip** (:func:`_install_dftracer_pip_direct`) — installs
+   dftracer directly via ``pip install git+https://github.com/llnl/dftracer.git@<ref>``
+   with all setup.py feature env vars (MPI, HDF5, HIP, hwloc, build type, jobs)
+   derived from the detected application source and system.  This is the
+   standard installation method for all project types.
 
-2. **dftracer-utils** (:func:`_install_dftracer_utils`,
+2. **dftracer via cmake** (:func:`_install_dftracer_cmake`) — clones the
+   dftracer repository and builds/installs it directly via cmake configure +
+   build + install steps.  Available as a lower-level alternative; prefer pip.
+
+3. **dftracer-utils** (:func:`_install_dftracer_utils`,
    :func:`_dftracer_utils_split`) — installs the ``dftracer-utils`` Python
    package (post-processing tools) from the upstream ``develop`` branch and
    provides a helper that compacts raw trace files via the ``split`` MCP tool.
@@ -21,24 +23,18 @@ The split helper (:func:`_dftracer_utils_split`) uses dynamic module loading
 function directly in-process, avoiding a network round-trip to an MCP server.
 It falls back transparently to the ``dftracer_split`` CLI binary when the
 service module cannot be loaded.
-
-Runtime constraints:
-- Git clone operations time out after 600 seconds.
-- The full dftracer build (``autobuild.sh``) may take up to 1 800 seconds on
-  slow hardware; plan accordingly when setting pipeline stage timeouts.
-- The cloned dftracer source is cached at ``<workspace>/dftracer_src/`` so
-  that retries after a build failure do not re-download the repository.
 """
 from __future__ import annotations
 
 import asyncio
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from .workspace import _run
+from .workspace import _run, _write_artifact_log
 
 
 _CORE_LIB_NAMES = ("libdftracer_core.so", "libdftracer_core.so.4",
@@ -55,7 +51,7 @@ def _find_dftracer_dirs(
     Search order (stops at the first lib dir that contains ``libdftracer_core.so``):
 
     1. **cmake prefix** — ``<cmake_prefix>/lib/`` and ``<cmake_prefix>/lib64/``
-       (produced by ``autobuild.sh --install-mode cmake``).
+       (produced by a cmake-based dftracer build).
     2. **site-packages pkg dir** — ``<pkg>/lib/`` and ``<pkg>/lib64/``
        (pip wheel layout when the core lib is bundled there).
     3. **site-packages parent** — ``<site-packages>/lib/`` and ``<site-packages>/lib64/``
@@ -345,113 +341,121 @@ def _dftracer_utils_comparator(
     return _run(cmd, timeout=120)
 
 
-def _install_dftracer_utils(pip: Path) -> Dict[str, Any]:
-    """Install the ``dftracer-utils`` package from its upstream ``develop`` branch.
+def _ensure_session_venv(ws: Path) -> Path:
+    """Create an isolated venv at ``<ws>/venv/`` and return its Python executable.
 
-    Runs ``pip install --upgrade git+https://…/dftracer-utils.git@develop``
-    using the pip executable at *pip*, which may belong to a virtual
-    environment or a specific Python interpreter selected by the pipeline.
+    The venv is created once and reused on subsequent calls.  It is completely
+    isolated from the MCP server's own Python environment (no ``--system-site-packages``),
+    so every package installed into it — dftracer, dftracer-utils, and any
+    project dependencies — is confined to the workspace directory.
 
     Args:
-        pip: Absolute path to the ``pip`` (or ``pip3``) executable to use for
-            installation.  Must be writable by the current process; if a
-            virtual environment is in use the venv's pip should be supplied.
+        ws: Workspace root directory (absolute ``Path``).
+
+    Returns:
+        Path to the venv's Python interpreter (``<ws>/venv/bin/python``).
+
+    Raises:
+        RuntimeError: If venv creation fails (propagated from ``_run``).
+    """
+    venv_dir = ws / "venv"
+    python = venv_dir / "bin" / "python"
+    if not python.exists():
+        r = _run(
+            [sys.executable, "-m", "venv", "--clear", str(venv_dir)],
+            timeout=120,
+        )
+        if not r["success"]:
+            raise RuntimeError(
+                f"Failed to create session venv at {venv_dir}: {r['stderr']}"
+            )
+        # Upgrade pip inside the fresh venv
+        _run(
+            [str(python), "-m", "pip", "install", "--no-cache-dir",
+             "--quiet", "--upgrade", "pip"],
+            timeout=120,
+        )
+    return python
+
+
+def _install_dftracer_utils(
+    pip: Path,
+    ws: Optional[Path] = None,
+    run_id: str = "",
+) -> Dict[str, Any]:
+    """Install the ``dftracer-utils`` package from its upstream ``develop`` branch.
+
+    Runs ``pip install -v --upgrade git+https://…/dftracer-utils.git@develop``
+    using the pip executable at *pip*.  When *ws* is supplied the full verbose
+    output is written to ``<ws>/artifacts/06b_session_install_dftracer_utils.log``.
+
+    Args:
+        pip: Absolute path to the ``pip`` executable to use.
+        ws: Workspace root for artifact logging.  Optional.
+        run_id: Session run identifier for the artifact log header.
 
     Returns:
         Dict[str, Any]: A normalised result dict as returned by
-            :func:`~workspace._run`.  Check the ``"success"`` key to determine
-            whether installation succeeded.
+            :func:`~workspace._run`.
     """
-    return _run(
-        [str(pip), "install", "--upgrade",
+    r = _run(
+        [str(pip), "install", "-v", "--no-cache-dir", "--upgrade",
          "git+https://github.com/llnl/dftracer-utils.git@develop"],
         timeout=600,
     )
+    if ws is not None:
+        _write_artifact_log(ws, 6, "session_install_dftracer_utils",
+                            {"pip_cmd": str(pip), "pip_install_utils": r}, run_id)
+    return r
 
 
-def _install_dftracer_autobuild(
+def _install_dftracer_cmake(
     ws: Path,
     install_prefix: Path,
     dftracer_ref: str = "v2.0.3",
     jobs: int = 4,
-    install_mode: str = "cmake",
     features: Optional[Dict[str, Any]] = None,
-    python_exe: Optional[str] = None,
-    cmake_flags: Optional[list] = None,
+    extra_cmake_flags: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """Clone dftracer and build and install it via the project's own ``autobuild.sh``.
+    """Clone dftracer and build/install it directly via cmake.
 
-    Delegates the entire build to dftracer's upstream ``autobuild.sh`` so that
-    dependency detection, CMake configuration, compiler selection, and the
-    install-tree layout all follow the project's own conventions rather than
-    being duplicated here.
+    Runs three cmake invocations:
 
-    The dftracer source is cloned into ``<ws>/dftracer_src/`` on the first
-    call.  Subsequent calls (e.g. after a build failure) reuse the existing
-    clone, so the ``--depth=1`` git clone is performed at most once per
-    workspace.  The CMake build directory is placed at ``<ws>/dftracer_build/``
-    via the ``BUILD_DIR`` environment variable consumed by ``autobuild.sh``.
+    1. ``cmake -S <src> -B <bld> -DCMAKE_INSTALL_PREFIX=<prefix> <flags>``
+    2. ``cmake --build <bld> --parallel <jobs>``
+    3. ``cmake --install <bld>``
 
-    Feature flags detected by :func:`~detection._detect_info` are forwarded
-    to ``autobuild.sh`` as ``--enable-mpi`` when MPI is detected.  HDF5 is
-    intentionally not forwarded because dftracer does not require HDF5 as a
-    build dependency for C/C++ tracing (``--enable-hdf5`` is not a valid
-    ``autobuild.sh`` flag as of v2.0.3).
+    Feature flags from *features* are translated to cmake ``-D`` flags:
 
-    Note:
-        The build step may take up to 30 minutes on slow hardware.  The
-        function blocks until ``autobuild.sh`` exits or the 1 800-second
-        timeout is reached.  Ensure the calling MCP tool's timeout is set
-        accordingly.
+    * ``-DDFTRACER_ENABLE_MPI=ON``   when ``features["mpi"]`` is ``True``
+    * ``-DDFTRACER_ENABLE_HDF5=ON``  when ``features["hdf5"]`` is ``True``
+    * ``-DHDF5_ROOT=<prefix>``       when ``hdf5_system.prefix`` is known
+    * ``-DDFTRACER_ENABLE_PYTHON=OFF``  always — Python bindings are not
+      needed for C/C++ annotation and pybind11 adds unnecessary build overhead.
+
+    The dftracer source is cloned once into ``<ws>/dftracer_src/``.
+    Subsequent calls reuse the existing clone.  The cmake build tree lives
+    at ``<ws>/dftracer_build/``.
 
     Args:
-        ws: Workspace root directory (absolute ``Path``).  Source and build
-            trees are created as sub-directories of this path.
-        install_prefix: Installation prefix passed as ``--install-prefix`` to
-            ``autobuild.sh``.  dftracer headers, libraries, and CMake config
-            files are placed under this directory.
-        dftracer_ref: Git tag or branch name to clone.  Defaults to
-            ``"v2.0.3"``.  Must be a valid ref on the
-            ``https://github.com/llnl/dftracer.git`` remote.
-        jobs: Number of parallel build jobs forwarded as ``--jobs`` to
-            ``autobuild.sh``.  Defaults to ``4``.
-        install_mode: Controls what ``autobuild.sh`` installs.  Use
-            ``"cmake"`` for C/C++ projects (installs headers, libraries, and
-            CMake package config files); use ``"pip"`` for pure-Python projects
-            (installs the dftracer Python package into the target interpreter).
-        features: Detected project feature dict as returned by
-            :func:`~detection._detect_info`.  Relevant keys: ``"mpi"`` (bool),
-            ``"hdf5"`` (bool), ``"hdf5_system"`` (dict).  When ``None`` no
-            feature flags are passed.
-        python_exe: Absolute path to the Python interpreter to use for Python
-            bindings and pip-mode installation.  Forwarded as ``--python`` to
-            ``autobuild.sh``.  When ``None`` Python support is not explicitly
-            requested (though ``autobuild.sh`` may still auto-detect it).
-        cmake_flags: Extra cmake ``-D`` flags to forward to dftracer's cmake
-            build via the ``DFTRACER_CMAKE_ARGS`` env variable (semicolon-
-            separated, as expected by autobuild.sh).  Typical values come from
-            :func:`~detection._detect_info` ``dftracer_cmake_flags``.  For pip
-            mode these are ignored; feature env vars are set instead.
+        ws: Workspace root directory.
+        install_prefix: cmake install prefix (``-DCMAKE_INSTALL_PREFIX``).
+        dftracer_ref: Git tag or branch to clone.  Defaults to ``"v2.0.3"``.
+        jobs: Parallel build jobs.  Defaults to ``4``.
+        features: Detected project feature dict from ``_detect_info``.
+            Relevant keys: ``"mpi"`` (bool), ``"hdf5"`` (bool),
+            ``"hdf5_system"`` (dict with ``"cmake_hint"``).
+        extra_cmake_flags: Additional ``-D`` flags appended verbatim after the
+            auto-detected flags.  Duplicates are suppressed.
 
     Returns:
-        Dict[str, Any]: A dict with the following keys:
-
-            - ``success`` (bool): ``True`` if all steps completed without
-              error.
-            - ``steps`` (Dict[str, Any]): Per-step result dicts.  Keys:
-              ``"clone"`` (git clone result or reuse notice) and
-              ``"autobuild"`` (``autobuild.sh`` execution result).
-            - ``prefix`` (str): String form of *install_prefix* (present only
-              on success or when ``autobuild.sh`` was reached regardless of
-              its exit code).
-            - ``error`` (str): Human-readable error message (present only when
-              a pre-build check fails, e.g. ``autobuild.sh`` is missing from
-              the cloned source).
+        Dict[str, Any]: Keys ``success`` (bool), ``steps`` (per-step results),
+        ``prefix`` (str form of *install_prefix*).
     """
     features = features or {}
     src = ws / "dftracer_src"
     bld = ws / "dftracer_build"
-    bld.mkdir(exist_ok=True)
+    bld.mkdir(parents=True, exist_ok=True)
     steps: Dict[str, Any] = {}
 
     # Clone once; reuse on subsequent calls (e.g. retry after a failure)
@@ -463,63 +467,162 @@ def _install_dftracer_autobuild(
         )
         steps["clone"] = r
         if not r["success"]:
-            return {"success": False, "steps": steps}
+            return {"success": False, "steps": steps, "prefix": str(install_prefix)}
     else:
         steps["clone"] = {"status": "reused", "path": str(src)}
 
-    autobuild = src / "autobuild.sh"
-    if not autobuild.exists():
-        return {
-            "success": False,
-            "steps": steps,
-            "error": "autobuild.sh not found in cloned dftracer source",
-        }
-
-    cmd = [
-        "/bin/bash", str(autobuild),
-        "--install-mode", install_mode,
-        "--build-type", "RelWithDebInfo",
-        "--jobs", str(jobs),
+    # Base cmake flags — Python/pybind11 disabled for C/C++ projects
+    cmake_flags: List[str] = [
+        f"-DCMAKE_INSTALL_PREFIX={install_prefix}",
+        "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+        "-DDFTRACER_ENABLE_TESTS=OFF",
+        "-DDFTRACER_ENABLE_PYTHON=OFF",
     ]
 
-    # cmake mode uses an explicit install prefix; pip mode lets pip choose
-    if install_mode != "pip":
-        cmd += ["--install-prefix", str(install_prefix)]
-
-    # Feature flags — mirror what autobuild.sh exposes.
-    # Note: --enable-hdf5 is NOT a valid autobuild.sh flag (as of v2.0.3);
-    # dftracer does not require HDF5 as a dependency for C/C++ tracing.
-    if python_exe:
-        cmd += ["--python", python_exe]
     if features.get("mpi"):
-        cmd += ["--enable-mpi"]
+        cmake_flags.append("-DDFTRACER_ENABLE_MPI=ON")
+    if features.get("hdf5"):
+        cmake_flags.append("-DDFTRACER_ENABLE_HDF5=ON")
+        hdf5_hint = (features.get("hdf5_system") or {}).get("cmake_hint", "")
+        if hdf5_hint:
+            cmake_flags.append(hdf5_hint)
 
-    # Build env for autobuild.sh.
-    # cmake mode: pass feature flags via DFTRACER_CMAKE_ARGS (semicolon-separated).
-    # pip mode:   set env vars that dftracer's setup.py / pip build respects.
-    build_env: Dict[str, str] = {"BUILD_DIR": str(bld)}
+    for flag in (extra_cmake_flags or []):
+        if flag not in cmake_flags:
+            cmake_flags.append(flag)
 
-    if install_mode == "cmake":
-        extra: list = list(cmake_flags or [])
-        if features.get("hdf5"):
-            if "-DDFTRACER_ENABLE_HDF5=ON" not in extra:
-                extra.append("-DDFTRACER_ENABLE_HDF5=ON")
-            hdf5_hint = (features.get("hdf5_system") or {}).get("cmake_hint", "")
-            if hdf5_hint and hdf5_hint not in extra:
-                extra.append(hdf5_hint)
-        if extra:
-            build_env["DFTRACER_CMAKE_ARGS"] = ";".join(extra)
-    else:
-        # pip mode: feature env vars
-        if features.get("mpi"):
-            build_env["DFTRACER_ENABLE_MPI"] = "ON"
-        if features.get("hdf5"):
-            build_env["DFTRACER_ENABLE_HDF5"] = "ON"
-            hdf5_prefix = (features.get("hdf5_system") or {}).get("prefix") or ""
-            if hdf5_prefix:
-                build_env["HDF5_ROOT"] = hdf5_prefix
-                build_env["HDF5_DIR"] = hdf5_prefix
+    # 1. cmake configure
+    r_cfg = _run(
+        ["cmake", "-S", str(src), "-B", str(bld)] + cmake_flags,
+        timeout=300,
+    )
+    steps["cmake_configure"] = r_cfg
+    if not r_cfg["success"]:
+        return {"success": False, "steps": steps, "prefix": str(install_prefix)}
 
-    r = _run(cmd, cwd=src, env=build_env, timeout=1800)
-    steps["autobuild"] = r
-    return {"success": r["success"], "steps": steps, "prefix": str(install_prefix)}
+    # 2. cmake build
+    r_bld = _run(
+        ["cmake", "--build", str(bld), "--parallel", str(jobs)],
+        timeout=1800,
+    )
+    steps["cmake_build"] = r_bld
+    if not r_bld["success"]:
+        return {"success": False, "steps": steps, "prefix": str(install_prefix)}
+
+    # 3. cmake install
+    r_inst = _run(
+        ["cmake", "--install", str(bld)],
+        timeout=300,
+    )
+    steps["cmake_install"] = r_inst
+    return {
+        "success": r_inst["success"],
+        "steps": steps,
+        "prefix": str(install_prefix),
+    }
+
+
+def _install_dftracer_pip_direct(
+    dftracer_ref: str = "v2.0.3",
+    features: Optional[Dict[str, Any]] = None,
+    python_exe: Optional[str] = None,
+    jobs: int = 4,
+    pip_env_override: Optional[Dict[str, str]] = None,
+    ws: Optional[Path] = None,
+    run_id: str = "",
+) -> Dict[str, Any]:
+    """Install dftracer via pip with all setup.py env vars derived from detected features.
+
+    Runs::
+
+        pip install -v --no-cache-dir --upgrade git+https://github.com/llnl/dftracer.git@<ref>
+
+    Environment variables are built from ``features["dftracer_pip_env"]`` (the
+    complete dict produced by ``_detect_info``) and supplemented with fallback
+    logic for callers that supply a raw ``features`` dict without
+    ``dftracer_pip_env``.  The full set of variables passed to ``setup.py``:
+
+    Always set:
+      ``DFTRACER_BUILD_TYPE=RelWithDebInfo``
+      ``DFTRACER_ENABLE_TESTS=OFF``
+      ``DFTRACER_ENABLE_DLIO_BENCHMARK_TESTS=OFF``
+      ``DFTRACER_ENABLE_PAPER_TESTS=OFF``
+      ``JOBS=<jobs>``
+      ``CMAKE_BUILD_PARALLEL_LEVEL=<jobs>``
+
+    Set when detected in source/system:
+      ``DFTRACER_ENABLE_MPI=ON``          — MPI headers/calls found in source
+      ``DFTRACER_ENABLE_HDF5=ON``         — HDF5 headers/calls found in source or system
+      ``HDF5_ROOT=<prefix>``              — system HDF5 prefix (pkg-config / h5cc)
+      ``HDF5_DIR=<prefix>``              — same as HDF5_ROOT
+      ``DFTRACER_ENABLE_HIP_TRACING=ON``  — HIP GPU headers/calls found in source
+      ``DFTRACER_DISABLE_HWLOC=OFF``      — hwloc dev libs found on system
+
+    Args:
+        dftracer_ref: Git tag or branch to install.  Defaults to ``"v2.0.3"``.
+        features: Detected project feature dict from ``_detect_info``.  Uses
+            ``features["dftracer_pip_env"]`` when present; falls back to
+            building the env from individual feature flags.
+        python_exe: Python interpreter path.  Defaults to ``sys.executable``.
+        jobs: Parallel build jobs passed as ``JOBS`` and
+            ``CMAKE_BUILD_PARALLEL_LEVEL``.  Defaults to ``4``.
+        pip_env_override: Optional dict of additional env vars that are merged
+            on top of the computed env (caller-supplied overrides take priority).
+        ws: Workspace root for artifact logging.  When supplied the full verbose
+            pip output is written to ``<ws>/artifacts/06_session_install_dftracer.log``.
+        run_id: Session run identifier for the artifact log header.
+
+    Returns:
+        Dict[str, Any]: Keys ``success`` (bool), ``steps`` (pip_install result),
+        ``pip_env`` (the env dict actually used, for diagnostics).
+    """
+    features = features or {}
+    py = python_exe or sys.executable
+
+    # Start from the pre-built pip_env if detection produced one
+    pip_env: Dict[str, str] = dict(features.get("dftracer_pip_env") or {})
+
+    # Always-on defaults (fill gaps when dftracer_pip_env is absent or partial)
+    pip_env.setdefault("DFTRACER_BUILD_TYPE", "RelWithDebInfo")
+    pip_env.setdefault("DFTRACER_ENABLE_TESTS", "OFF")
+    pip_env.setdefault("DFTRACER_ENABLE_DLIO_BENCHMARK_TESTS", "OFF")
+    pip_env.setdefault("DFTRACER_ENABLE_PAPER_TESTS", "OFF")
+
+    # Feature fallbacks (in case caller passed features without dftracer_pip_env)
+    if features.get("mpi"):
+        pip_env.setdefault("DFTRACER_ENABLE_MPI", "ON")
+    if features.get("hdf5"):
+        pip_env.setdefault("DFTRACER_ENABLE_HDF5", "ON")
+        hdf5_prefix = (features.get("hdf5_system") or {}).get("prefix") or ""
+        if hdf5_prefix:
+            pip_env.setdefault("HDF5_ROOT", hdf5_prefix)
+            pip_env.setdefault("HDF5_DIR", hdf5_prefix)
+    if features.get("hip"):
+        pip_env.setdefault("DFTRACER_ENABLE_HIP_TRACING", "ON")
+    if features.get("hwloc"):
+        pip_env.setdefault("DFTRACER_DISABLE_HWLOC", "OFF")
+
+    # Build parallelism
+    pip_env["JOBS"] = str(jobs)
+    pip_env["CMAKE_BUILD_PARALLEL_LEVEL"] = str(jobs)
+
+    # Caller overrides win
+    if pip_env_override:
+        pip_env.update(pip_env_override)
+
+    r = _run(
+        [py, "-m", "pip", "install", "-v", "--no-cache-dir", "--upgrade",
+         f"git+https://github.com/llnl/dftracer.git@{dftracer_ref}"],
+        env=pip_env,
+        timeout=900,
+    )
+    if ws is not None:
+        _write_artifact_log(ws, 6, "session_install_dftracer", {
+            "python_exe": py,
+            "dftracer_ref": dftracer_ref,
+            "pip_env": str(pip_env),
+            "pip_install": r,
+        }, run_id)
+    return {"success": r["success"], "steps": {"pip_install": r}, "pip_env": pip_env}
+
+

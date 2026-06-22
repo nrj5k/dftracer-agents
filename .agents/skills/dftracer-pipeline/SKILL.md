@@ -15,6 +15,34 @@ Read the lessons file before doing anything else. Apply every lesson that
 matches the current app or language.
 
 ══════════════════════════════════════════════════════════════════════
+!! ANNOTATION MODE — MANDATORY RULE (READ BEFORE ANY OTHER STEP) !!
+══════════════════════════════════════════════════════════════════════
+
+ALWAYS annotate using MCP clang tools. NEVER do manual annotation.
+
+  CORRECT flow:
+    1. clang_annotate_project()         ← primary: annotates all files at once
+    2. clang_syntax_check() per file    ← validation
+    3. clang_lint_annotations() per file← validation
+    4. If check/lint FAILS for a specific function → call clang_annotate_file()
+       with that function excluded or with comp_overrides to correct it.
+       This is "manual correction" — targeted, single-function only.
+
+  FORBIDDEN at all times (do NOT do these, ever):
+    ✗ Read a source file → manually compose macros → Write/Edit the file
+    ✗ Use Bash gcc/g++ -fsyntax-only to check annotations
+    ✗ Call session_annotate_c_file / session_annotate_cpp_file (deprecated)
+    ✗ Rewrite or re-annotate an entire file with Edit/Write tools
+    ✗ Fall back to "manual mode" when an MCP call fails — instead, re-call
+      clang_annotate_file() for only the failing function with overrides.
+
+  If clang_annotate_project itself fails to run (tool error, not annotation
+  error): diagnose the tool error, do NOT switch to manual annotation.
+  Report the tool failure to the user and stop.
+
+══════════════════════════════════════════════════════════════════════
+
+══════════════════════════════════════════════════════════════════════
 STEP 1 — GATHER INPUTS  (if not supplied via arguments)
 ══════════════════════════════════════════════════════════════════════
 
@@ -47,19 +75,21 @@ STEP 2 — SESSION SETUP  (MCP tools)
     session_create(url=APP_URL, ref=REF)
     → store RUN_ID, WS (workspace path)
 
-2b. Check HDF5 version before configuring:
+2b. Validate HDF5 version (only if project uses HDF5):
 
-    h5cc --version 2>/dev/null || h5pcc --version 2>/dev/null || \
-      find /usr -name "H5public.h" | xargs grep H5_VERS_INFO 2>/dev/null | head -1
+    h5cc --version 2>/dev/null || h5dump --version 2>/dev/null || \
+      pkg-config --modversion hdf5 2>/dev/null
 
-    REQUIRED: HDF5 ≥ 1.14.x. If the system HDF5 is 1.10.x or 1.12.x:
-      - Build HDF5 1.14 from source into <WS>/hdf5_1.14/ (see dftracer-install skill)
+    dftracer-compatible HDF5 versions (exact series only):
+      1.8.23  |  1.10.5  |  1.12.3  |  1.14.5 (preferred)
+
+    If the system HDF5 is NOT in one of these series:
+      - Build HDF5 1.14.5 from source into <WS>/hdf5_1.14/ (see dftracer-install skill)
       - Add "-DHDF5_DIR=<WS>/hdf5_1.14" to EXTRA_FLAGS for all cmake steps
       - Set HDF5_DIR and LD_LIBRARY_PATH in every subsequent shell command
 
-    HDF5 1.14 unlocks: H5Pset_page_buffer_size with MPIO VFD,
-    async VOL (H5Fcreate_async), improved collective metadata flush,
-    and the full posix_close_ops_slope fix path.
+    The MCP session_detect tool reports hdf5_system.compatible=true/false and
+    hdf5_system.recommended with the preferred patch release for the detected series.
 
 2c. Configure + build the original source:
 
@@ -71,7 +101,7 @@ STEP 2 — SESSION SETUP  (MCP tools)
 
     session_install_dftracer(run_id=RUN_ID)
 
-    On failure → print the autobuild error and stop.
+    On failure → print the cmake/pip error and stop.
 
 2d. Copy source to annotated/ workspace:
 
@@ -194,14 +224,24 @@ STEP 5 — BUILD ANNOTATED VERSION  (MCP tools)
 
 5a. Detect explicit INIT usage to determine DFTRACER_INIT mode:
 
-    grep -r "DFTRACER_C_INIT\|DFTRACER_CPP_INIT\|DFTracer.initialize_log" \
-      <WS>/annotated/ 2>/dev/null | wc -l
+    INIT_COUNT=$(grep -r "DFTRACER_C_INIT\|DFTRACER_CPP_INIT\|DFTracer.initialize_log" \
+      <WS>/annotated/ 2>/dev/null | wc -l)
+    FINI_COUNT=$(grep -r "DFTRACER_C_FINI\|DFTRACER_CPP_FINI\|dftracer.finalize_log" \
+      <WS>/annotated/ 2>/dev/null | wc -l)
 
-    count > 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "FUNCTION"}
-    count == 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "PRELOAD"}
+    INIT_COUNT > 0 AND FINI_COUNT > 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "HYBRID"}
+      (source has both INIT and FINI: function profiling + I/O interception)
+
+    INIT_COUNT > 0 AND FINI_COUNT == 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "PRELOAD"}
+      (missing FINI — HYBRID would leave traces open; fall back to preload-only)
+
+    INIT_COUNT == 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "PRELOAD"}
+      (no annotations — preload-only I/O interception)
 
     Important: NEVER set DFTRACER_INIT=0 — it disables POSIX-level
-    tracing. Valid values: FUNCTION (default), PRELOAD, HYBRID.
+    tracing. Valid values: HYBRID (annotated source with both INIT+FINI),
+    PRELOAD (transparent I/O only, no annotations), FUNCTION (annotations only,
+    no I/O interception). All values are CASE-SENSITIVE uppercase strings.
 
 5b. Build and install annotated version:
 

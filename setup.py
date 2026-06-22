@@ -22,4 +22,7 @@ class BuildPy(build_py):
         super().run()
 
 
-setup(cmdclass={"build_py": BuildPy})
+setup(
+    cmdclass={"build_py": BuildPy},
+    scripts=["dftracer-agents/dftracer_mcp_server.sh"],
+)

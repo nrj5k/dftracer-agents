@@ -3,26 +3,36 @@ name: dftracer-install
 description: Install and privilege rules for dftracer sessions — never use sudo, always install to userspace paths; autotools pkg-config integration
 ---
 
-## HDF5 Version Requirement
+## HDF5 Compatible Versions
 
-**Always use HDF5 1.14.x for h5bench and any parallel I/O project.**
+dftracer is tested and compatible with exactly these HDF5 releases:
 
-HDF5 1.14 is required to enable:
-- `H5Pset_page_buffer_size` with the MPI-IO VFD (broken/unsupported in 1.10.x)
-- The async VOL connector (`H5Fcreate_async`, `H5Dwrite_async`, etc.)
-- Full collective metadata API (`H5Pset_all_coll_metadata_ops`)
-- Improved chunk cache and metadata cache flush control
+| Series | Specific version to use |
+|--------|------------------------|
+| 1.8.x  | **1.8.23**             |
+| 1.10.x | **1.10.5**             |
+| 1.12.x | **1.12.3**             |
+| 1.14.x | **1.14.5** (preferred) |
 
-Using HDF5 1.10.x silently degrades performance:
-- `H5Pset_page_buffer_size` is a no-op with the MPIO VFD in 1.10.x
-- `H5Fcreate_async` is a stub that falls back to synchronous I/O
-- The posix_close_ops_slope bottleneck worsens because metadata is flushed per-operation
+**Default: use 1.14.5.** It has the most complete API support.
 
-### How to install HDF5 1.14 from source (userspace, with MPI)
+Any other major.minor series (e.g. 1.6.x, 1.16.x) is NOT supported by dftracer
+and must be replaced.
+
+### Checking the installed version
 
 ```bash
-wget https://github.com/HDFGroup/hdf5/releases/download/hdf5_1.14.4/hdf5-1.14.4.tar.gz
-tar xf hdf5-1.14.4.tar.gz && cd hdf5-1.14.4
+h5cc --version 2>/dev/null || h5dump --version 2>/dev/null
+# Or: pkg-config --modversion hdf5
+```
+
+If the system version is NOT in the table above → build 1.14.5 from source.
+
+### How to install HDF5 1.14.5 from source (userspace, with MPI)
+
+```bash
+wget https://github.com/HDFGroup/hdf5/releases/download/hdf5_1.14.5/hdf5-1.14.5.tar.gz
+tar xf hdf5-1.14.5.tar.gz && cd hdf5-1.14.5
 CC=mpicc ./configure \
   --prefix=<session_ws>/hdf5_1.14 \
   --enable-parallel \
@@ -35,6 +45,9 @@ export LD_LIBRARY_PATH=$HDF5_DIR/lib:$LD_LIBRARY_PATH
 ```
 
 Then rebuild the application with `-I$HDF5_DIR/include -L$HDF5_DIR/lib -lhdf5`.
+
+HDF5 1.14.x unlocks: `H5Pset_page_buffer_size` with the MPI-IO VFD, the async
+VOL connector (`H5Fcreate_async`), and the full collective metadata flush API.
 
 ---
 
@@ -68,11 +81,38 @@ Use `PKG_CONFIG_PATH` + the generated `.pc` file instead.
   find <dir> -name ".deps" -type d -exec rm -rf {} + 2>/dev/null
   ```
 
+## Python / pip — Always Use Full Paths
+
+**Never invoke bare `python`, `python3`, or `pip`/`pip3` in shell commands or MCP tool subprocess calls.**
+Always use the full path so the active environment is unambiguous:
+
+```bash
+# wrong
+python my_app.py
+pip install dftracer
+
+# correct
+/path/to/venv/bin/python my_app.py
+/path/to/venv/bin/pip install dftracer
+
+# in MCP tool Python code — always sys.executable or the venv bin path
+import sys
+venv_python = venv_dir / "bin" / "python"
+_run([sys.executable, "-m", "venv", str(venv_dir)])   # create
+_run([str(venv_python), "my_app.py"])                  # run
+pip = venv_dir / "bin" / "pip"
+_run([str(pip), "install", "dftracer"])                # install
+```
+
+The session venv python is always at `<workspace>/venv/bin/python`; the session pip is at `<workspace>/venv/bin/pip`.
+
+---
+
 ## Install and Privilege Rules
 
 **Never use `sudo` or install into system paths.** All installs must be userspace only:
 
-- Python packages: `pip install --user` or into a venv (`venv/bin/pip install`)
+- Python packages: use the venv pip — `<workspace>/venv/bin/pip install` (never bare `pip install --user`)
 - npm/node: use `npm install --prefix ~/.local` or a project-local `node_modules/`
 - CMake/make: always pass `-DCMAKE_INSTALL_PREFIX=<userspace path>` (e.g. `~/.local` or the session's `install/` dir)
 - Autotools: always pass `--prefix=<userspace path>` to `./configure`
