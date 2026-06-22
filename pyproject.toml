@@ -39,15 +39,19 @@ packages = [
     "dftracer_agents.mcp_tools.tools.dftracer",
     "dftracer_agents.mcp_tools.tools.papers",
     "dftracer_agents.mcp_tools.tools.session",
+    "dftracer_agents.mcp_tools.tools.annotations",
+    "dftracer_agents.mcp_tools.tools.optimizations",
 ]
 
 [tool.setuptools.package-dir]
-"dftracer_agents"                          = "dftracer-agents"
-"dftracer_agents.mcp_tools"               = "dftracer-agents/mcp-tools"
-"dftracer_agents.mcp_tools.tools"         = "dftracer-agents/mcp-tools/tools"
-"dftracer_agents.mcp_tools.tools.dftracer" = "dftracer-agents/mcp-tools/tools/dftracer"
-"dftracer_agents.mcp_tools.tools.papers"  = "dftracer-agents/mcp-tools/tools/papers"
-"dftracer_agents.mcp_tools.tools.session" = "dftracer-agents/mcp-tools/tools/session"
+"dftracer_agents"                               = "dftracer-agents"
+"dftracer_agents.mcp_tools"                    = "dftracer-agents/mcp-tools"
+"dftracer_agents.mcp_tools.tools"              = "dftracer-agents/mcp-tools/tools"
+"dftracer_agents.mcp_tools.tools.dftracer"     = "dftracer-agents/mcp-tools/tools/dftracer"
+"dftracer_agents.mcp_tools.tools.papers"       = "dftracer-agents/mcp-tools/tools/papers"
+"dftracer_agents.mcp_tools.tools.session"      = "dftracer-agents/mcp-tools/tools/session"
+"dftracer_agents.mcp_tools.tools.annotations"  = "dftracer-agents/mcp-tools/tools/annotations"
+"dftracer_agents.mcp_tools.tools.optimizations" = "dftracer-agents/mcp-tools/tools/optimizations"
 
 [tool.setuptools.package-data]
 "dftracer_agents" = [".agents/skills/*/SKILL.md", "*.sh"]
