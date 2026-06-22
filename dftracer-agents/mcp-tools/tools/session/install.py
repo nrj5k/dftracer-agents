@@ -615,6 +615,20 @@ def _install_dftracer_pip_direct(
         if _mpicxx:
             pip_env.setdefault("CXX", _mpicxx)
 
+        # Pass DFTRACER_MPI_IMPL override via DFTRACER_CMAKE_ARGS so dftracer's
+        # dep cmake skips its own probe and forwards the correct impl to brahma.
+        # Also pass BRAHMA_MPI_IMPL directly to override brahma's -v parsing.
+        # Detect the actual MPI implementation from the compiler path or env.
+        _mpi_impl_override = ""
+        if "openmpi" in (_mpicc + pip_env.get("MPICC", "")).lower():
+            _mpi_impl_override = "OPENMPI"
+        if _mpi_impl_override:
+            _existing = pip_env.get("DFTRACER_CMAKE_ARGS", "")
+            _new_args = f"-DDFTRACER_MPI_IMPL={_mpi_impl_override}"
+            pip_env["DFTRACER_CMAKE_ARGS"] = (
+                (_existing + " " + _new_args).strip() if _existing else _new_args
+            )
+
     # cmake 4.x removed compatibility with cmake_minimum_required < 3.5.
     # The gotcha dependency (fetched transitively by brahma) ships an old
     # CMakeLists.txt that triggers this.  Setting CMAKE_POLICY_VERSION_MINIMUM
@@ -733,6 +747,34 @@ def _install_dftracer_pip_direct(
             timeout=600,
         )
         if r_clone["success"]:
+            # Patch dftracer's main cmake: the MPI impl compile definition is
+            # set via target_compile_definitions(dftracer_core ...) at line 527,
+            # but dftracer_core is only created at line 722.  When cmake finds
+            # an IMPORTED dftracer_core from a previous install's cmake config
+            # (via CMAKE_PREFIX_PATH), the call fails with "not built by this
+            # project".  Fix: use add_compile_definitions (directory-scoped,
+            # no target needed) so dftracer_core picks it up when it IS built.
+            _dftracer_cmake = clone_dir / "CMakeLists.txt"
+            if _dftracer_cmake.exists():
+                _dc = _dftracer_cmake.read_text()
+                _old_tcd = (
+                    "                # Set implementation-specific compile definition\n"
+                    "                if(NOT DFTRACER_MPI_IMPL_NAME STREQUAL \"UNKNOWN\")\n"
+                    "                        target_compile_definitions(${PROJECT_NAME}_core PUBLIC\n"
+                    "                                DFTRACER_MPI_IMPL_${DFTRACER_MPI_IMPL_NAME})\n"
+                    "                endif()\n"
+                )
+                _new_tcd = (
+                    "                # Set implementation-specific compile definition\n"
+                    "                if(NOT DFTRACER_MPI_IMPL_NAME STREQUAL \"UNKNOWN\")\n"
+                    "                        add_compile_definitions(\n"
+                    "                                DFTRACER_MPI_IMPL_${DFTRACER_MPI_IMPL_NAME})\n"
+                    "                endif()\n"
+                )
+                if _old_tcd in _dc:
+                    _dc = _dc.replace(_old_tcd, _new_tcd)
+                    _dftracer_cmake.write_text(_dc)
+
             # dftracer develop's generated src/dftracer/core/brahma/mpi.h was
             # generated against an MPICH-style MPI where handles are plain
             # integers (MPI_Comm = int, MPI_Datatype = int, etc.).  OpenMPI
@@ -815,23 +857,16 @@ bool MPIDFTracer::stop_trace = false;
             if _mpi_cpp.exists():
                 _mpi_cpp.write_text(_MPI_CPP_STUB)
 
-            # Pre-clone brahma v1.0.6 and patch its mpi.h so the
-            # MPI_Errhandler_create removal macro (defined by OpenMPI 4.1.x
-            # AFTER #include <mpi.h>) does not break brahma's class body.
-            #
-            # Why -UMPI_Errhandler_create does NOT work: the compiler flag
-            # -U only removes the macro as it would exist before compilation
-            # starts. <mpi.h> REDEFINES it during compilation and the -U has
-            # no effect on later #define directives inside included files.
-            # The only reliable fix is to patch brahma's header to explicitly
-            # #undef the symbol right after <mpi.h> is processed.
-            #
-            # MPI_Errhandler_create IS still present as a linker symbol in
-            # libmpi.so, so the GOTCHA binding registered by brahma at runtime
-            # will succeed — we just prevent the header-level macro clash.
+            # Pre-clone brahma v1.0.7 (which dftracer develop uses) and patch:
+            # 1. mpi.h: fix OpenMPI 4.x C++11 compile errors (MPI_Errhandler_create
+            #    macro clash and missing MPI_Handler_function typedef).
+            # 2. CMakeLists.txt: wrap the MPI standard version fallback with
+            #    "if (NOT BRAHMA_MPI_VERSION)" so that the externally supplied
+            #    -DBRAHMA_MPI_VERSION=<num> from BRAHMA_CONFIGURE_ARGS is honoured
+            #    instead of being overwritten by the fallback detection.
             brahma_src_dir = _Path(_tempfile.mkdtemp(prefix="brahma_src_"))
             r_brahma = _run(
-                ["git", "clone", "--depth=1", "--branch", "v1.0.6",
+                ["git", "clone", "--depth=1", "--branch", "v1.0.7",
                  "https://github.com/hariharan-devarajan/brahma.git",
                  str(brahma_src_dir)],
                 timeout=300,
@@ -847,7 +882,7 @@ bool MPIDFTracer::stop_trace = false;
                     #   1. Omits the MPI_Handler_function typedef from <mpi.h>
                     #   2. Omits the MPI_Errhandler_create function declaration
                     #   3. Defines #define MPI_Errhandler_create(...) static_assert(0,...)
-                    # Brahma v1.0.6's class body uses both as types → compile error.
+                    # Brahma v1.0.7's class body uses both as types → compile error.
                     # Fix:
                     #   a) #undef the static_assert macro so the identifier is free
                     #   b) Provide the missing MPI_Handler_function typedef
@@ -905,31 +940,33 @@ bool MPIDFTracer::stop_trace = false;
                 except Exception:
                     pass
 
-                # Patch brahma's cmake else() block so that when BRAHMA_MPI_VERSION
-                # is already set (from -D on the cmake command line), the
-                # auto-detection is skipped and our value is used.
+                # Patch brahma v1.0.7's cmake: wrap the MPI standard version
+                # fallback with "if (NOT BRAHMA_MPI_VERSION)" so that
+                # -DBRAHMA_MPI_VERSION=<num> passed via BRAHMA_CONFIGURE_ARGS
+                # is used instead of being overwritten by the fallback.
+                # v1.0.7 uses 6-space indent and "MPI standard version (fallback)".
                 _brahma_cmake = brahma_src_dir / "CMakeLists.txt"
                 if _brahma_cmake.exists():
                     _bc = _brahma_cmake.read_text()
                     _old_fallback = (
-                        "        convert_version_to_number"
+                        "      convert_version_to_number"
                         '("${MPI_C_VERSION}" BRAHMA_MPI_VERSION)\n'
-                        "        message(STATUS "
-                        '"[${PROJECT_NAME}] MPI library version (fallback):'
+                        "      message(STATUS "
+                        '"[${PROJECT_NAME}] MPI standard version (fallback):'
                         ' ${MPI_C_VERSION} (${BRAHMA_MPI_VERSION})")\n'
                     )
                     _new_fallback = (
-                        "        if (NOT BRAHMA_MPI_VERSION)\n"
-                        "          convert_version_to_number"
+                        "      if(NOT BRAHMA_MPI_VERSION)\n"
+                        "        convert_version_to_number"
                         '("${MPI_C_VERSION}" BRAHMA_MPI_VERSION)\n'
-                        "          message(STATUS "
-                        '"[${PROJECT_NAME}] MPI library version (fallback):'
+                        "        message(STATUS "
+                        '"[${PROJECT_NAME}] MPI standard version (fallback):'
                         ' ${MPI_C_VERSION} (${BRAHMA_MPI_VERSION})")\n'
-                        "        else()\n"
-                        "          message(STATUS "
+                        "      else()\n"
+                        "        message(STATUS "
                         '"[${PROJECT_NAME}] Using provided'
                         ' BRAHMA_MPI_VERSION: ${BRAHMA_MPI_VERSION}")\n'
-                        "        endif()\n"
+                        "      endif()\n"
                     )
                     if _old_fallback in _bc:
                         _bc = _bc.replace(_old_fallback, _new_fallback)
@@ -942,8 +979,9 @@ bool MPIDFTracer::stop_trace = false;
                 _run(["git", "-C", str(brahma_src_dir), "add", "-A"],
                      timeout=10)
                 _run(["git", "-C", str(brahma_src_dir), "commit", "-m",
-                      "undef MPI_Errhandler_create after mpi.h"], timeout=15)
-                _run(["git", "-C", str(brahma_src_dir), "tag", "v1.0.6-fix"],
+                      "fix: guard MPI version fallback; undef MPI_Errhandler_create"],
+                     timeout=15)
+                _run(["git", "-C", str(brahma_src_dir), "tag", "v1.0.7-fix"],
                      timeout=10)
                 brahma_local_url = f"file://{brahma_src_dir}"
 
@@ -951,11 +989,11 @@ bool MPIDFTracer::stop_trace = false;
             if dep_cmake.exists():
                 dc = dep_cmake.read_text()
                 # If we have a patched local brahma, redirect dftracer's cmake
-                # to use it instead of fetching v1.0.6 from GitHub.
+                # to use it instead of fetching v1.0.7 from GitHub.
                 if brahma_local_url:
                     dc = dc.replace(
-                        "https://github.com/hariharan-devarajan/brahma.git v1.0.6",
-                        f"{brahma_local_url} v1.0.6-fix",
+                        "https://github.com/hariharan-devarajan/brahma.git v1.0.7",
+                        f"{brahma_local_url} v1.0.7-fix",
                     )
                 # Inject BRAHMA_MPI_VERSION into BRAHMA_CONFIGURE_ARGS so that
                 # brahma's cmake receives the true OpenMPI implementation version
