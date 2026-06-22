@@ -1,32 +1,42 @@
 #!/usr/bin/env python3
 """
-DFTracer MCP Server — HTTP (streamable-http) entry point for Goose and other
+DFTracer MCP Server — stdio (default) or HTTP transport for Goose and other
 MCP clients.
 
 Exposes dftracer_utils and dfanalyzer tools over the Model Context Protocol
-using FastMCP's streamable-HTTP transport (default) or stdio.
+using FastMCP's stdio transport (default) or streamable-HTTP.
 
 Usage:
-    dftracer-mcp-server                          # HTTP on 0.0.0.0:5000 (default)
-    dftracer-mcp-server --port 8080
-    dftracer-mcp-server --transport stdio        # legacy stdio mode
+    dftracer-mcp-server                          # stdio mode (default)
+    dftracer-mcp-server --transport http         # HTTP on 0.0.0.0:5000
+    dftracer-mcp-server --transport http --port 8080
     dftracer-mcp-server --service utils
     dftracer-mcp-server --service analyzer
     dftracer-mcp-server --service both
 
-Goose config (~/.config/goose/config.yaml):
-    extensions:
-      dftracer:
-        type: streamable_http
-        uri: http://localhost:5000/mcp
-        enabled: true
+Claude Code config (.claude/settings.json) for stdio:
+    {
+      "mcpServers": {
+        "dftracer": {
+          "command": "dftracer-mcp-server",
+          "args": ["--service", "both"]
+        }
+      }
+    }
 
-Claude Code config (.claude/settings.json):
+Claude Code config (.claude/settings.json) for HTTP:
     {
       "mcpServers": {
         "dftracer": { "url": "http://localhost:5000/mcp" }
       }
     }
+
+Goose config (~/.config/goose/config.yaml) for HTTP:
+    extensions:
+      dftracer:
+        type: streamable_http
+        uri: http://localhost:5000/mcp
+        enabled: true
 """
 from __future__ import annotations
 
@@ -314,7 +324,7 @@ def build_server(service: str) -> FastMCP:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="DFTracer MCP Server — HTTP or stdio transport for Goose and MCP clients"
+        description="DFTracer MCP Server — stdio (default) or HTTP transport for Goose and MCP clients"
     )
     parser.add_argument(
         "--service",
@@ -324,9 +334,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--transport",
-        choices=["http", "streamable-http", "sse", "stdio"],
-        default="http",
-        help="Transport protocol (default: http / streamable-http)",
+        choices=["stdio", "http", "streamable-http", "sse"],
+        default="stdio",
+        help="Transport protocol (default: stdio)",
     )
     parser.add_argument(
         "--host",
