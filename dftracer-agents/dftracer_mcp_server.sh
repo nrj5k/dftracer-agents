@@ -4,9 +4,10 @@
 # relaunch the server to pick up code changes.
 #
 # Usage:
-#   ./start-mcp-server.sh             # start / restart
-#   ./start-mcp-server.sh --service both --port 5000
-#   ./start-mcp-server.sh stop        # stop only
+#   ./dftracer_mcp_server.sh                           # start / restart (HTTP on port 5000)
+#   ./dftracer_mcp_server.sh --service both --port 5000
+#   ./dftracer_mcp_server.sh --transport streamable-http
+#   ./dftracer_mcp_server.sh stop                      # stop only
 
 set -euo pipefail
 
@@ -17,6 +18,7 @@ PID_FILE="/tmp/dftracer-agents.pid"
 LOG_FILE="/tmp/mcp_server.log"
 PORT="${MCP_PORT:-5000}"
 SERVICE="${MCP_SERVICE:-both}"
+TRANSPORT="http"   # this script always manages an HTTP background server
 
 # ── parse args ─────────────────────────────────────────────────────────────
 STOP_ONLY=false
@@ -26,6 +28,7 @@ while [[ $# -gt 0 ]]; do
     stop) STOP_ONLY=true; shift ;;
     --port) PORT="$2"; shift 2 ;;
     --service) SERVICE="$2"; shift 2 ;;
+    --transport) TRANSPORT="$2"; shift 2 ;;
     *) EXTRA_ARGS+=("$1"); shift ;;
   esac
 done
@@ -37,14 +40,13 @@ if [[ -f "$PID_FILE" ]]; then
     echo "[mcp] Stopping existing server (PID $OLD_PID)…"
     kill "$OLD_PID" 2>/dev/null || true
     sleep 1
-    # Force-kill if still running
     kill -9 "$OLD_PID" 2>/dev/null || true
   fi
   rm -f "$PID_FILE"
 fi
 
-# Also kill any stale server that owns the port
-STALE=$(ss -tlnp 2>/dev/null | awk -F'pid=' "/0\.0\.0\.0:$PORT/{split(\$2,a,\",\"); print a[1]}" | head -1)
+# Also kill any stale process that still owns the port
+STALE=$(lsof -ti "tcp:$PORT" 2>/dev/null | head -1 || true)
 if [[ -n "$STALE" ]]; then
   echo "[mcp] Killing stale process $STALE on port $PORT…"
   kill "$STALE" 2>/dev/null || true
@@ -65,9 +67,10 @@ else
   SERVER_CMD=("$PYTHON" -m dftracer_agents.mcp_server)
 fi
 
-echo "[mcp] Starting DFTracer MCP server (service=$SERVICE port=$PORT)…"
+echo "[mcp] Starting DFTracer MCP server (service=$SERVICE transport=$TRANSPORT port=$PORT)…"
 "${SERVER_CMD[@]}" \
   --service "$SERVICE" \
+  --transport "$TRANSPORT" \
   --port "$PORT" \
   "${EXTRA_ARGS[@]}" \
   >> "$LOG_FILE" 2>&1 &
