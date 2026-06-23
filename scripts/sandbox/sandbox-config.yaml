@@ -1,0 +1,15 @@
+mounts:
+    paths:
+        # msr-safe work
+        # - "ro:/lib/modules"
+        # - "ro:/usr/src"
+        - "rw:/usr/workspace/haridev/dftracer-agents/workspaces"
+        # gemma models
+        # - "ro:/usr/workspace/lc-user/mapp/sandbox/models"
+        # llama.cpp build
+        # - "ro:/p/vast1/rountree/machines/tuolumne/gemma/build/bin"
+        # Clade Code binaries
+        - "ro:/collab/usr/global/tools/sandbox/claude-binaries/"
+        # Aider
+        # - "ro:/g/g24/rountree/.local/share/pipx/venvs/aider-chat"
+

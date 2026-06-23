@@ -26,3 +26,6 @@ dftracer-agents/.agents
 test/data/dftracer-sample
 package-lock.json
 workspaces/
+resources/
+.cache
+.cargo-goose

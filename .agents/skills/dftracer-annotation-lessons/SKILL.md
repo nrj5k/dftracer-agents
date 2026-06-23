@@ -71,6 +71,131 @@ R8  If annotated code contains explicit DFTRACER_C_INIT() / DFTRACER_CPP_INIT()
 <!-- New entries are appended below this line by the pipeline recipe -->
 
 ---
+date: 2026-06-22
+app: https://github.com/llnl/ior (tag 4.0.0)
+context: IOR 4.0.0 autoreconf fails without -I config flag and stub files
+error: |
+  configure: error: cannot find install-sh, install.sh, or shtool in config
+  X_AC_META: command not found
+  automake: error: required file './NEWS' not found
+root_cause: |
+  IOR 4.0.0 ships without a pre-generated configure script. The custom
+  X_AC_META m4 macro lives in config/ not the default autoconf include path.
+  automake also requires NEWS and AUTHORS files to exist (even empty).
+fix: |
+  cd <source> && touch NEWS AUTHORS && autoreconf -fi -I config
+  Then run configure normally.
+tags: [c, autotools, ior, autoreconf, configure]
+
+---
+date: 2026-06-22
+app: https://github.com/llnl/ior (tag 4.0.0)
+context: IOR 4.0.0 linker fails with duplicate symbol errors on clang/lld — needs -fcommon + bfd
+error: |
+  ld.lld: error: duplicate symbol: posix_aiori
+  ld.lld: error: duplicate symbol: mpiio_aiori
+  (also with ld.bfd without -fcommon)
+root_cause: |
+  aiori.h defines global variables (posix_aiori, mpiio_aiori, hdf5_aiori,
+  ncmpi_aiori) without extern, causing duplicate definitions when included
+  in multiple TUs. GCC < 10 defaulted to -fcommon which merged these as
+  COMMON symbols; clang/lld (default on Cray/LLNL systems) is strict.
+  Note: must also do make clean before rebuild when changing CFLAGS, otherwise
+  cached .o files from the old flags are reused.
+fix: |
+  CFLAGS="-g -O2 -Wno-incompatible-function-pointer-types -fcommon" \
+  LDFLAGS="-fuse-ld=bfd" \
+  ./configure --without-hdf5 --without-ncmpi ...
+  Also: make clean before the first build after adding these flags.
+tags: [c, ior, linker, fcommon, lld, bfd, duplicate-symbol]
+
+---
+date: 2026-06-22
+app: https://github.com/llnl/ior (tag 4.0.0)
+context: session_build_annotated ignores custom CFLAGS/LDFLAGS for autotools projects
+error: |
+  Build failed in build_ann/ with same function-pointer and duplicate symbol
+  errors as original — identical to pre-fix errors.
+root_cause: |
+  session_build_annotated runs its own autoreconf+configure pass without
+  knowing about project-specific CFLAGS/LDFLAGS overrides. The generated
+  Makefile in build_ann/ embeds the default flags, not the ones used to
+  successfully build the original binary.
+fix: |
+  For autotools projects with custom flags:
+  1. rm -rf <ws>/build_ann/
+  2. mkdir -p <ws>/build_ann/ && cd <ws>/build_ann/
+  3. Run configure manually with all custom CFLAGS/LDFLAGS AND dftracer
+     include/lib paths:
+       CFLAGS="-g -O2 -Wno-incompatible-function-pointer-types -fcommon \
+               -I<dftracer_inc>" \
+       LDFLAGS="-fuse-ld=bfd -L<dftracer_lib> -Wl,-rpath,<dftracer_lib>" \
+       LIBS="-ldftracer_core" \
+       <ws>/annotated/configure --prefix=<ws>/install_ann ...
+  4. make -j8 install in build_ann/src/ (skip contrib/ if broken)
+tags: [c, autotools, ior, build_ann, session_build_annotated, cflags]
+
+---
+date: 2026-06-22
+app: general (Cray PE / MPICH systems)
+context: clang_syntax_check misses MPI and dftracer include paths on Cray PE
+error: |
+  fatal error: mpi.h: No such file or directory
+  fatal error: dftracer/dftracer.h: No such file or directory
+root_cause: |
+  clang_syntax_check auto-detects MPI paths via mpicc --showme:incdirs but
+  Cray PE mpicc outputs -I/path (with -I prefix), not a plain path, so the
+  detection silently fails. Annotated files also include <dftracer/dftracer.h>
+  directly, which requires the real dftracer include path (not just the stub).
+fix: |
+  Always pass extra_include_dirs explicitly on Cray PE systems:
+    clang_syntax_check(run_id=..., filepath=...,
+      extra_include_dirs=[
+        "/opt/cray/pe/mpich/<version>/ofi/cray/<ver>/include",
+        "<ws>/venv/lib/python3.*/site-packages/dftracer/include"
+      ])
+  Get the exact MPI path with: mpicc -show | grep -o '\-I[^ ]*' | head -1
+tags: [cray-pe, mpich, mpi, syntax-check, extra_include_dirs]
+
+---
+date: 2026-06-22
+app: general
+context: session_analyze_traces reads stale idx/ cache after split update — shows old event count
+error: |
+  After re-splitting 98 trace files, session_analyze_traces still reported
+  391 events (1 file) from the old single-process trace index.
+root_cause: |
+  traces_split/idx/ is built on first analyze call and cached. Subsequent
+  calls with the same traces_split path reuse the cache even when split
+  chunks were replaced.
+fix: |
+  Before re-running split when trace content changes:
+    rm -rf <ws>/traces_split/idx/
+  Then re-run split (with force=True), then re-run analyze.
+tags: [dftracer, traces, split, analyze, idx, cache]
+
+---
+date: 2026-06-22
+app: general
+context: session_generate_optimization_proposals does not support posix_*_ops_slope bottleneck types
+error: |
+  All 24 diagnosed bottlenecks reported as "unsupported":
+  posix_data_ops_slope, posix_ops_slope, posix_read/write/close/open/metadata_ops_slope
+root_cause: |
+  The proposal tool's strategy table covers absolute bandwidth/IOPS metrics
+  but not slope/rate-of-change metrics. These "ops_slope" metrics are
+  produced by DFDiagnoser when it detects accelerating I/O patterns across
+  time ranges (indicative of lock contention, bursty I/O, or collective storms).
+fix: |
+  For posix_*_ops_slope bottlenecks, derive proposals manually:
+  - ops_slope > 1 means operation rate is accelerating (bursty I/O pattern)
+  - posix_data_ops_slope → increase transfer size (L1), ROMIO hints (L2), stripe tuning (L3)
+  - posix_close_ops_slope → stagger close timing (L1), ind_wr_buffer_size (L2), client cache (L3)
+  - posix_metadata_ops_slope → shared file instead of file-per-process (L1), pre-create (L2), DNE (L3)
+  Use the Lustre ecosystem papers found by the iteration search for citations.
+tags: [dftracer, proposal, posix_ops_slope, lustre, optimization-loop]
+
+---
 date: 2026-06-20
 app: general
 context: HDF5 1.10.x silently degrades optimization effectiveness — always use 1.14
@@ -532,6 +657,32 @@ fix: |
   without conflict — C_INIT() is idempotent when dftracer is already initialized.
   Only set DFTRACER_INIT=0 if you explicitly do NOT want POSIX-level tracing.
 tags: [dftracer, DFTRACER_INIT, posix, interceptor, dfanalyzer]
+
+---
+date: 2026-06-22
+app: general
+context: session_optimization_iteration merges old traces into opt-N/traces/ — comparator sees no change
+error: |
+  mcp__dftracer__comparator between opt{N-1}/traces_split and opt{N}/traces_split
+  shows 0 delta on every metric; md5 of split chunks is identical.
+root_cause: |
+  session_optimization_iteration copies ALL previous iteration trace files into
+  opt{N}/traces/ before running the new benchmark, then splits the combined set.
+  With 194 old + 96 new = 290 total files, the dominant old-run events produce a
+  split chunk byte-for-byte identical to the baseline. The profile field returns
+  trace_files=[] confirming the new traces were not isolated before splitting.
+fix: |
+  After session_optimization_iteration completes, isolate the new-run traces:
+    comm -13 <(ls opt{N-1}/traces/ | sort) \
+             <(ls opt{N}/traces/   | sort) \
+    | while read f; do cp opt{N}/traces/$f opt{N}_traces_clean/; done
+  Then re-split the clean directory with a fresh output_dir:
+    mcp__dftracer__split(directory=opt{N}_traces_clean/,
+                         output_dir=opt{N}_split_clean/, force=True)
+  Compare using the clean splits:
+    mcp__dftracer__comparator(baseline=opt{N-1}/traces_split,
+                              variant=opt{N}_split_clean/)
+tags: [dftracer, comparator, traces, optimization-loop, session_optimization_iteration]
 
 ---
 

@@ -1,6 +1,17 @@
 {
   "permissions": {
     "allow": [
+      "Bash(claude mcp *)",
+      "Bash(.venv/bin/dftracer_mcp_server.sh *)",
+      "Bash(.venv/bin/pip list *)",
+      "Bash(.venv/bin/pip install *)",
+      "Bash(PIP_INDEX_URL=https://pypi.org/simple/ .venv/bin/pip install *)",
+      "Bash(.venv/bin/python *)",
+      "Bash(curl -s http://localhost:5000/mcp)",
+      "Bash(curl -s http://localhost:5000/mcp -H \"Accept: text/event-stream\")",
+      "Bash(.venv/bin/dftracer info *)",
+      "Bash(.venv/bin/dftracer_info *)",
+      "Bash(.venv/bin/dftracer_stats *)"
     ]
   }
 }

@@ -1,7 +1,8 @@
 {
   "mcpServers": {
     "dftracer": {
-      "url": "http://localhost:5000/mcp"
+      "command": "/usr/WS2/haridev/dftracer-agents/.venv/bin/dftracer-mcp-server",
+      "args": ["--transport", "stdio"]
     }
   }
 }
