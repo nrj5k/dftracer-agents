@@ -21,3 +21,11 @@ node_modules
 .gitignore
 package.json
 build
+venv-test
+dftracer-agents/.agents
+test/data/dftracer-sample
+package-lock.json
+workspaces/
+resources/
+.cache
+.cargo-goose

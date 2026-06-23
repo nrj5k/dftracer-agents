@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import shutil
 import socket
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -41,6 +42,9 @@ from ..session.annotation_clang import register_clang_tools
 from ..session.annotation_python import register_python_tools
 from ..session.annotation_ai import register_ai_tools
 from ..session.workspace import _ws, _load_state, _save_state, _ok, _err, _run
+from ..session.install import _find_dftracer_dirs
+from ..annotations import register_annotation_session_tools
+from ..optimizations import register_optimization_tools
 
 
 def register_annotation_api_tools(mcp: FastMCP) -> None:
@@ -528,6 +532,111 @@ def register_daemon_tools(mcp: FastMCP) -> None:
         )
 
 
+def register_install_session_tools(mcp: FastMCP) -> None:
+    """Register dftracer installation helper tools on *mcp*.
+
+    Exposes ``session_generate_dftracer_pc`` which generates a conforming
+    pkg-config ``.pc`` file for dftracer so that autotools-based projects can
+    discover the library via ``pkg-config --cflags --libs dftracer``.
+    """
+
+    @mcp.tool()
+    def session_generate_dftracer_pc(run_id: str) -> str:
+        """Generate a pkg-config ``.pc`` file for dftracer and save it under install_ann/.
+
+        dftracer is a CMake-only project and does not always install a
+        ``dftracer.pc`` file.  This tool locates ``libdftracer_core.so`` —
+        first in ``<workspace>/install_ann/lib[64]/``, then in the pip-installed
+        site-packages layout — and writes a conforming ``dftracer.pc`` to
+        ``<workspace>/install_ann/lib/pkgconfig/dftracer.pc``.
+
+        After this tool runs, ``pkg-config --cflags dftracer`` and
+        ``pkg-config --libs dftracer`` work correctly when
+        ``PKG_CONFIG_PATH`` includes the returned *pkg_config_path*.
+        ``session_build_annotated`` sets ``PKG_CONFIG_PATH`` automatically, so
+        the typical call order for autotools projects is::
+
+            session_install_dftracer → session_generate_dftracer_pc
+              → session_patch_build → session_build_annotated
+
+        Side effects:
+            * Creates ``<workspace>/install_ann/lib/pkgconfig/`` if absent.
+            * Writes ``dftracer.pc`` (overwriting any existing file).
+            * Persists ``{"dftracer_pc_file": …, "dftracer_pkg_config_path": …}``
+              to ``session.json``.
+
+        Args:
+            run_id: Session identifier returned by ``session_create``.
+
+        Returns:
+            JSON string with keys:
+                * ``status``           — ``"ok"`` or ``"error"``.
+                * ``message``          — path of the written file.
+                * ``pc_file``          — absolute path to the generated ``.pc``.
+                * ``pkg_config_path``  — directory to add to ``PKG_CONFIG_PATH``.
+                * ``lib_dir``          — directory containing ``libdftracer_core.so``.
+                * ``include_dir``      — directory containing ``dftracer/dftracer.h``.
+        """
+        ws = _ws(run_id)
+        install_ann = ws / "install_ann"
+
+        dirs = _find_dftracer_dirs(
+            python_exe=sys.executable,
+            cmake_prefix=install_ann if install_ann.exists() else None,
+        )
+        if not dirs:
+            return _err(
+                "libdftracer_core.so not found in install_ann/ or site-packages. "
+                "Run session_install_dftracer first."
+            )
+
+        lib_dir     = Path(dirs["lib_dir"])
+        include_dir = Path(dirs["include_dir"])
+        prefix      = lib_dir.parent
+
+        version = "2.0.3"
+        for f in lib_dir.glob("libdftracer_core.so.*"):
+            parts = f.name.split(".")
+            if len(parts) >= 4:
+                version = ".".join(parts[3:])
+                break
+
+        pc_content = (
+            f"prefix={prefix}\n"
+            f"exec_prefix=${{prefix}}\n"
+            f"libdir=${{exec_prefix}}/lib\n"
+            f"includedir=${{prefix}}/include\n"
+            f"\n"
+            f"Name: dftracer\n"
+            f"Description: DFTracer I/O tracing library\n"
+            f"Version: {version}\n"
+            f"Libs: -L${{libdir}} -ldftracer_core -Wl,-rpath,${{libdir}}\n"
+            f"Cflags: -I${{includedir}}\n"
+        )
+
+        pc_dir  = install_ann / "lib" / "pkgconfig"
+        pc_dir.mkdir(parents=True, exist_ok=True)
+        pc_file = pc_dir / "dftracer.pc"
+        pc_file.write_text(pc_content)
+
+        _save_state(run_id, {
+            "dftracer_pc_file":          str(pc_file),
+            "dftracer_pkg_config_path":  str(pc_dir),
+        })
+        return _ok(
+            f"Generated {pc_file}",
+            pc_file=str(pc_file),
+            pkg_config_path=str(pc_dir),
+            lib_dir=str(lib_dir),
+            include_dir=str(include_dir),
+            version=version,
+            hint=(
+                f"Export: PKG_CONFIG_PATH={pc_dir}:$PKG_CONFIG_PATH "
+                f"before calling ./configure or make"
+            ),
+        )
+
+
 class DFTracerSessionService(MCPService):
     """MCP service that orchestrates dftracer annotation and smoke-test sessions.
 
@@ -571,8 +680,11 @@ class DFTracerSessionService(MCPService):
         self.daemon_subservice = FastMCP("DFTracerDaemon")
         self.clang_subservice = FastMCP("DFTracerClang")
         self.annotation_api_subservice = FastMCP("DFTracerAnnotationAPI")
+        self.annotation_subservice = FastMCP("DFTracerAnnotation")
+        self.optimization_subservice = FastMCP("DFTracerOptimization")
 
         register_session_tools(self.session_subservice)
+        register_install_session_tools(self.session_subservice)
         register_pipeline_tools(self.pipeline_subservice)
         register_run_tools(self.pipeline_subservice)
         register_daemon_tools(self.daemon_subservice)
@@ -580,6 +692,8 @@ class DFTracerSessionService(MCPService):
         register_python_tools(self.clang_subservice)
         register_ai_tools(self.clang_subservice)
         register_annotation_api_tools(self.annotation_api_subservice)
+        register_annotation_session_tools(self.annotation_subservice)
+        register_optimization_tools(self.optimization_subservice)
 
     def execute(self, data: dict) -> Optional[str]:
         """Legacy compatibility entry-point required by the :class:`MCPService` ABC.

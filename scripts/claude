@@ -1,0 +1,7 @@
+#!/bin/bash
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="$ROOT_DIR:$PYTHONPATH"
+export PATH="$ROOT_DIR/.venv/bin:$ROOT_DIR/scripts:$PATH"
+SANDBOX_FLAGS=--config="$ROOT_DIR/scripts/sandbox/sandbox-config.yaml" /collab/usr/global/tools/sandbox/claude-sandbox
+

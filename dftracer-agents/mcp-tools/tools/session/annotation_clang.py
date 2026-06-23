@@ -333,6 +333,7 @@ def register_clang_tools(mcp: FastMCP) -> None:
         language: str = "c",
         is_entry: bool = False,
         init_args: str = "NULL, NULL, -1",
+        comp_overrides: str = None,
     ) -> str:
         """Annotate a C/C++ source file with dftracer macros in a single in-memory pass.
 
@@ -375,6 +376,11 @@ def register_clang_tools(mcp: FastMCP) -> None:
             init_args:  Argument string for ``DFTRACER_C_INIT(…)``; defaults to
                         ``"NULL, NULL, -1"`` (log to default path, trace all
                         dirs, use PID).  Ignored when ``is_entry=False``.
+            comp_overrides: Optional JSON object string mapping function names to
+                        ``comp`` category strings (e.g. ``'{"main": "cpu",
+                        "MPIIO_Xfer": "comm"}'``).  Overrides the automatic
+                        ``comp`` classification for the named functions.
+                        Defaults to ``None`` (use automatic classification).
 
         Returns:
             JSON string with keys:
@@ -433,6 +439,8 @@ def register_clang_tools(mcp: FastMCP) -> None:
         lines = text.splitlines()
 
         is_cpp = language.lower() in ("cpp", "c++", "cxx")
+        import json as _json
+        _comp_overrides: dict = _json.loads(comp_overrides) if comp_overrides else {}
         START = (
             "DFTRACER_CPP_FUNCTION();"
             if is_cpp
@@ -442,8 +450,8 @@ def register_clang_tools(mcp: FastMCP) -> None:
         INIT = f"DFTRACER_C_INIT({init_args});"
         FINI = "DFTRACER_C_FINI();"
 
-        def _make_update(fn: dict, ind: str) -> str:
-            comp = _derive_comp(fn)
+        def _make_update(fn: dict, ind: str, comp_override: str = None) -> str:
+            comp = comp_override if comp_override is not None else _derive_comp(fn)
             if is_cpp:
                 return f'{ind}DFTRACER_CPP_FUNCTION_UPDATE("comp", "{comp}");'
             return f'{ind}DFTRACER_C_FUNCTION_UPDATE_STR("comp", "{comp}");'
@@ -495,6 +503,19 @@ def register_clang_tools(mcp: FastMCP) -> None:
         insertions: list = [(include_insert_at, include_line)]
         skipped_functions: list[str] = []
 
+        # ── Pre-scan for MPI boundary lines (needed for entry-point handling) ──
+        # Find the last MPI startup call (MPI_Init / MPI_Comm_rank / MPI_Comm_size)
+        # and the first MPI_Finalize line.  Only used when is_entry=True.
+        _mpi_init_line = None    # 1-based; line AFTER which INIT/START should go
+        _mpi_finalize_line = None  # 1-based; line BEFORE which END/FINI should go
+        if is_entry:
+            for _i, _ln in enumerate(lines, start=1):
+                _s = _ln.strip()
+                if re.search(r'\bMPI_(Init|Comm_rank|Comm_size)\s*\(', _s):
+                    _mpi_init_line = _i
+                if _mpi_finalize_line is None and re.search(r'\bMPI_Finalize\s*\(', _s):
+                    _mpi_finalize_line = _i
+
         for fn in functions:
             body_first = fn.get("body_first_line")
             close       = fn.get("close_brace_line")
@@ -515,32 +536,65 @@ def register_clang_tools(mcp: FastMCP) -> None:
 
             is_main_fn = fn_name == "main" and is_entry
 
-            if is_main_fn:
-                # INIT must come before START in main()
-                insertions.append((body_idx, ind + INIT))
-            insertions.append((body_idx, ind + START))
-            # UPDATE_STR("comp") must appear right after START.
-            # We mark it with a sentinel prefix "UPDATE:" so the sort key
-            # can place it below START (processed before START in the
-            # bottom-to-top pass, so START ends up above it in the file).
-            insertions.append((body_idx, "UPDATE:" + _make_update(fn, ind)))
+            if is_main_fn and _mpi_init_line is not None:
+                # A2: place INIT/START/UPDATE right after the last MPI startup call
+                # (MPI_Comm_rank is the last — rank info is embedded in trace metadata)
+                init_idx = _mpi_init_line   # insert AFTER line _mpi_init_line (0-based = _mpi_init_line)
+                init_ind = _indent(lines, _mpi_init_line - 1, ind)
+                # A6: main() is always "cpu" regardless of MPI calls in its body
+                insertions.append((init_idx, init_ind + INIT))          # A3: prio 3 → on top
+                insertions.append((init_idx, init_ind + START))         # A3: prio 2 → below INIT
+                insertions.append((init_idx, "UPDATE:" + _make_update(fn, init_ind, comp_override=_comp_overrides.get(fn_name, "cpu"))))
+            else:
+                if is_main_fn:
+                    # Fallback when no MPI startup calls detected
+                    insertions.append((body_idx, ind + INIT))
+                insertions.append((body_idx, ind + START))
+                comp_ov = _comp_overrides.get(fn_name) if fn_name in _comp_overrides else ("cpu" if is_main_fn else None)
+                insertions.append((body_idx, "UPDATE:" + _make_update(fn, ind, comp_override=comp_ov)))
 
             if not is_cpp:
-                if exits:
-                    for ex in exits:
-                        ex_line = ex.get("line") if isinstance(ex, dict) else ex
-                        if ex_line is None:
-                            continue
-                        ex_idx = ex_line - 1
-                        ex_ind = _indent(lines, ex_idx, ind)
-                        if is_main_fn:
-                            insertions.append((ex_idx, ex_ind + FINI))
-                        insertions.append((ex_idx, ex_ind + END))
-                else:
-                    close_idx = close - 1
-                    if is_main_fn:
+                if is_main_fn:
+                    # A4: place END+FINI before MPI_Finalize (not at last return)
+                    if _mpi_finalize_line is not None:
+                        fin_idx = _mpi_finalize_line - 1  # 0-based index of MPI_Finalize line
+                        fin_ind = _indent(lines, fin_idx, ind)
+                        insertions.append((fin_idx, fin_ind + FINI))
+                        insertions.append((fin_idx, fin_ind + END))
+                    else:
+                        # No MPI_Finalize found — fall back to close brace
+                        close_idx = close - 1
                         insertions.append((close_idx, ind + FINI))
-                    insertions.append((close_idx, ind + END))
+                        insertions.append((close_idx, ind + END))
+
+                    # A5: add END+FINI at returns that occur AFTER MPI_Init
+                    # but BEFORE MPI_Finalize (error paths with early teardown)
+                    if exits and _mpi_init_line is not None:
+                        for ex in exits:
+                            ex_line = ex.get("line") if isinstance(ex, dict) else ex
+                            if ex_line is None:
+                                continue
+                            after_init = ex_line > _mpi_init_line
+                            before_fini = (_mpi_finalize_line is None or
+                                           ex_line < _mpi_finalize_line)
+                            if after_init and before_fini:
+                                ex_idx = ex_line - 1
+                                ex_ind = _indent(lines, ex_idx, ind)
+                                insertions.append((ex_idx, ex_ind + FINI))
+                                insertions.append((ex_idx, ex_ind + END))
+                else:
+                    # Regular (non-entry-point) functions
+                    if exits:
+                        for ex in exits:
+                            ex_line = ex.get("line") if isinstance(ex, dict) else ex
+                            if ex_line is None:
+                                continue
+                            ex_idx = ex_line - 1
+                            ex_ind = _indent(lines, ex_idx, ind)
+                            insertions.append((ex_idx, ex_ind + END))
+                    else:
+                        close_idx = close - 1
+                        insertions.append((close_idx, ind + END))
 
         # ── Step 4: sort highest-index-first, apply all in one pass ───────────
         # For same index, insertion order (bottom-to-top within the index)
@@ -554,8 +608,10 @@ def register_clang_tools(mcp: FastMCP) -> None:
                 prio = 0
             elif txt.startswith("UPDATE:"):
                 prio = 1
+            elif INIT in txt and START not in txt:
+                prio = 3   # INIT inserted last → ends up above START in file
             else:
-                prio = 2
+                prio = 2   # START and everything else
             return (-idx, prio)
 
         insertions.sort(key=_sort_key)
@@ -1002,38 +1058,74 @@ def register_clang_tools(mcp: FastMCP) -> None:
             "#endif\n"
         )
 
-        compiler = "g++" if lang == "cpp" else "gcc"
-        lang_flag = ["-x", "c++" if lang == "cpp" else "c"]
-        std_flag  = ["-std=c++14"] if lang == "cpp" else []
+        # ── Load session state once (used for compiler + includes + defines) ──
+        _state: dict = {}
+        try:
+            _state = _load_state(run_id)
+        except Exception:
+            pass
 
-        # Collect include paths
+        _features   = _state.get("detection", {}).get("features", {})
+        _has_mpi    = bool(_features.get("mpi", False))
+        _build_tool = _state.get("build_tool", "")
+
+        # Use mpicc when the session detects MPI — it already embeds all MPI
+        # include paths, so we skip the separate --showme:incdirs step.
+        if _has_mpi and lang != "cpp":
+            compiler  = "mpicc"
+            lang_flag = []           # mpicc infers C; -x c causes errors with some wrappers
+        elif lang == "cpp":
+            compiler  = "mpicxx" if _has_mpi else "g++"
+            lang_flag = []           # mpicxx/g++ infer C++ from extension
+        else:
+            compiler  = "gcc"
+            lang_flag = ["-x", "c"]
+
+        std_flag = ["-std=c++14"] if lang == "cpp" else []
+
+        # ── Collect include paths ─────────────────────────────────────────────
         include_dirs: List[str] = list(extra_include_dirs) if extra_include_dirs else []
 
-        # Inject dftracer include from session state
-        try:
-            state = _load_state(run_id)
-            prefix = state.get("dftracer_install_prefix", "")
-            if prefix:
-                inc = os.path.join(prefix, "include")
-                if os.path.isdir(inc):
-                    include_dirs.append(inc)
-        except Exception:
-            pass
+        # dftracer install include dir
+        _prefix = _state.get("dftracer_install_prefix", "")
+        if _prefix:
+            _inc = os.path.join(_prefix, "include")
+            if os.path.isdir(_inc):
+                include_dirs.append(_inc)
 
-        # Auto-detect MPI include dir via mpicc --showme:incdirs (clang AST, not regex)
-        try:
-            mpi_r = subprocess.run(
-                ["mpicc", "--showme:incdirs"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if mpi_r.returncode == 0:
-                for d in mpi_r.stdout.strip().split():
-                    if os.path.isdir(d):
-                        include_dirs.append(d)
-        except Exception:
-            pass
+        # build_ann/src and build/src — contain config.h generated by autotools
+        for _bd in ("build_ann/src", "build/src"):
+            _bd_path = ws / _bd
+            if _bd_path.exists():
+                include_dirs.append(str(_bd_path))
+
+        # annotated/<dir-of-file> and annotated/src — project headers
+        _ann_file_dir = ws / "annotated" / os.path.dirname(filepath)
+        if _ann_file_dir.exists() and str(_ann_file_dir) not in include_dirs:
+            include_dirs.append(str(_ann_file_dir))
+        _ann_src = ws / "annotated" / "src"
+        if _ann_src.exists() and str(_ann_src) not in include_dirs:
+            include_dirs.append(str(_ann_src))
+
+        # MPI includes (only when NOT using mpicc/mpicxx as compiler)
+        if not _has_mpi:
+            try:
+                mpi_r = subprocess.run(
+                    ["mpicc", "--showme:incdirs"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if mpi_r.returncode == 0:
+                    for d in mpi_r.stdout.strip().split():
+                        if os.path.isdir(d):
+                            include_dirs.append(d)
+            except Exception:
+                pass
 
         inc_flags = [f"-I{d}" for d in include_dirs]
+
+        # ── Extra preprocessor defines ────────────────────────────────────────
+        # autotools projects define HAVE_CONFIG_H so config.h is pulled in
+        define_flags = ["-DHAVE_CONFIG_H"] if _build_tool == "autotools" else []
 
         stub_fd, stub_path = tempfile.mkstemp(suffix=".h", prefix="dftracer_stub_")
         try:
@@ -1045,6 +1137,7 @@ def register_clang_tools(mcp: FastMCP) -> None:
                 + lang_flag
                 + ["-fsyntax-only", "-w"]
                 + std_flag
+                + define_flags
                 + ["-include", stub_path]
                 + inc_flags
                 + [str(abs_path)]
@@ -1078,4 +1171,403 @@ def register_clang_tools(mcp: FastMCP) -> None:
             language=lang,
             errors=error_lines,
             command=" ".join(cmd),
+        )
+
+    @mcp.tool()
+    def clang_fix_header_tentative_defs(run_id: str, filepath: str) -> str:
+        """Detect and fix bare global variable declarations in C/C++ header files.
+
+        GCC 10+ changed the default from ``-fcommon`` to ``-fno-common``.
+        Bare global declarations in headers included by multiple ``.c`` files
+        become *tentative definitions* in every translation unit, causing
+        ``multiple definition`` linker errors under the new default.
+
+        This tool scans the header at global scope (brace-depth zero) for
+        declarations that are not already qualified with ``extern``, ``static``,
+        or ``typedef``, and rewrites them by prepending ``extern``.
+
+        Example::
+
+            // Before (tentative definition — breaks with GCC 10+ -fno-common):
+            ior_aiori_t posix_aiori;
+
+            // After (forward declaration — safe in headers):
+            extern ior_aiori_t posix_aiori;
+
+        The actual initialized definitions must remain in exactly one ``.c`` file.
+
+        Args:
+            run_id:   Session identifier returned by ``session_create``.
+            filepath: Path to the header file relative to ``annotated/``.
+
+        Returns:
+            JSON string with keys:
+                * ``status``   — ``"ok"`` or ``"error"``.
+                * ``message``  — human-readable summary.
+                * ``filepath`` — echoed input path.
+                * ``modified`` — ``True`` if the file was changed.
+                * ``fixes``    — list of ``{"line": N, "before": "...", "after": "..."}``
+                  dicts describing each rewritten line.
+        """
+        ws = _ws(run_id)
+        abs_path = ws / "annotated" / filepath
+        if not abs_path.exists():
+            return _err(f"File not found in annotated/: {filepath}")
+
+        text = abs_path.read_text(errors="replace")
+        lines = text.splitlines(keepends=True)
+
+        # Keywords that disqualify a line from being a tentative definition
+        _SKIP = frozenset((
+            "extern", "static", "typedef", "struct", "union", "enum",
+            "const", "volatile", "inline", "register",
+            "#", "//", "/*", "*", "}", "{",
+            "if", "else", "for", "while", "do", "return", "switch", "case",
+            "break", "continue", "goto", "sizeof", "void",
+        ))
+
+        fixes = []
+        depth = 0
+
+        for i, raw_line in enumerate(lines):
+            stripped = raw_line.strip()
+
+            # Track brace depth to stay at global scope
+            depth += stripped.count("{") - stripped.count("}")
+            depth = max(0, depth)
+
+            if depth != 0:
+                continue
+            if not stripped or not stripped.endswith(";"):
+                continue
+            # Skip lines with parentheses → function declarations/calls
+            if "(" in stripped:
+                continue
+            # Skip lines beginning with known non-declaration tokens
+            first = stripped.split()[0] if stripped.split() else ""
+            if first in _SKIP or first.startswith("#") or first.startswith("//") or first.startswith("/*"):
+                continue
+
+            # Require at least two words before the semicolon (type + identifier)
+            tokens = stripped.rstrip(";").split()
+            if len(tokens) < 2:
+                continue
+
+            # Already has extern? skip
+            if "extern" in tokens:
+                continue
+
+            # Rewrite: prepend "extern " respecting the original indentation
+            leading = raw_line[: len(raw_line) - len(raw_line.lstrip())]
+            new_line = leading + "extern " + stripped + "\n"
+            fixes.append({
+                "line": i + 1,
+                "before": raw_line.rstrip("\n"),
+                "after":  new_line.rstrip("\n"),
+            })
+            lines[i] = new_line
+
+        if fixes:
+            abs_path.write_text("".join(lines))
+
+        return _ok(
+            f"{'Fixed' if fixes else 'No changes in'} {filepath}: "
+            f"{len(fixes)} tentative definition(s) rewritten as extern.",
+            filepath=filepath,
+            modified=bool(fixes),
+            fixes=fixes,
+        )
+
+    @mcp.tool()
+    def clang_lint_annotations(run_id: str, filepath: str) -> str:
+        """Lint an annotated C file for dftracer macro ordering violations.
+
+        Checks each function body for the following rules:
+
+        * **L1 — INIT before START**: In ``main()``, ``DFTRACER_C_INIT`` must
+          appear before ``DFTRACER_C_FUNCTION_START``.
+        * **L2 — comp= UPDATE after START**: Every ``DFTRACER_C_FUNCTION_START``
+          must be immediately followed (within 3 lines) by a
+          ``DFTRACER_C_FUNCTION_UPDATE_STR("comp", …)`` call.
+        * **L3 — FINI before MPI_Finalize**: In ``main()``,
+          ``DFTRACER_C_FINI`` must appear before ``MPI_Finalize``.
+        * **L4 — no END before MPI_CHECK**: ``DFTRACER_C_FUNCTION_END`` must
+          not appear immediately before a ``MPI_CHECK`` or ``NCMPI_CHECK`` macro
+          (those macros hide a ``return`` — adding END there double-ends the span).
+        * **L5 — no END outside a function**: ``DFTRACER_C_FUNCTION_END`` lines
+          must not appear at global scope (brace depth 0).
+
+        Args:
+            run_id:   Session identifier returned by ``session_create``.
+            filepath: Path to the file relative to the ``annotated/`` subfolder.
+
+        Returns:
+            JSON string with keys:
+                * ``status``     — ``"ok"`` (always; violations are in ``issues``).
+                * ``passed``     — ``True`` when no issues were found.
+                * ``issues``     — list of ``{"rule": "L1", "line": N,
+                  "message": "..."}`` dicts.
+                * ``issue_count``— total number of violations.
+        """
+        ws = _ws(run_id)
+        abs_path = ws / "annotated" / filepath
+        if not abs_path.exists():
+            return _err(f"File not found in annotated/: {filepath}")
+
+        text = abs_path.read_text(errors="replace")
+        lines = text.splitlines()
+        issues = []
+
+        # -- L1 & L3: scan for MPI boundary and INIT/FINI order in main() ----
+        in_main = False
+        main_depth = 0
+        depth = 0
+        init_line = None
+        start_line = None
+        fini_line = None
+        mpi_finalize_line = None
+
+        for i, ln in enumerate(lines, start=1):
+            s = ln.strip()
+            depth += s.count("{") - s.count("}")
+            depth = max(0, depth)
+
+            if re.search(r'\bint\s+main\s*\(', s):
+                in_main = True
+                main_depth = depth + s.count("{") - s.count("}")
+
+            if in_main:
+                if "DFTRACER_C_INIT" in s and init_line is None:
+                    init_line = i
+                if "DFTRACER_C_FUNCTION_START" in s and start_line is None:
+                    start_line = i
+                if "DFTRACER_C_FINI" in s and fini_line is None:
+                    fini_line = i
+                if re.search(r'\bMPI_Finalize\s*\(', s) and mpi_finalize_line is None:
+                    mpi_finalize_line = i
+                # Exit main when depth returns to pre-main level
+                if depth < main_depth and s.startswith("}"):
+                    in_main = False
+
+        if init_line is not None and start_line is not None:
+            if init_line > start_line:
+                issues.append({
+                    "rule": "L1",
+                    "line": init_line,
+                    "message": (
+                        f"DFTRACER_C_INIT (line {init_line}) appears after "
+                        f"DFTRACER_C_FUNCTION_START (line {start_line}) — "
+                        "INIT must precede START"
+                    ),
+                })
+
+        if fini_line is not None and mpi_finalize_line is not None:
+            if fini_line > mpi_finalize_line:
+                issues.append({
+                    "rule": "L3",
+                    "line": fini_line,
+                    "message": (
+                        f"DFTRACER_C_FINI (line {fini_line}) appears after "
+                        f"MPI_Finalize (line {mpi_finalize_line}) — "
+                        "FINI must precede MPI_Finalize"
+                    ),
+                })
+
+        # -- L2: comp= UPDATE within 3 lines of every START ------------------
+        for i, ln in enumerate(lines, start=1):
+            if "DFTRACER_C_FUNCTION_START" in ln:
+                window = lines[i : i + 3]  # next 3 lines (0-based i = 1-based i+1..i+3)
+                if not any(
+                    "DFTRACER_C_FUNCTION_UPDATE_STR" in wl and '"comp"' in wl
+                    for wl in window
+                ):
+                    issues.append({
+                        "rule": "L2",
+                        "line": i,
+                        "message": (
+                            f"DFTRACER_C_FUNCTION_START at line {i} is not followed "
+                            "by a comp= UPDATE_STR within 3 lines"
+                        ),
+                    })
+
+        # -- L4: END immediately before MPI_CHECK / NCMPI_CHECK --------------
+        for i, ln in enumerate(lines):
+            if "DFTRACER_C_FUNCTION_END" in ln:
+                next_ln = lines[i + 1].strip() if i + 1 < len(lines) else ""
+                if re.search(r'\b(MPI_CHECK|NCMPI_CHECK|HGOTO_ERROR)\s*\(', next_ln):
+                    issues.append({
+                        "rule": "L4",
+                        "line": i + 1,
+                        "message": (
+                            f"DFTRACER_C_FUNCTION_END at line {i + 1} immediately "
+                            f"precedes {next_ln[:60].strip()} at line {i + 2} — "
+                            "MPI_CHECK hides a return; do not add END before it"
+                        ),
+                    })
+
+        # -- L5: END at global scope ------------------------------------------
+        depth = 0
+        for i, ln in enumerate(lines, start=1):
+            s = ln.strip()
+            depth += s.count("{") - s.count("}")
+            depth = max(0, depth)
+            if depth == 0 and "DFTRACER_C_FUNCTION_END" in s:
+                issues.append({
+                    "rule": "L5",
+                    "line": i,
+                    "message": (
+                        f"DFTRACER_C_FUNCTION_END at line {i} appears at global "
+                        "scope (brace depth 0) — END must be inside a function body"
+                    ),
+                })
+
+        passed = len(issues) == 0
+        return _ok(
+            f"{'No issues' if passed else f'{len(issues)} issue(s)'} in {filepath}.",
+            filepath=filepath,
+            passed=passed,
+            issues=issues,
+            issue_count=len(issues),
+        )
+
+    @mcp.tool()
+    def clang_regression_test(
+        run_id: str,
+        filepath: str,
+        language: str = "c",
+        is_entry: bool = False,
+        init_args: str = "NULL, NULL, NULL",
+    ) -> str:
+        """Strip annotations from a file, re-annotate, and compare with current state.
+
+        Useful for verifying that ``clang_annotate_file`` produces output
+        equivalent to a manually annotated file, and for regression-testing
+        tool changes.
+
+        The comparison is line-count and macro-count based (not a full diff),
+        so minor indentation differences do not trigger false positives.
+
+        Steps:
+
+        1. Read the current annotated file.
+        2. Strip all dftracer macro lines and the ``#include <dftracer/dftracer.h>``
+           line to produce a clean baseline.
+        3. Write the baseline to a temp file, run ``clang_annotate_file`` on it,
+           capture the result.
+        4. Compare macro counts between the original and the re-annotated version.
+        5. Restore the original file to disk unchanged.
+
+        Args:
+            run_id:    Session identifier returned by ``session_create``.
+            filepath:  Path relative to ``annotated/``.
+            language:  ``"c"`` or ``"cpp"``.
+            is_entry:  Pass ``True`` when the file contains ``main()``.
+            init_args: INIT argument string (forwarded to ``clang_annotate_file``).
+
+        Returns:
+            JSON string with keys:
+                * ``status``         — ``"ok"`` or ``"error"``.
+                * ``passed``         — ``True`` if macro counts match.
+                * ``original_macros``— macro line counts in the current file.
+                * ``reannotated_macros``— macro counts after re-annotation.
+                * ``discrepancies``  — list of macro names whose counts differ.
+        """
+        import tempfile, shutil as _shutil, json as _json
+
+        ws = _ws(run_id)
+        abs_path = ws / "annotated" / filepath
+        if not abs_path.exists():
+            return _err(f"File not found in annotated/: {filepath}")
+
+        original_text = abs_path.read_text(errors="replace")
+
+        # ── Step 1: strip all dftracer lines from original ───────────────────
+        _DFTRACER_LINE_RE = re.compile(
+            r'^\s*(DFTRACER_C_(?:FUNCTION_START|FUNCTION_END|'
+            r'FUNCTION_UPDATE_STR|FUNCTION_UPDATE_INT|INIT|FINI)'
+            r'|DFTRACER_CPP_(?:FUNCTION|FUNCTION_UPDATE|INIT|FINI|'
+            r'REGION_START|REGION_END)'
+            r'|#\s*include\s*<dftracer/dftracer\.h>)'
+        )
+        stripped_lines = [
+            ln for ln in original_text.splitlines(keepends=True)
+            if not _DFTRACER_LINE_RE.match(ln)
+        ]
+        stripped_text = "".join(stripped_lines)
+
+        # ── Step 2: write stripped version to temp file ──────────────────────
+        suffix = abs_path.suffix
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=suffix, dir=abs_path.parent,
+                delete=False, encoding="utf-8",
+                prefix=abs_path.stem + "_regression_",
+            ) as f:
+                f.write(stripped_text)
+                tmp = Path(f.name)
+
+            # Temporarily replace the annotated file with the stripped version
+            _shutil.copy2(abs_path, str(abs_path) + ".orig_bak")
+            abs_path.write_text(stripped_text)
+
+            # ── Step 3: re-annotate ──────────────────────────────────────────
+            raw = clang_annotate_file(
+                run_id=run_id,
+                filepath=filepath,
+                language=language,
+                is_entry=is_entry,
+                init_args=init_args,
+            )
+            reannotated_text = abs_path.read_text(errors="replace")
+
+        finally:
+            # Restore original file
+            bak = Path(str(abs_path) + ".orig_bak")
+            if bak.exists():
+                abs_path.write_text(original_text)
+                bak.unlink()
+            if tmp and tmp.exists():
+                tmp.unlink()
+            # Clear in-memory cache so subsequent calls see the restored file
+            _FILE_CACHE.pop((run_id, filepath), None)
+
+        # ── Step 4: count macros in original vs re-annotated ─────────────────
+        _MACRO_NAMES = [
+            "DFTRACER_C_FUNCTION_START",
+            "DFTRACER_C_FUNCTION_END",
+            "DFTRACER_C_FUNCTION_UPDATE_STR",
+            "DFTRACER_C_FUNCTION_UPDATE_INT",
+            "DFTRACER_C_INIT",
+            "DFTRACER_C_FINI",
+            "DFTRACER_CPP_FUNCTION",
+            "DFTRACER_CPP_FUNCTION_UPDATE",
+            "#include <dftracer/dftracer.h>",
+        ]
+
+        def _count(text: str) -> dict:
+            return {m: text.count(m) for m in _MACRO_NAMES if text.count(m) > 0}
+
+        original_macros    = _count(original_text)
+        reannotated_macros = _count(reannotated_text)
+        all_keys = set(original_macros) | set(reannotated_macros)
+        discrepancies = [
+            {
+                "macro": k,
+                "original": original_macros.get(k, 0),
+                "reannotated": reannotated_macros.get(k, 0),
+            }
+            for k in sorted(all_keys)
+            if original_macros.get(k, 0) != reannotated_macros.get(k, 0)
+        ]
+
+        passed = len(discrepancies) == 0
+        return _ok(
+            f"Regression {'PASSED' if passed else 'FAILED'}: {filepath} — "
+            f"{len(discrepancies)} macro count discrepanc{'y' if len(discrepancies)==1 else 'ies'}.",
+            filepath=filepath,
+            passed=passed,
+            original_macros=original_macros,
+            reannotated_macros=reannotated_macros,
+            discrepancies=discrepancies,
         )

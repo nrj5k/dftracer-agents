@@ -24,7 +24,62 @@ source venv/bin/activate
 pip install -e .
 ```
 
-This installs the `dftracer-mcp-server` console script.
+This installs two console scripts: `dftracer-mcp-server` and `dftracer-install-skills`.
+
+---
+
+## Installing agent skills
+
+The package bundles a set of agent skills (Claude Code / Goose SKILL.md files) that teach the AI agent how to use dftracer effectively. After `pip install`, copy them into your project so the agent harness can find them:
+
+```bash
+# Copy skills into ./.agents/skills/ (current directory)
+dftracer-install-skills
+
+# Copy into a specific project directory
+dftracer-install-skills /path/to/my-project
+
+# Replace any existing skills with the packaged versions
+dftracer-install-skills --overwrite
+
+# Print the path to the bundled skills without copying
+dftracer-install-skills --list
+```
+
+Skills are installed to `<target>/.agents/skills/` and cover:
+
+| Skill | Purpose |
+|---|---|
+| `dftracer-pipeline` | Full annotation + trace pipeline workflow |
+| `dftracer-annotate-c` / `cpp` / `python` | Per-language annotation rules |
+| `dftracer-trace-utils` | When and how to use MCP trace tools |
+| `dftracer-install` | Installation and configuration |
+| `dftracer-io-optimization` | I/O bottleneck analysis and optimization |
+| `dftracer-lessons` / `dftracer-pitfalls` | Hard-won annotation lessons and common mistakes |
+| `dftracer-cheatsheet` | Quick reference for dftracer macros and APIs |
+| … | 18 skills total |
+
+You can also locate or install skills programmatically:
+
+```python
+from dftracer_agents import bundled_skills_dir, install_skills
+
+# Path to the skills inside the installed package
+path = bundled_skills_dir()
+
+# Copy to a directory (skips existing by default)
+install_skills("/path/to/project", overwrite=False)
+```
+
+---
+
+## Pipeline
+
+The full annotation → trace → diagnosis → optimization pipeline is documented with a Mermaid flowchart:
+
+**[docs/pipeline.md](docs/pipeline.md)**
+
+It covers every MCP tool call in order, which sub-service owns each one, the workspace directory layout, and how per-file annotation parallelism and L1 optimization iterations work.
 
 ---
 

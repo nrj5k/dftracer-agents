@@ -1,37 +1,48 @@
 #!/usr/bin/env python3
 """
-DFTracer MCP Server — stdio entry point for Goose and other MCP clients.
+DFTracer MCP Server — stdio (default) or HTTP transport for Goose and other
+MCP clients.
 
 Exposes dftracer_utils and dfanalyzer tools over the Model Context Protocol
-using a stdio transport (stdin/stdout).  Goose (and any other MCP-compatible
-agent) can launch this process directly.
+using FastMCP's stdio transport (default) or streamable-HTTP.
 
 Usage:
-    dftracer-mcp-server                 # both services (default)
+    dftracer-mcp-server                          # stdio mode (default)
+    dftracer-mcp-server --transport http         # HTTP on 0.0.0.0:5000
+    dftracer-mcp-server --transport http --port 8080
     dftracer-mcp-server --service utils
     dftracer-mcp-server --service analyzer
     dftracer-mcp-server --service both
 
-Goose config (~/.config/goose/config.yaml):
-    extensions:
-      dftracer:
-        type: stdio
-        cmd: dftracer-mcp-server       # if installed via pip install -e .
-        args: []
-        enabled: true
+Claude Code config (.claude/settings.json) for stdio:
+    {
+      "mcpServers": {
+        "dftracer": {
+          "command": "dftracer-mcp-server",
+          "args": ["--service", "both"]
+        }
+      }
+    }
 
-    # — or — point directly at this file if not installed:
+Claude Code config (.claude/settings.json) for HTTP:
+    {
+      "mcpServers": {
+        "dftracer": { "url": "http://localhost:5000/mcp" }
+      }
+    }
+
+Goose config (~/.config/goose/config.yaml) for HTTP:
     extensions:
       dftracer:
-        type: stdio
-        cmd: /path/to/venv/bin/python
-        args: [/path/to/dftracer-agents/dftracer_mcp_server.py]
+        type: streamable_http
+        uri: http://localhost:5000/mcp
         enabled: true
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib
 import importlib.util
 import sys
 import types
@@ -39,25 +50,40 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
-REPO_ROOT = Path(__file__).resolve().parent
+PKG_ROOT = Path(__file__).resolve().parent   # dftracer-agents/
+REPO_ROOT = PKG_ROOT  # alias used by dev-mode path builders below
 
 
 # ---------------------------------------------------------------------------
-# Package context bootstrap (avoids needing a full pip install for dev use)
+# Package context bootstrap (dev / editable-install fallback only)
 # ---------------------------------------------------------------------------
+
+def _is_package_installed() -> bool:
+    """Return True if dftracer_agents is importable as an installed package."""
+    try:
+        importlib.import_module("dftracer_agents")
+        return True
+    except ImportError:
+        return False
+
 
 def _bootstrap_package_context() -> None:
-    """Inject synthetic package stubs so relative imports in service files work."""
+    """Inject synthetic package stubs so relative imports work in dev mode.
+
+    Only called when the package is NOT installed (dev / no-pip scenario).
+    When installed properly (pip install / pip install -e .) this function is
+    never executed — the real packages are on sys.path already.
+    """
     if "dftracer_agents" in sys.modules:
         return
 
-    tools_dir = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools"
+    tools_dir = PKG_ROOT / "mcp-tools" / "tools"
 
     pkg = types.ModuleType("dftracer_agents")
-    pkg.__path__ = [str(REPO_ROOT / "dftracer-agents")]
+    pkg.__path__ = [str(PKG_ROOT)]
 
     mcp_pkg = types.ModuleType("dftracer_agents.mcp_tools")
-    mcp_pkg.__path__ = [str(REPO_ROOT / "dftracer-agents" / "mcp-tools")]
+    mcp_pkg.__path__ = [str(PKG_ROOT / "mcp-tools")]
 
     tools_pkg = types.ModuleType("dftracer_agents.mcp_tools.tools")
     tools_pkg.__path__ = [str(tools_dir)]
@@ -72,7 +98,7 @@ def _bootstrap_package_context() -> None:
     papers_pkg.__path__ = [str(tools_dir / "papers")]
 
     # Real MCPServiceFactory from disk
-    factory_path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "mcp_service_factory.py"
+    factory_path = PKG_ROOT / "mcp-tools" / "mcp_service_factory.py"
     factory_mod = types.ModuleType("dftracer_agents.mcp_service_factory")
     spec = importlib.util.spec_from_file_location(
         "dftracer_agents.mcp_service_factory", factory_path
@@ -84,20 +110,48 @@ def _bootstrap_package_context() -> None:
     sys.modules["dftracer_agents.mcp_tools.mcp_service_factory"] = factory_mod
     spec.loader.exec_module(factory_mod)
 
+    annotations_pkg = types.ModuleType("dftracer_agents.mcp_tools.tools.annotations")
+    annotations_pkg.__path__ = [str(tools_dir / "annotations")]
+
+    optimizations_pkg = types.ModuleType("dftracer_agents.mcp_tools.tools.optimizations")
+    optimizations_pkg.__path__ = [str(tools_dir / "optimizations")]
+
     sys.modules["dftracer_agents"] = pkg
     sys.modules["dftracer_agents.mcp_tools"] = mcp_pkg
     sys.modules["dftracer_agents.mcp_tools.tools"] = tools_pkg
     sys.modules["dftracer_agents.mcp_tools.tools.dftracer"] = dftracer_pkg
     sys.modules["dftracer_agents.mcp_tools.tools.session"] = session_pkg
     sys.modules["dftracer_agents.mcp_tools.tools.papers"] = papers_pkg
+    sys.modules["dftracer_agents.mcp_tools.tools.annotations"] = annotations_pkg
+    sys.modules["dftracer_agents.mcp_tools.tools.optimizations"] = optimizations_pkg
 
 
 def _load_module(name: str, path: Path):
-    mod_name = f"dftracer_agents.mcp_tools.tools.{name}"
-    sys.modules.pop(mod_name, None)
-    spec = importlib.util.spec_from_file_location(mod_name, path)
+    """Load a service module.
+
+    Strategy:
+    1. If the package is installed, import by full dotted name (no path needed).
+    2. Otherwise fall back to spec_from_file_location so dev-mode works without
+       a full pip install.
+
+    ``name`` must be a dotted sub-path under ``dftracer_agents.mcp_tools.tools``,
+    e.g. ``"dftracer.dftracer_utils_service"`` or ``"session.workspace"``.
+    """
+    full_name = f"dftracer_agents.mcp_tools.tools.{name}"
+
+    if full_name in sys.modules:
+        return sys.modules[full_name]
+
+    # Installed path — use the real package hierarchy.
+    if _is_package_installed():
+        return importlib.import_module(full_name)
+
+    # Dev / editable path — load directly from disk.
+    _bootstrap_package_context()
+    sys.modules.pop(full_name, None)
+    spec = importlib.util.spec_from_file_location(full_name, path)
     mod = importlib.util.module_from_spec(spec)
-    sys.modules[mod_name] = mod
+    sys.modules[full_name] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -107,8 +161,8 @@ def _load_module(name: str, path: Path):
 # ---------------------------------------------------------------------------
 
 def _build_utils_server() -> FastMCP:
-    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "dftracer_utils_service.py"
-    mod = _load_module("dftracer_utils_service", path)
+    path = PKG_ROOT / "mcp-tools" / "tools" / "dftracer" / "dftracer_utils_service.py"
+    mod = _load_module("dftracer.dftracer_utils_service", path)
     service = mod.DftracerUtilsService()
 
     server = FastMCP("DFTracerUtils")
@@ -130,8 +184,8 @@ def _build_utils_server() -> FastMCP:
 
 
 def _build_analyzer_server() -> FastMCP:
-    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "dfanalyzer_service.py"
-    mod = _load_module("dfanalyzer_service", path)
+    path = PKG_ROOT / "mcp-tools" / "tools" / "dftracer" / "dfanalyzer_service.py"
+    mod = _load_module("dftracer.dfanalyzer_service", path)
     service = mod.DFAnalyzerService()
 
     server = FastMCP("DFAnalyzer")
@@ -141,8 +195,8 @@ def _build_analyzer_server() -> FastMCP:
 
 
 def _build_plot_server() -> FastMCP:
-    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "dftracer_plot_service.py"
-    mod = _load_module("dftracer_plot_service", path)
+    path = PKG_ROOT / "mcp-tools" / "tools" / "dftracer" / "dftracer_plot_service.py"
+    mod = _load_module("dftracer.dftracer_plot_service", path)
     service = mod.DFTracerPlotService()
 
     server = FastMCP("DFTracerPlot")
@@ -152,7 +206,7 @@ def _build_plot_server() -> FastMCP:
 
 
 def _build_docs_server() -> FastMCP:
-    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "docs_service.py"
+    path = PKG_ROOT / "mcp-tools" / "tools" / "dftracer" / "docs_service.py"
     mod = _load_module("dftracer.docs_service", path)
     service = mod.DFTracerDocsService()
 
@@ -163,7 +217,7 @@ def _build_docs_server() -> FastMCP:
 
 
 def _build_diagnoser_server() -> FastMCP:
-    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "dfdiagnoser_service.py"
+    path = PKG_ROOT / "mcp-tools" / "tools" / "dftracer" / "dfdiagnoser_service.py"
     mod = _load_module("dftracer.dfdiagnoser_service", path)
     service = mod.DFDiagnoserService()
 
@@ -174,7 +228,7 @@ def _build_diagnoser_server() -> FastMCP:
 
 
 def _build_papers_server() -> FastMCP:
-    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "papers" / "academic_service.py"
+    path = PKG_ROOT / "mcp-tools" / "tools" / "papers" / "academic_service.py"
     mod = _load_module("papers.academic_service", path)
     service = mod.AcademicPapersService()
 
@@ -185,13 +239,24 @@ def _build_papers_server() -> FastMCP:
 
 
 def _build_session_server() -> FastMCP:
-    session_dir = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "session"
-    # Load session submodules in dependency order so relative imports resolve
+    session_dir = PKG_ROOT / "mcp-tools" / "tools" / "session"
+    annotations_dir = PKG_ROOT / "mcp-tools" / "tools" / "annotations"
+    optimizations_dir = PKG_ROOT / "mcp-tools" / "tools" / "optimizations"
+    # Load session submodules in dependency order so relative imports resolve.
+    # In installed mode _load_module uses importlib.import_module and these are
+    # already on sys.path; in dev mode it loads by file path.
     for submod in ("workspace", "detection", "annotation", "build", "install",
-                   "session_tools", "annotation_clang", "pipeline_tools"):
+                   "session_tools", "annotation_clang", "annotation_python",
+                   "annotation_ai", "pipeline_tools"):
         _load_module(f"session.{submod}", session_dir / f"{submod}.py")
+    for submod in ("annotate_c", "annotate_cpp", "annotate_python"):
+        _load_module(f"annotations.{submod}", annotations_dir / f"{submod}.py")
+    _load_module("annotations", annotations_dir / "__init__.py")
+    for submod in ("diagnose", "iteration", "levels", "strategies"):
+        _load_module(f"optimizations.{submod}", optimizations_dir / f"{submod}.py")
+    _load_module("optimizations", optimizations_dir / "__init__.py")
 
-    path = REPO_ROOT / "dftracer-agents" / "mcp-tools" / "tools" / "dftracer" / "dftracer_service.py"
+    path = PKG_ROOT / "mcp-tools" / "tools" / "dftracer" / "dftracer_service.py"
     mod = _load_module("dftracer.dftracer_service", path)
     service = mod.DFTracerSessionService()
 
@@ -202,6 +267,8 @@ def _build_session_server() -> FastMCP:
         "daemon_subservice",
         "clang_subservice",
         "annotation_api_subservice",
+        "annotation_subservice",
+        "optimization_subservice",
     ):
         sub = getattr(service, sub_name, None)
         if sub is None:
@@ -213,8 +280,6 @@ def _build_session_server() -> FastMCP:
 
 def build_server(service: str) -> FastMCP:
     """Build and return the combined FastMCP server for the requested service(s)."""
-    _bootstrap_package_context()
-
     if service == "utils":
         return _build_utils_server()
 
@@ -259,7 +324,7 @@ def build_server(service: str) -> FastMCP:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="DFTracer MCP Server — stdio transport for Goose and MCP clients"
+        description="DFTracer MCP Server — stdio (default) or HTTP transport for Goose and MCP clients"
     )
     parser.add_argument(
         "--service",
@@ -267,10 +332,45 @@ def main() -> None:
         default="both",
         help="Which service(s) to expose (default: both)",
     )
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "http", "streamable-http", "sse"],
+        default="stdio",
+        help="Transport protocol (default: stdio)",
+    )
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="Host to bind to for HTTP transports (default: 0.0.0.0)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=5000,
+        help="Port to listen on for HTTP transports (default: 5000)",
+    )
+    parser.add_argument(
+        "--path",
+        default="/mcp",
+        help="URL path for HTTP transports (default: /mcp)",
+    )
     args = parser.parse_args()
 
     server = build_server(args.service)
-    asyncio.run(server.run_stdio_async(show_banner=False))
+
+    if args.transport == "stdio":
+        asyncio.run(server.run_stdio_async(show_banner=False))
+    else:
+        transport = "streamable-http" if args.transport == "http" else args.transport
+        asyncio.run(
+            server.run_http_async(
+                transport=transport,
+                host=args.host,
+                port=args.port,
+                path=args.path,
+                show_banner=True,
+            )
+        )
 
 
 if __name__ == "__main__":

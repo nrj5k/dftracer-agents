@@ -55,6 +55,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastmcp import FastMCP
 
 from ...mcp_service_factory import MCPService, MCPServiceFactory
+from ..optimizations.diagnose import _session_diagnose_bottlenecks_impl
 
 # Score integer → human label (1-indexed, matching dfdiagnoser.scoring.SCORE_NAMES)
 _SCORE_LABELS = {1: "trivial", 2: "low", 3: "medium", 4: "high", 5: "critical"}
@@ -254,7 +255,9 @@ class DFDiagnoserService(MCPService):
 
     def __init__(self) -> None:
         self.diagnoser_subservice = FastMCP("DFDiagnoser")
+        self.session_subservice = FastMCP("DFDiagnoserSession")
         self._register_tools()
+        self._register_session_tools()
 
     def _register_tools(self) -> None:
         """Register ``diagnose`` on :attr:`diagnoser_subservice`."""
@@ -390,6 +393,88 @@ class DFDiagnoserService(MCPService):
                 ),
                 "diagnose_result": run_result,
             }, indent=2)
+
+    def _register_session_tools(self) -> None:
+        """Register session-aware diagnosis tools on :attr:`session_subservice`.
+
+        Exposes ``session_diagnose_bottlenecks`` — runs DFAnalyzer + DFDiagnoser
+        on the split traces produced by a session ``run_id`` workspace.
+        """
+
+        @self.session_subservice.tool()
+        def session_diagnose_bottlenecks(
+            run_id: str,
+            analyzer_preset: str = "posix",
+            view_types: Optional[str] = "time_range",
+            metric_boundaries: Optional[str] = None,
+            timeout: int = 600,
+        ) -> str:
+            """Diagnose I/O bottlenecks by running DFAnalyzer + DFDiagnoser on session traces.
+
+            Two-phase pipeline:
+
+            **Phase 1 — DFAnalyzer checkpoint**
+                Runs ``dfanalyzer`` with ``analyzer.checkpoint=True`` on the split
+                traces in ``<workspace>/traces_split/``, writing checkpoint files
+                (``_flat_view_*.parquet``, ``_raw_stats_*.json``) to
+                ``<workspace>/dfanalyzer_checkpoint/``.
+
+            **Phase 2 — DFDiagnoser**
+                Loads the checkpoint and scores every metric against severity
+                thresholds (trivial → critical).  Scored views are written to
+                ``<workspace>/diagnosis/scored/`` and a bottleneck summary is
+                saved to ``<workspace>/diagnosis.json``.
+
+            Severity levels (DFDiagnoser convention):
+                * ``trivial`` — metric below 25 % of threshold
+                * ``low``     — 25–50 %
+                * ``medium``  — 50–75 %
+                * ``high``    — 75–90 %  ← surfaces as a bottleneck
+                * ``critical``— above 90 % ← surfaces as a bottleneck
+
+            Side effects:
+                * Creates ``<workspace>/dfanalyzer_checkpoint/``.
+                * Creates ``<workspace>/diagnosis/scored/``.
+                * Writes ``<workspace>/diagnosis.json`` with the bottleneck summary.
+                * Persists ``{"step": "bottlenecks_diagnosed", ...}`` to ``session.json``.
+                * Writes an artifact log at step 15.
+
+            Args:
+                run_id: Session identifier returned by ``session_create``.
+                analyzer_preset: DFAnalyzer preset.  ``"posix"`` covers POSIX
+                    file I/O; ``"dlio"`` covers deep-learning I/O workloads.
+                    Defaults to ``"posix"``.
+                view_types: Comma-separated DFAnalyzer view type(s).
+                    Defaults to ``"time_range"``.
+                metric_boundaries: Optional JSON object string mapping metric names
+                    to hardware peak values for bandwidth/IOPS normalisation.
+                    Defaults to ``None``.
+                timeout: Seconds before each subprocess phase is killed.
+                    Defaults to ``600``.
+
+            Returns:
+                JSON string with keys:
+                    * ``status`` (``"ok"`` or ``"error"``).
+                    * ``message`` — outcome description.
+                    * ``diagnosis_file`` — path to ``diagnosis.json``.
+                    * ``checkpoint_dir`` — dfanalyzer checkpoint directory.
+                    * ``severity_counts`` — per-severity metric observation counts.
+                    * ``bottlenecks`` — list of high/critical findings (up to 50).
+                    * ``phases`` — subprocess result dicts for debugging.
+
+            Raises:
+                Returns ``{"status": "error"}`` when:
+                    * ``traces_split/`` does not exist (run ``session_split_traces`` first).
+                    * dfanalyzer fails to produce checkpoint files.
+                    * DFDiagnoser is not installed and no CLI binary is found.
+            """
+            return _session_diagnose_bottlenecks_impl(
+                run_id=run_id,
+                analyzer_preset=analyzer_preset,
+                view_types=view_types,
+                metric_boundaries=metric_boundaries,
+                timeout=timeout,
+            )
 
     def execute(self, data: dict) -> Optional[str]:
         return "Use the diagnose tool to identify I/O bottlenecks from DFAnalyzer checkpoints."

@@ -292,7 +292,13 @@ def _write_artifact_log(
     """
     artifacts = ws / "artifacts"
     artifacts.mkdir(exist_ok=True)
-    log_path = artifacts / f"{step_num:02d}_{step_name}.log"
+    base_name = f"{step_num:02d}_{step_name}.log"
+    log_path = artifacts / base_name
+    if log_path.exists():
+        trial = 1
+        while (artifacts / f"{base_name}.{trial}").exists():
+            trial += 1
+        log_path = artifacts / f"{base_name}.{trial}"
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     lines = [
         f"=== {step_name} ===",

@@ -31,6 +31,7 @@ from typing import List, Optional
 from fastmcp import FastMCP
 
 from ...mcp_service_factory import MCPService
+from ..session.session_tools import _session_split_traces_impl
 
 
 # ── shared / default helpers ───────────────────────────────────────────
@@ -145,6 +146,7 @@ class DftracerUtilsService(MCPService):
         self.dlio_subservice = FastMCP("DFTracerDLIO")          # gen_dlio_config
         self.synthetic_subservice = FastMCP("DFTracerSynthetic")  # gen_fake_trace
         self.mpi_subservice = FastMCP("DFTracerMPI")            # _mpi variants
+        self.session_subservice = FastMCP("DFTracerUtilsSession")  # session-aware wrappers
 
         self._register_core_tools()
         self._register_analysis_tools()
@@ -155,6 +157,7 @@ class DftracerUtilsService(MCPService):
         self._register_synthetic_tools()
         self._register_server_tool()
         self._register_mpi_tools()
+        self._register_session_tools()
 
     # ── Core tools (reader, info, merge, split, event_count, pgzip) ───
 
@@ -724,19 +727,47 @@ class DftracerUtilsService(MCPService):
             max_duration: Optional[int] = None,
             output_file: Optional[str] = None,
             stream: bool = False,
-            no_metadata: bool = False,
+            no_metadata: bool = True,
             index_dir: Optional[str] = None,
             no_auto_index: bool = False,
             checkpoint_size: Optional[int] = None,
             executor_threads: Optional[int] = None,
         ) -> str:
-            """Extract a filtered subset of trace data with chunk-pruning.
+            """Extract a filtered subset of trace events with chunk-level pruning.
 
-            ``dftracer_view [OPTIONS]`` — directory or file-scoped.
-            Use *preset* for io|compute|dlio views, or supply an explicit --query.
+            Returns NDJSON — one JSON event object per line.  The tool builds
+            bloom-filter indices on first use so subsequent queries over the same
+            directory are fast.
 
-            The ``save_recipe`` parameter writes the constructed view back to
-            JSON so it can be reused verbatim with ``--recipe`` on a later call.
+            **Query DSL** (``--query`` field) — case-sensitive string matching:
+
+            * Fields: ``cat``, ``name``, ``dur`` (µs), ``ph``, ``pid``, ``tid``,
+              ``ts`` (µs), ``id``
+            * Nested args: ``args.comp``, ``args.fhash``, ``args.flags``, etc.
+            * Operators: ``==``, ``!=``, ``>``, ``<``, ``>=``, ``<=``
+            * Boolean: ``and`` (lower), ``OR`` (upper)
+            * String values **must** match case exactly: ``"POSIX"`` not ``"posix"``
+
+            **Example queries**::
+
+                'cat == "POSIX"'
+                'cat == "POSIX" and name == "open"'
+                'cat == "POSIX" OR cat == "STDIO"'
+                'cat == "C_APP" and args.comp == "io"'
+                'cat == "POSIX" and dur > 1000'
+                'cat == "POSIX" and name != "lseek"'
+
+            **Presets** (``--preset``):
+                * ``io``      — STDIO-level I/O events
+                * ``compute`` — C_APP compute spans
+                * ``dlio``    — deep-learning I/O workload events
+
+            **Time / duration filters**:
+                * ``time_range`` — ``"min_us,max_us"`` e.g. ``"0,500000"``
+                * ``min_duration`` / ``max_duration`` — event duration in µs
+
+            ``no_metadata=True`` (default) strips ``ph=M`` hash-mapping events
+            from output.  Set ``False`` to include FH (file-hash→path) events.
 
             Reference: https://dftracer.readthedocs.io/projects/utils/en/latest/cli.html
             """
@@ -762,7 +793,7 @@ class DftracerUtilsService(MCPService):
                 cmd += ["--max-duration", str(max_duration)]
             if output_file:
                 cmd += ["-o", output_file]
-            else:
+            if no_metadata:
                 cmd.append("--no-metadata")
             if stream:
                 cmd.append("--stream")
@@ -1322,6 +1353,65 @@ class DftracerUtilsService(MCPService):
                 f"  mpirun -n <NP> " + " ".join(cmd)
             )
 
+    # ── Session-aware tools (session_subservice) ───────────────────────
+
+    def _register_session_tools(self) -> None:
+        """Register session-aware dftracer-utils tools on :attr:`session_subservice`.
+
+        Exposes ``session_split_traces`` — a wrapper around ``dftracer_split``
+        that operates on a session workspace identified by *run_id*.
+        """
+
+        @self.session_subservice.tool()
+        def session_split_traces(
+            run_id: str,
+            app_name: str = "app",
+        ) -> str:
+            """Compact raw dftracer traces via the ``dftracer-utils`` split service.
+
+            Reads raw ``.pfw`` / ``.pfw.gz`` files from ``<workspace>/traces/``
+            (written by ``session_run_with_dftracer``) and writes compacted chunk
+            files to ``<workspace>/traces_split/``.
+
+            Splitting is performed by the ``dftracer_split`` binary (via
+            ``DftracerUtilsService``) so that all dftracer-utils error handling
+            and output formatting is applied.  For single files below 512 MB
+            (uncompressed), the file is copied without splitting.
+
+            Side effects:
+                * Creates ``<workspace>/traces_split/`` if it does not exist.
+                * Writes compacted trace chunks named ``<app_name>_*.pfw`` inside
+                  ``<workspace>/traces_split/``.
+                * Persists ``{"step": "traces_split", "split_result": <r>}`` to
+                  ``session.json``.
+                * Writes an artifact log at step 12.
+
+            Args:
+                run_id:   Session identifier returned by ``session_create``.
+                app_name: Prefix used for output chunk file names.
+                    Defaults to ``"app"``.
+
+            Returns:
+                JSON string with keys:
+                    * ``status`` (``"ok"`` or ``"error"``).
+                    * ``message`` — outcome description.
+                    * ``output`` — absolute path to ``traces_split/`` directory.
+                    * Additional keys from the split service result.
+
+            Raises:
+                Returns ``{"status": "error"}`` when:
+                    * ``traces/`` does not exist in the session workspace.
+                    * No ``.pfw`` or ``.pfw.gz`` files are found in ``traces/``.
+                    * The split binary exits non-zero.
+
+            Note:
+                Must be called after ``session_run_with_dftracer``.  Call
+                ``session_install_dftracer_utils`` first to ensure the
+                ``develop``-branch version of ``dftracer-utils`` is active.
+                Follow with ``session_analyze_traces`` to query the split output.
+            """
+            return _session_split_traces_impl(run_id=run_id, app_name=app_name)
+
     # ── Execute / name (abstract contract) ────────────────────────────
 
     def execute(self, data: dict):
@@ -1372,6 +1462,9 @@ def run():
     This function is intended as the entry-point for standalone deployments
     where a single MCP server endpoint should surface all 21 tools.  For
     selective deployments, mount individual sub-servers instead.
+
+    The combined server also includes the ``session_subservice`` tools that
+    wrap dftracer-utils operations with a session ``run_id`` context.
     """
     from fastmcp import FastMCP
 
