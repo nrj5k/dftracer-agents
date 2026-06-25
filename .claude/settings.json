@@ -1,7 +1,31 @@
 {
   "enabledMcpjsonServers": ["dftracer"],
+  "env": {
+    "REQUESTS_CA_BUNDLE": "/etc/pki/tls/cert.pem",
+    "SSL_CERT_FILE": "/etc/pki/tls/cert.pem"
+  },
   "permissions": {
+    "deny": [
+      "Bash(sudo *)",
+      "Bash(sudo)",
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf ~*)",
+      "Write(/etc/*)",
+      "Write(/usr/*)",
+      "Write(/var/*)",
+      "Write(/tmp/*)",
+      "Write(/home/*)",
+      "Write(/root/*)"
+    ],
     "allow": [
+      "Bash(ls workspaces/*)",
+      "Bash(mkdir -p workspaces/*)",
+      "Bash(cp * workspaces/*)",
+      "Bash(mv * workspaces/*)",
+      "Bash(find workspaces/*)",
+      "Bash(cat workspaces/*)",
+      "Write(workspaces/*)",
+      "Edit(workspaces/*)",
       "mcp__dftracer__aggregator",
       "mcp__dftracer__aggregator_mpi",
       "mcp__dftracer__analyze",
@@ -95,7 +119,10 @@
       "mcp__dftracer__split",
       "mcp__dftracer__stats",
       "mcp__dftracer__tar",
-      "mcp__dftracer__view"
+      "mcp__dftracer__view",
+      "mcp__dftracer__system_detect",
+      "mcp__dftracer__system_list",
+      "mcp__dftracer__system_save"
     ]
   }
 }

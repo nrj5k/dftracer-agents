@@ -41,6 +41,7 @@ def _hydra_args(
     analyzer: str = "dftracer",
     analyzer_preset: str = "posix",
     analyzer_checkpoint: Optional[bool] = None,
+    analyzer_checkpoint_dir: Optional[str] = None,
     analyzer_time_approximate: Optional[bool] = None,
     analyzer_time_granularity: Optional[float] = None,
     analyzer_time_resolution: Optional[float] = None,
@@ -151,57 +152,60 @@ def _hydra_args(
           :meth:`str.strip` before inclusion, so whitespace-only strings are
           silently dropped.
     """
+    # dfanalyzer uses Hydra-style positional overrides (key=value), not GNU flags.
     cmd: List[str] = ["dfanalyzer"]
 
     if trace_path:
-        cmd.extend(["--trace-path", trace_path])
+        cmd.append(f"trace_path={trace_path}")
 
     default_view_types = ["file_name", "proc_name", "time_range"]
     if view_types is not None and view_types != default_view_types:
-        for view_type in view_types:
-            cmd.extend(["--view-type", view_type])
+        hydra_list = "[" + ",".join(view_types) + "]"
+        cmd.append(f"view_types={hydra_list}")
 
     if debug:
-        cmd.append("--debug")
+        cmd.append("debug=True")
     if verbose:
-        cmd.append("--verbose")
+        cmd.append("verbose=True")
 
     if analyzer != "dftracer":
-        cmd.append(f"-ahydra/analyzer={analyzer}")
-    cmd.append(f"-ahydra.analyzer/preset={analyzer_preset}")
+        cmd.append(f"analyzer={analyzer}")
+    cmd.append(f"analyzer/preset={analyzer_preset}")
 
     if analyzer_checkpoint is not None:
-        cmd.append(f"--analyzer.checkpoint={'true' if analyzer_checkpoint else 'false'}")
+        cmd.append(f"analyzer.checkpoint={'True' if analyzer_checkpoint else 'False'}")
+    if analyzer_checkpoint_dir is not None:
+        cmd.append(f"analyzer.checkpoint_dir={analyzer_checkpoint_dir}")
     if analyzer_time_approximate is not None:
         cmd.append(
-            f"--analyzer.time_approximate={'true' if analyzer_time_approximate else 'false'}"
+            f"analyzer.time_approximate={'True' if analyzer_time_approximate else 'False'}"
         )
     if analyzer_time_granularity is not None:
-        cmd.extend(["--analyzer.time_granularity", str(analyzer_time_granularity)])
+        cmd.append(f"analyzer.time_granularity={analyzer_time_granularity}")
     if analyzer_time_resolution is not None:
-        cmd.extend(["--analyzer.time_resolution", str(analyzer_time_resolution)])
+        cmd.append(f"analyzer.time_resolution={analyzer_time_resolution}")
 
-    cmd.append(f"--output={output_format}")
+    cmd.append(f"output={output_format}")
     if output_compact is not None:
-        cmd.append(f"--output.compact={'true' if output_compact else 'false'}")
+        cmd.append(f"output.compact={'True' if output_compact else 'False'}")
     if output_root_only is not None:
-        cmd.extend(["--output.root_only", str(output_root_only)])
+        cmd.append(f"output.root_only={output_root_only}")
     if output_name and output_name.strip():
-        cmd.extend(["--output.name", output_name])
+        cmd.append(f"output.name={output_name}")
     if output_run_db_path and output_run_db_path.strip():
-        cmd.extend(["--output.run_db_path", output_run_db_path])
+        cmd.append(f"output.run_db_path={output_run_db_path}")
 
-    cmd.append(f"--cluster={cluster_type}")
+    cmd.append(f"cluster={cluster_type}")
     if cluster_n_workers is not None:
-        cmd.extend(["--cluster.n_workers", str(cluster_n_workers)])
+        cmd.append(f"cluster.n_workers={cluster_n_workers}")
     if cluster_memory_limit is not None:
-        cmd.extend(["--cluster.memory_limit", cluster_memory_limit])
+        cmd.append(f"cluster.memory_limit={cluster_memory_limit}")
     if cluster_processes is not None:
-        cmd.extend(["--cluster.processes", str(cluster_processes)])
+        cmd.append(f"cluster.processes={cluster_processes}")
     if cluster_cores is not None:
-        cmd.extend(["--cluster.cores", str(cluster_cores)])
+        cmd.append(f"cluster.cores={cluster_cores}")
     if cluster_memory is not None:
-        cmd.extend(["--cluster.memory", cluster_memory])
+        cmd.append(f"cluster.memory={cluster_memory}")
 
     return cmd
 
@@ -278,6 +282,7 @@ class DFAnalyzerService(MCPService):
             analyzer: str = "dftracer",
             analyzer_preset: str = "posix",
             analyzer_checkpoint: Optional[bool] = None,
+            analyzer_checkpoint_dir: Optional[str] = None,
             analyzer_time_approximate: Optional[bool] = None,
             analyzer_time_granularity: Optional[float] = None,
             analyzer_time_resolution: Optional[float] = None,
@@ -302,6 +307,7 @@ class DFAnalyzerService(MCPService):
                 analyzer=analyzer,
                 analyzer_preset=analyzer_preset,
                 analyzer_checkpoint=analyzer_checkpoint,
+                analyzer_checkpoint_dir=analyzer_checkpoint_dir,
                 analyzer_time_approximate=analyzer_time_approximate,
                 analyzer_time_granularity=analyzer_time_granularity,
                 analyzer_time_resolution=analyzer_time_resolution,
@@ -424,7 +430,16 @@ class DFAnalyzerService(MCPService):
             ``"Would run: dfanalyzer ..."`` showing the full command that
             *would* be executed.  Never returns ``None``.
         """
-        cmd_string = " ".join(_hydra_args(**{k: v for k, v in data.items() if k != "command"}))
+        valid_keys = {
+            "trace_path", "view_types", "debug", "verbose", "analyzer",
+            "analyzer_preset", "analyzer_checkpoint", "analyzer_checkpoint_dir",
+            "analyzer_time_approximate", "analyzer_time_granularity",
+            "analyzer_time_resolution", "output_format", "output_compact",
+            "output_root_only", "output_name", "output_run_db_path",
+            "cluster_type", "cluster_n_workers", "cluster_memory_limit",
+            "cluster_processes", "cluster_cores", "cluster_memory",
+        }
+        cmd_string = " ".join(_hydra_args(**{k: v for k, v in data.items() if k in valid_keys}))
         return f"Would run: {cmd_string}"
 
     @property

@@ -116,6 +116,9 @@ def _bootstrap_package_context() -> None:
     optimizations_pkg = types.ModuleType("dftracer_agents.mcp_tools.tools.optimizations")
     optimizations_pkg.__path__ = [str(tools_dir / "optimizations")]
 
+    system_pkg = types.ModuleType("dftracer_agents.mcp_tools.tools.system")
+    system_pkg.__path__ = [str(tools_dir / "system")]
+
     sys.modules["dftracer_agents"] = pkg
     sys.modules["dftracer_agents.mcp_tools"] = mcp_pkg
     sys.modules["dftracer_agents.mcp_tools.tools"] = tools_pkg
@@ -124,6 +127,7 @@ def _bootstrap_package_context() -> None:
     sys.modules["dftracer_agents.mcp_tools.tools.papers"] = papers_pkg
     sys.modules["dftracer_agents.mcp_tools.tools.annotations"] = annotations_pkg
     sys.modules["dftracer_agents.mcp_tools.tools.optimizations"] = optimizations_pkg
+    sys.modules["dftracer_agents.mcp_tools.tools.system"] = system_pkg
 
 
 def _load_module(name: str, path: Path):
@@ -238,6 +242,17 @@ def _build_papers_server() -> FastMCP:
     return server
 
 
+def _build_system_server() -> FastMCP:
+    path = PKG_ROOT / "mcp-tools" / "tools" / "system" / "system_service.py"
+    mod = _load_module("system.system_service", path)
+    service = mod.SystemService()
+
+    server = FastMCP("DFTracerSystem")
+    for tool in asyncio.run(service.system_subservice.list_tools()):
+        server.add_tool(tool)
+    return server
+
+
 def _build_session_server() -> FastMCP:
     session_dir = PKG_ROOT / "mcp-tools" / "tools" / "session"
     annotations_dir = PKG_ROOT / "mcp-tools" / "tools" / "annotations"
@@ -302,6 +317,9 @@ def build_server(service: str) -> FastMCP:
     if service == "docs":
         return _build_docs_server()
 
+    if service == "system":
+        return _build_system_server()
+
     # both — all services
     combined = FastMCP("DFTracer")
     for srv in (
@@ -312,6 +330,7 @@ def build_server(service: str) -> FastMCP:
         _build_session_server(),
         _build_docs_server(),
         _build_papers_server(),
+        _build_system_server(),
     ):
         for tool in asyncio.run(srv.list_tools()):
             combined.add_tool(tool)
@@ -328,7 +347,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--service",
-        choices=["utils", "analyzer", "session", "docs", "diagnoser", "papers", "both"],
+        choices=["utils", "analyzer", "session", "docs", "diagnoser", "papers", "system", "both"],
         default="both",
         help="Which service(s) to expose (default: both)",
     )

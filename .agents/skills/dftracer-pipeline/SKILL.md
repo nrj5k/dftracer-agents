@@ -346,6 +346,56 @@ Ask: "Generate optimization proposals? [yes / no]"
 
 If yes:
 
+8-PRE. DETECT FILESYSTEM AND STORAGE CONTEXT (mandatory before any proposals)
+
+    Before searching for papers or generating proposals, identify the actual
+    filesystem where the application is performing I/O.  This drives which
+    L2/L3 strategies are valid and which search terms to use.
+
+    Detect filesystem type of the data directory:
+      stat -f --format="%T" <DATA_DIR>   # e.g. "nfs", "ext2/ext3", "lustre"
+      df -T <DATA_DIR>                   # shows filesystem type
+      lfs getname <DATA_DIR> 2>/dev/null # non-empty → Lustre
+      # For VAST: usually shows as NFS mount but df -T shows "nfs" or "tmpfs"
+      # Check mount source: mount | grep <DATA_DIR>
+
+    Store the result as FS_TYPE. Classify into one of:
+      FS_TYPE = "lustre"      # lfs command works; OST/MDT visible
+      FS_TYPE = "vast"        # NVMe-backed NFS or proprietary; no lfs commands
+      FS_TYPE = "gpfs"        # IBM Spectrum Scale / GPFS
+      FS_TYPE = "beegfs"      # BeeGFS distributed FS
+      FS_TYPE = "nfs"         # standard NFS (no parallel I/O tuning)
+      FS_TYPE = "local_nvme"  # local NVMe SSD
+      FS_TYPE = "local_hdd"   # local spinning disk
+      FS_TYPE = "unknown"     # could not determine
+
+    Print: "I/O filesystem detected: <FS_TYPE> at <DATA_DIR>"
+
+    FS_TYPE is used in:
+      - Paper search queries (include filesystem name)
+      - system_score assignment (papers for wrong FS score 0)
+      - L3 strategy filtering (only propose valid strategies for FS_TYPE)
+
+    FILESYSTEM COMPATIBILITY TABLE FOR L3 PROPOSALS:
+    ┌──────────────────────────┬─────────────────────────────────────────┐
+    │ Strategy                 │ Valid FS_TYPE                           │
+    ├──────────────────────────┼─────────────────────────────────────────┤
+    │ lfs setstripe / stripe   │ lustre only                             │
+    │ lfs mkdir -c (DNE)       │ lustre only                             │
+    │ romio_ds_write=disable   │ lustre only (FATAL on vast/NVMe)        │
+    │ romio_cb_read=enable     │ lustre, gpfs, nfs (HARMFUL on vast)     │
+    │ romio_cb_write=enable    │ all parallel FS (lustre, vast, gpfs…)   │
+    │ blockdev --setra          │ local_nvme, local_hdd only              │
+    │ I/O scheduler (none/mq)  │ local_nvme, local_hdd only              │
+    │ vm.dirty_* sysctl        │ all local filesystems                   │
+    │ mmchattr (GPFS)          │ gpfs only                               │
+    │ beegfs-ctl tuning        │ beegfs only                             │
+    │ NFS rsize/wsize mount    │ nfs only                                │
+    └──────────────────────────┴─────────────────────────────────────────┘
+
+    DO NOT propose L3 strategies for a different FS_TYPE.
+    For "unknown" FS_TYPE: propose only L1 and L2 strategies; omit L3.
+
 8a. Run the baseline iteration loop (profiling + diagnosis + literature search):
 
     session_optimization_iteration(run_id=RUN_ID, command=SMOKE_CMD,
@@ -387,12 +437,31 @@ If yes:
         •  0 — paper is topically unrelated to the bottleneck
 
       system_score (0–30):
-        How well does the paper match the target system/software stack?
-        • 30 — same library/runtime (e.g., paper uses HDF5 + ROMIO on MPI)
-        • 20 — same storage tier or middleware class (e.g., parallel filesystem,
-                object store, two-phase I/O)
-        • 10 — same application domain (e.g., scientific HPC I/O, checkpoint)
-        •  0 — different system class (e.g., cloud-only, database, in-memory)
+        How well does the paper match the ACTUAL detected filesystem and stack?
+        This score is filesystem-specific — a paper about Lustre tuning scores 0
+        when the detected FS_TYPE is "vast" or "local_nvme", even though both
+        are "parallel filesystems."
+
+        • 30 — paper studies the SAME filesystem/storage product as FS_TYPE
+                (e.g., FS_TYPE=lustre and paper evaluates on Lustre;
+                 FS_TYPE=vast and paper evaluates on VAST or all-NVMe NAS)
+        • 25 — same library/runtime regardless of filesystem
+                (e.g., paper uses HDF5 + ROMIO; or MPI-IO collective I/O
+                 technique validated on multiple filesystems)
+        • 15 — same storage technology class (NVMe vs spinning disk vs network)
+                (e.g., FS_TYPE=local_nvme and paper studies NVMe-based storage;
+                 FS_TYPE=vast and paper studies NVMe-backed parallel storage)
+        • 10 — same application domain (scientific HPC I/O, checkpoint)
+                on a DIFFERENT storage class
+        •  0 — paper is for a DIFFERENT specific filesystem
+                (e.g., paper is Lustre-only when FS_TYPE=vast or gpfs;
+                 paper is cloud/object-store when FS_TYPE=lustre)
+        •  0 — different system class (cloud-only, database, in-memory)
+
+        HARD RULE: A paper that proposes a strategy that is KNOWN TO HARM
+        the detected FS_TYPE (see compatibility table in 8-PRE) must score 0
+        on system_score, even if it scores high on bottleneck_score.
+        Do NOT rank it as a citation for a proposal on this system.
 
       recency_score (0–20):
         age_years = current_year - publication_year
@@ -410,17 +479,22 @@ If yes:
 8b-ii. PAPER SEARCH PROCEDURE
 
     If session_generate_optimization_proposals returns empty or unsupported
-    bottlenecks, search manually:
+    bottlenecks, search manually.  ALWAYS include FS_TYPE in the queries:
 
       dftracer__search_arxiv / dftracer__search_semantic_scholar with queries:
-        - Bottleneck metric name + I/O domain
-          (e.g., "posix close latency HDF5 parallel I/O")
-        - Broader technique synonyms
-          (e.g., "collective buffering MPI-IO", "metadata caching HDF5")
-        - System-specific terms from the stack
-          (e.g., "ROMIO two-phase I/O", "Lustre striping checkpoint")
+        - Bottleneck metric name + I/O domain + FS_TYPE
+          (e.g., "posix close latency HDF5 VAST NVMe parallel I/O")
+          (e.g., "posix seek ops collective I/O Lustre MPI-IO")
+        - Broader technique synonyms + FS_TYPE
+          (e.g., "collective buffering MPI-IO NVMe storage")
+          (e.g., "metadata caching HDF5 Lustre parallel filesystem")
+        - System-specific terms from the detected stack
+          (e.g., "ROMIO two-phase I/O VAST" or "ROMIO Lustre striping checkpoint")
 
-      Score every result using the rubric above.
+      If FS_TYPE is "unknown", omit the filesystem name and search broadly,
+      then mark all L3 proposals as "requires filesystem verification."
+
+      Score every result using the rubric above, applying the filesystem filter.
       If top score < 20 after 3 searches → state:
         "Best available citation scores <N>/100 for this bottleneck
          (title: <title>, year: <year>). Proceeding with caveat."
@@ -430,6 +504,7 @@ If yes:
 
     ┌─────────────────────────────────────────────────────────────┐
     │  OPTIMIZATION PROPOSAL — <bottleneck> (<severity>)          │
+    │  Filesystem: <FS_TYPE> at <DATA_DIR>                        │
     ├─────────────────────────────────────────────────────────────┤
     │  Evidence: <paper title>, <authors>, <year>                 │
     │  URL: <arxiv or doi url>                                    │
@@ -437,8 +512,12 @@ If yes:
     ├─────────────────────────────────────────────────────────────┤
     │  L1 (application):  <specific code/config change>           │
     │  L2 (middleware):   <library/runtime tuning>                │
-    │  L3 (filesystem):   <storage/system config change>          │
+    │  L3 (filesystem):   <FS_TYPE-specific config — or N/A>      │
     └─────────────────────────────────────────────────────────────┘
+
+    If no valid L3 strategy exists for the detected FS_TYPE, write:
+      "L3 (filesystem): N/A — no validated strategy for <FS_TYPE>"
+    NEVER propose an L3 strategy from the incompatibility table above.
 
 8d. ITERATIVE OPTIMIZATION LOOP  (max 10 iterations)
 
@@ -456,17 +535,128 @@ If yes:
 
     For each iteration i = 1 … 10:
 
-    8d-i.  Apply all three layers in sequence:
+    8d-0.  SMOKE VALIDATION BEFORE PRODUCTION RUN  ← MANDATORY BEFORE EVERY ITER
 
-        session_optimize_l1_app(run_id=RUN_ID)
-        session_optimize_l2_software(run_id=RUN_ID)
-        session_optimize_l3_filesystem(run_id=RUN_ID)
+        Before running any optimization at production scale, validate each
+        proposed change with a smoke run using minimal resources and tiny data.
+        Test each optimization in isolation (L1 alone, L2 alone, L3 alone,
+        then combinations) and scale up gradually until you find the smallest
+        configuration that fails OR confirm all pass.
 
-        If any layer reports "no applicable optimizations", record that
-        layer as exhausted for this iteration but still run the remaining
-        layers. Do NOT skip the re-profile step.
+        Gradual scale steps (Tuolumne example):
+          Step 1 — 1 node, 4 ranks, DIM_1=1M, TIMESTEPS=2   (~seconds)
+          Step 2 — 1 node, 96 ranks, same small DIM          (~seconds)
+          Step 3 — 2 nodes, 192 ranks, small DIM             (~seconds)
+          Step 4 — 2 nodes, 192 ranks, medium DIM (½ of production)
+          Step 5 — production scale only if all above pass
 
-    8d-ii. Re-profile with the applied changes:
+        For each step, test in this order:
+          a) baseline (no optimization) — confirm it passes at this scale
+          b) L3 only (filesystem: lfs setstripe)
+          c) L2 only (middleware: ROMIO hints via wrapper script)
+          d) L1 only (app: config changes)
+          e) L3 + L2 combined
+          f) all three combined
+
+        If a combination fails at step N, binary-search within that combination
+        (e.g. remove hints one at a time) to find the specific offending param.
+
+        Smoke run template (h5bench on Tuolumne):
+          cat > smoke.cfg << 'EOF'
+          MEM_PATTERN=CONTIG
+          FILE_PATTERN=CONTIG
+          TIMESTEPS=2
+          DELAYED_CLOSE_TIMESTEPS=0
+          COLLECTIVE_DATA=YES
+          COLLECTIVE_METADATA=YES
+          NUM_DIMS=1
+          DIM_1=1048576
+          EOF
+
+          flux proxy $JOB flux run -N 1 -n 4 --env LD_LIBRARY_PATH=$LDPATH \
+            bash wrapper.sh $BIN smoke.cfg /p/lustre5/$USER/smoke_test/out.h5
+
+        Record failures in the workload/software skill BEFORE running at scale.
+        Only proceed to production run with configurations confirmed at all steps.
+        See R11 in [[dftracer-annotation-lessons]] for full rationale.
+
+    8d-i.  Apply optimizations ONE AT A TIME, measure each individually,
+        then measure the combined effect.
+
+        !! MANDATORY — never apply all three layers in one shot and compare
+        only the combined result. The user must always see per-optimization
+        impact so they know which change contributed what. !!
+
+        For each proposed optimization OPT_k in (L3, L2, L1):
+
+          a) Apply OPT_k on top of BASELINE (not on top of previous opts).
+          b) Run the benchmark with OPT_k only:
+               session_optimization_iteration(run_id=RUN_ID, command=SMOKE_CMD,
+                 app_name=APP_NAME, data_dir="all",
+                 env_extra=DFTRACER_INIT_ENV,
+                 optimization_applied="iter-<i>: <OPT_k name> only",
+                 rebuild=<True if L1, False if L2/L3-only>)
+             Store trace as TRACE_OPT_k.
+          c) Compare OPT_k vs BASELINE using the comparator:
+               comparator(trace_a=TRACE_BASELINE, trace_b=TRACE_OPT_k)
+             Record impact: IMPROVED / NEUTRAL / REGRESSED per metric.
+
+        After all individual OPT_k runs:
+
+          d) Apply ALL passing opts together (those that were IMPROVED or
+             at least NEUTRAL on their own):
+               session_optimization_iteration(run_id=RUN_ID, command=SMOKE_CMD,
+                 app_name=APP_NAME, data_dir="all",
+                 env_extra=DFTRACER_INIT_ENV,
+                 optimization_applied="iter-<i>: all combined",
+                 rebuild=True)
+             Store trace as TRACE_COMBINED.
+
+        Then run the N-WAY COMPARATOR to show all traces at once:
+
+          e) comparator(
+               trace_a = TRACE_BASELINE,
+               trace_b = TRACE_OPT_1,
+               trace_c = TRACE_OPT_2,
+               trace_d = TRACE_OPT_3,
+               trace_e = TRACE_COMBINED
+             )
+
+        This produces a single table showing the contribution of each
+        optimization independently AND their synergistic combined effect.
+
+        Present results as:
+          OPT          | raw_rate  | delta vs baseline | key bottleneck change        | citation (author, year, score/100)
+          -------------|-----------|-------------------|-----------------------------|---------------------------------
+          baseline     | <val>     | —                 | —                           | —
+          L3 only      | <val>     | +X%               | <metric improved>           | <Author et al., YYYY, NN/100>
+          L2 only      | <val>     | +X%               | <metric improved>           | <Author et al., YYYY, NN/100>
+          L1 only      | <val>     | +X%               | <metric improved>           | <Author et al., YYYY, NN/100>
+          L3+L2+L1     | <val>     | +X%               | cumulative                  | —
+
+        !! MANDATORY: Every optimization row MUST have a citation. If the hint was
+        silently dropped or unrecognized, note "N/A — hint unrecognized" in the
+        key bottleneck change column but still show the citation that motivated
+        the attempt. Never leave the citation column blank for a tested OPT. !!
+
+        Any optimization that is REGRESSED or NEUTRAL individually:
+          → Do NOT include in the combined run.
+          → Record it immediately as a failed config (see 8d-iii-FAIL).
+          → Note in the table with reason (e.g. "SKIP — neutral alone").
+
+        IMPORTANT: Run the individual optimization runs in parallel where
+        the allocation has enough nodes (e.g. L3-only and L2-only can run
+        simultaneously if nodes are available, since each is applied on
+        top of BASELINE, not on top of each other).
+
+        If any layer reports "no applicable optimizations", skip it and
+        continue with the remaining layers. Do NOT skip the combined run.
+
+    8d-ii. Re-profile with the combined changes (if step 8d-i-d above ran):
+
+        The TRACE_COMBINED from 8d-i-d is the authoritative profile for
+        this iteration. Use it as the basis for next-iteration bottleneck
+        analysis and proposals.
 
         session_optimization_iteration(run_id=RUN_ID, command=SMOKE_CMD,
           app_name=APP_NAME, data_dir="all",
@@ -496,6 +686,40 @@ If yes:
 
         For the baseline comparison (i = 1), use TRACE_ITER_0 as trace_a.
 
+    8d-iii-FAIL. Record any regressed or neutral configurations IMMEDIATELY.
+
+        After every comparator result, classify each applied change as:
+          IMPROVED  — metric improved vs previous iteration
+          NEUTRAL   — change within ±5% (no meaningful effect)
+          REGRESSED — metric worsened by > 5%
+
+        For every NEUTRAL or REGRESSED change, write a failed-config entry
+        to the appropriate skill file RIGHT NOW (do not wait for Step 9).
+
+        Use the ROUTING TABLE from Step 9 to pick the target file.
+        Append this block under the "## Failed Configurations" section
+        of that skill file (create the section if it does not exist):
+
+          ---
+          date: YYYY-MM-DD
+          app: <APP_URL>
+          workload: <APP_NAME>
+          filesystem: <FS_TYPE>
+          system: <HPC system, e.g. Tuolumne>
+          bottleneck: <bottleneck metric that was targeted>
+          config_attempted: |
+            <exact env vars, flags, or code changes that were applied>
+          result: REGRESSED | NEUTRAL
+          metrics_before: <key metric values from TRACE_ITER_<i-1>>
+          metrics_after:  <key metric values from TRACE_ITER_<i>>
+          delta: <pct change, e.g. "-70% read BW", "+0% write BW">
+          root_cause: <why this configuration hurt or had no effect>
+          do_not_use_when: <condition under which this config is harmful>
+          ---
+
+        IMPORTANT: Roll back the regressed changes before continuing the loop.
+        Do NOT carry a known-bad configuration into the next iteration.
+
     8d-iv. Generate updated proposals for newly surfaced bottlenecks:
 
         session_generate_optimization_proposals(run_id=RUN_ID, iteration=i)
@@ -505,10 +729,19 @@ If yes:
         already fully addressed in a prior iteration (no new proposals
         means no proposal box for that bottleneck).
 
+        BEFORE proposing any configuration: check the "## Failed Configurations"
+        section of every relevant skill file (workload, software, filesystem).
+        If the proposed config matches a known REGRESSED entry for the same
+        FS_TYPE and workload, SKIP that proposal and note:
+          "Skipped: <config> previously caused <delta> regression on
+           <FS_TYPE>/<workload> — see <skill_file>#Failed Configurations"
+
     8d-v. Update the loop state table and print a one-line delta summary
         derived from the comparator output:
 
         "Iter <i>: resolved=<n> bottlenecks, new=<m>, raw_rate <before>→<after> GB/s (comparator: <overall verdict>)"
+        "  Applied: <list of changes>"
+        "  Regressed/rolled back: <list, or 'none'>"
 
 8e. Check termination conditions after each iteration:
 
@@ -522,8 +755,8 @@ If yes:
                    completion time worsened by > 5% versus the previous
                    iteration. Use the comparator's metric delta output as
                    the authoritative source — do not recompute manually.
-                   (Roll back the last iteration's changes, mark as
-                   "regressed", and stop.)
+                   (Roll back the last iteration's changes; the failed-config
+                   entry was already written in 8d-iii-FAIL. Stop loop.)
       MAX_ITERS  — 10 iterations completed.
 
     On stopping, print the reason:
@@ -540,8 +773,42 @@ If yes:
 STEP 9 — UPDATE LESSONS LEARNED
 ══════════════════════════════════════════════════════════════════════
 
-Append any new pitfalls discovered this session to the lessons file.
-Format:
+Append any new pitfalls discovered this session to the CORRECT file
+based on the nature of the lesson:
+
+  ROUTING TABLE
+  ─────────────────────────────────────────────────────────────────
+  Lesson type                          → Target file
+  ─────────────────────────────────────────────────────────────────
+  IOR-specific (build, annotation,     → .agents/skills/workload-ior/SKILL.md
+    ROMIO tuning, smoke test)
+  H5Bench-specific (build, CMake,      → .agents/skills/workload-h5bench/SKILL.md
+    config, annotation edge cases)
+  MPI/ROMIO software tuning,           → .agents/skills/software-mpi/SKILL.md
+    Flux env propagation, Cray MPICH
+  HDF5 version, chunk/cache tuning,    → .agents/skills/software-hdf5/SKILL.md
+    Cray chid_t, dftracer HDF5 support
+  POSIX readahead, Lustre striping,    → .agents/skills/software-posix/SKILL.md
+    OS/VM tuning, ops_slope bottlenecks
+  New workload (not IOR or H5Bench)    → create .agents/skills/workload-<name>/SKILL.md
+  New software (not MPI/HDF5/POSIX)   → create .agents/skills/software-<name>/SKILL.md
+  General/cross-cutting annotation     → .agents/skills/dftracer-annotation-lessons/SKILL.md
+  ─────────────────────────────────────────────────────────────────
+
+  ALWAYS also append a one-line cross-reference entry to
+  dftracer-annotation-lessons/SKILL.md pointing at the target file,
+  so agents loading the general lessons file can find the new entry.
+
+  NEW WORKLOAD / SOFTWARE SKILL:
+  If the workload or software has no existing skill file, create one:
+    1. mkdir -p .agents/skills/workload-<name>/
+    2. Write SKILL.md with frontmatter (name, description), cross-reference
+       links to [[dftracer-annotation-lessons]] and related skills, and the
+       lesson entry below.
+    3. Add a cross-reference line to dftracer-annotation-lessons/SKILL.md
+       under "Related Skills" pointing at the new skill.
+
+Entry format (same regardless of target file):
 
   ---
   date: YYYY-MM-DD

@@ -7,6 +7,8 @@ description: >
   call or when debugging missing trace categories (POSIX/HDF5/MPI).
 ---
 
+Related skills: [[software-mpi]] (ROMIO hints, Flux env, Cray MPICH) | [[software-posix]] (DFTRACER_DATA_DIR, POSIX tuning) | [[workload-ior]] | [[workload-h5bench]]
+
 # DFTracer PRELOAD and HYBRID Run Reference
 
 Source: https://dftracer.readthedocs.io/en/latest/api.html

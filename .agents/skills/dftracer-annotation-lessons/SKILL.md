@@ -6,6 +6,23 @@ description: >
   Updated by the pipeline recipe after every session (Step 8).
 ---
 
+## Related Skills
+
+Workload-specific lessons and pitfalls live in dedicated skills — load these when working on the corresponding application:
+
+- **[[workload-ior]]** — IOR build quirks, annotation pitfalls, ROMIO/VAST tuning, smoke test
+- **[[workload-h5bench]]** — H5Bench build, CMake quirks, assert/else-if brace insertion, INI config
+
+Software-specific optimization strategies:
+
+- **[[software-mpi]]** — MPI-IO, ROMIO hints, Flux env propagation, Cray MPICH
+- **[[software-hdf5]]** — HDF5 version, chunk/cache tuning, Cray chid_t, dftracer HDF5 support
+- **[[software-posix]]** — POSIX readahead, lustre striping, OS tuning, ops_slope bottlenecks
+
+When appending new session lessons below, also update the workload or software skill file that matches the `app:` field and `tags:` — see Step 9 of [[dftracer-pipeline]].
+
+---
+
 ## How to use this file
 
 Read this before annotating any file. For each lesson:
@@ -64,11 +81,130 @@ R8  If annotated code contains explicit DFTRACER_C_INIT() / DFTRACER_CPP_INIT()
     when running the binary. Setting DFTRACER_INIT=1 with explicit INIT calls
     produces an empty trace file with no events.
 
+R9  Smoke tests and trace collection runs MUST move more than 50% of each
+    node's physical memory to/from the filesystem to avoid OS page-cache
+    effects that make I/O look faster than it really is.
+
+    Before setting DIM_* / block size / particle count, query node memory:
+      flux run -N 1 -n 1 grep MemTotal /proc/meminfo   # on Flux/Tuolumne
+      cat /proc/meminfo | grep MemTotal                  # inside a container
+
+    Then size the dataset so that:
+      total_data_written > 0.5 × MemTotal × num_nodes
+
+    Reference values (Tuolumne, AMD MI300A APU nodes):
+      MemTotal per node : ~502 GiB
+      2-node threshold  : >502 GiB total  (>251 GiB per node)
+      4-node threshold  : >1004 GiB total (>251 GiB per node)
+
+    For h5bench_write with 192 ranks across 2 nodes:
+      DIM_1=33554432 (32M float32) × 192 ranks × 4B × 4 timesteps = 768 GiB  ✓
+      DIM_1=16777216 (16M float32) × 192 ranks × 4B × 4 timesteps = 384 GiB  ✗ (below threshold)
+
+R10 When running multiple benchmark workloads in the same session, keep
+    traces and logs SEPARATE per workload and analyze + optimize each
+    independently. Do NOT merge traces across workloads into a single
+    analysis — different workloads have different access patterns and
+    different bottlenecks.
+
+    Correct layout:
+      traces/<workload_name>/           ← one directory per workload
+      analysis/<workload_name>/         ← separate analysis output per workload
+
+    Correct workflow:
+      1. Collect traces per workload into separate subdirectories
+         (use DFTRACER_LOG_FILE=$TRACES/<name>/<name> so all 192 rank files
+         land in a per-workload folder, not a flat shared directory)
+      2. Split each workload's traces independently:
+           dftracer_split --directory traces/<name>/ --output traces_split/<name>/
+      3. Run dfanalyzer + diagnose per workload independently
+      4. Run the optimization loop independently per workload
+      5. Parallelize: multiple workload analysis/optimization loops can run
+         concurrently (they share no state between workloads)
+
+    Why: Mixing all 192×N trace files into one analysis makes bottleneck
+    scores meaningless — write latency from h5bench_write will drown out
+    metadata patterns from h5bench_read and vice versa.
+
+    Apply this check to ALL workloads: write, read, append, overwrite,
+    write_unlimited, write_normal_dist, hdf5_iotest, IOR, and any future app.
+
+R11 Before applying any optimization at production scale, first validate it
+    with a smoke run, then scale up gradually until you find the smallest
+    configuration that fails. This isolates whether the failure is from
+    the optimization itself or from a scale/data-size interaction.
+
+    Correct debugging sequence for an optimization that may cause failures:
+      1. Smoke: 1 node, 4 ranks, tiny DIM (e.g. DIM_1=1M, TIMESTEPS=2)
+         → test each optimization in isolation (L1 only, L2 only, L3 only,
+           then combinations)
+      2. Mid: 1 node, all cores (96 ranks on Tuolumne), same small DIM
+         → same isolation tests
+      3. Full nodes, small data: 2 nodes × 192 ranks, still small DIM
+         → same isolation tests
+      4. Full nodes, production data: gradually increase DIM until fail/pass
+         confirmed
+
+    Stop at the first scale/DIM where a failure appears — that is the
+    minimal reproducer. Record it in the workload or software skill.
+
+    Why: Full-scale runs (192 ranks × 4 timesteps × large DIM) take 10–15
+    minutes each. Smoke runs take under 30 seconds. Finding the culprit at
+    small scale saves hours of iteration time.
+
+    Apply to: every new optimization hint, config change, or wrapper before
+    deploying it in the full optimization loop.
+
+    Tuolumne smoke test template:
+      # 4-rank quick check
+      flux proxy $JOB flux run -N 1 -n 4 --env LD_LIBRARY_PATH=$LDPATH \
+        bash $WS/tmp/wrapper.sh $BIN $WS/tmp/smoke_small.cfg $OUTDIR/out.h5
+
+      # scale to 96 ranks, then 2×96 before running full 4-ts production run
+
 ---
 
 ## Session logs (appended by pipeline Step 8)
 
 <!-- New entries are appended below this line by the pipeline recipe -->
+
+---
+date: 2026-06-25
+app: general
+context: Cray HDF5 parallel module on Tuolumne has chid_t type that breaks dftracer/brahma build
+error: |
+  /opt/cray/pe/hdf5-parallel/1.14.3.7/cray/20.0/include/H5Apublic.h:932:29:
+  error: unknown type name 'chid_t'; did you mean 'hid_t'?
+  gmake[5]: *** [CMakeFiles/brahma.dir/build.make:156: CMakeFiles/brahma.dir/src/brahma/interface/hdf5.cpp.o] Error 1
+root_cause: |
+  The Cray-patched HDF5 installed at /opt/cray/pe/hdf5-parallel/1.14.3.7/cray/20.0
+  introduces a Cray-specific type 'chid_t' in H5Apublic.h that is not part of
+  the upstream HDF5 standard. When dftracer's brahma dependency compiles against
+  these headers, the C++ compiler does not recognise 'chid_t' and fails.
+  This affects only the Cray module HDF5 — not vanilla upstream HDF5 builds.
+  System: Tuolumne (AMD MI300A, Cray PE 2.7.35, cray-hdf5-parallel/1.14.3.7).
+fix: |
+  The chid_t bug exists in BOTH the Cray HDF5 module AND vanilla HDF5 1.14.3
+  (it is a typo in H5Apublic.h line 932 — H5Aread_async uses chid_t instead of hid_t).
+  Steps:
+  1. Download vanilla HDF5 1.14.3 from hdfgroup.org FTP (GitHub 404s on this system):
+       curl -fkL https://support.hdfgroup.org/ftp/HDF5/releases/hdf5-1.14/hdf5-1.14.3/src/hdf5-1.14.3.tar.gz \
+         -o hdf5-1.14.3.tar.gz
+  2. Build from source:
+       tar xf hdf5-1.14.3.tar.gz && cd hdf5-1.14.3
+       CC=mpicc ./configure --prefix=<ws>/hdf5_1.14 --enable-parallel \
+         --enable-shared --enable-build-mode=production --with-zlib=/usr
+       make -j8 && make install
+  3. Patch the chid_t typo in the installed header:
+       sed -i 's/H5Aread_async(chid_t attr_id/H5Aread_async(hid_t attr_id/' \
+         <ws>/hdf5_1.14/include/H5Apublic.h
+  4. Update session.json HDF5_ROOT/HDF5_DIR to point at <ws>/hdf5_1.14
+  5. Re-run session_install_dftracer — will now succeed.
+  Note: IOR can still use cray-hdf5-parallel (C frontend tolerates chid_t);
+  only dftracer/brahma (C++ frontend) cannot.
+  MPI compatibility warning: MPICH 9.0.1 is outside brahma's tested range;
+  MPI-IO interception is disabled but POSIX and app-level annotation tracing work.
+tags: [tuolumne, cray-pe, hdf5, chid_t, brahma, dftracer-install, system-specific]
 
 ---
 date: 2026-06-22
@@ -683,6 +819,148 @@ fix: |
     mcp__dftracer__comparator(baseline=opt{N-1}/traces_split,
                               variant=opt{N}_split_clean/)
 tags: [dftracer, comparator, traces, optimization-loop, session_optimization_iteration]
+
+---
+date: 2026-06-24
+app: https://github.com/llnl/ior (tag 4.0.0)
+context: ROMIO romio_ds_write=disable is catastrophic on VAST NVMe storage
+error: |
+  Write bandwidth collapsed to 95 MiB/s (from 352 MiB/s baseline) after setting
+  MPICH_MPIIO_HINTS="*:romio_ds_write=disable". Write phase took 515s vs 140s baseline.
+  Total job time ballooned from 169s to >600s.
+root_cause: |
+  On VAST (NVMe parallel storage), ROMIO data sieving handles non-contiguous HDF5
+  collective I/O efficiently by reading-modifying-writing large aligned chunks.
+  Disabling it (romio_ds_write=disable) forces ROMIO to issue thousands of individual
+  small writes to non-contiguous regions, causing extreme I/O amplification.
+  VAST is NOT Lustre — data sieving algorithms that hurt on spinning-disk Lustre
+  (due to read-before-write) are beneficial on VAST's NVMe fabric.
+fix: |
+  Never set romio_ds_write=disable on VAST storage. Leave data sieving at its default.
+  VAST-specific ROMIO guidance:
+    GOOD:  romio_cb_write=enable  (aggregates scattered writes into large pwrite calls)
+    BAD:   romio_cb_read=enable   (VAST handles parallel reads natively; CB adds overhead)
+    FATAL: romio_ds_write=disable (kills write performance by preventing chunk aggregation)
+  When in doubt, test with MPICH_MPIIO_HINTS unset first, then add cb_write only.
+tags: [ior, hdf5, romio, vast, mpiio-hints, romio_ds_write, performance-regression]
+
+---
+date: 2026-06-24
+app: https://github.com/llnl/ior (tag 4.0.0)
+context: ROMIO romio_cb_read=enable hurts read performance on VAST NVMe storage
+error: |
+  Adding romio_cb_read=enable to MPICH_MPIIO_HINTS degraded read bandwidth from
+  2163 MiB/s (no hints) to 659 MiB/s — a 70% regression.
+  Setting romio_cb_write=enable alone (without cb_read) recovered reads to 1991 MiB/s.
+root_cause: |
+  VAST is a high-throughput NVMe parallel filesystem that handles 192 concurrent
+  read requests natively and efficiently. Collective read buffering (cb_read) forces
+  all 192 processes to funnel reads through a small set of aggregator processes,
+  creating a coordination bottleneck. This helps on Lustre (where many small reads
+  are costly due to network round-trips) but hurts on VAST's NVMe fabric where
+  parallel reads are the optimal access pattern.
+fix: |
+  On VAST storage, use romio_cb_write=enable ONLY. Do NOT add romio_cb_read=enable.
+  The hint to use is:
+    MPICH_MPIIO_HINTS="*:romio_cb_write=enable"
+  General rule: collective READ buffering helps when storage has high per-request
+  latency (Lustre, spinning disk). It hurts on parallel NVMe where concurrent reads
+  are cheap. Test cb_read vs no-cb_read explicitly before deploying.
+tags: [ior, hdf5, romio, vast, mpiio-hints, romio_cb_read, performance-regression]
+
+---
+date: 2026-06-24
+app: https://github.com/llnl/ior (tag 4.0.0)
+context: romio_cb_write=enable is the key optimization for IOR HDF5 on VAST
+error: |
+  (not an error — optimization result from IOR 4.0.0 dftracer session on Tuolumne)
+  posix_seek_ops_slope critical (peak 362) and posix_data_ops_slope critical (peak 74.3)
+  persisted across L1 app-level changes (-t 16m, -Y) until ROMIO collective write
+  buffering was enabled.
+root_cause: |
+  ROMIO two-phase collective I/O with 192 processes and 4m-16m transfer sizes generates
+  98,304 scattered write()+lseek() pairs per iteration. Each MPI process independently
+  writes a non-contiguous 512-KiB region, causing seek-and-write patterns that drive
+  posix_seek_ops_slope and posix_data_ops_slope bottlenecks.
+  romio_cb_write=enable switches ROMIO to aggregate all 192 process writes into 3,083
+  large 16-MiB pwrite() calls via a small number of aggregator processes. This eliminates
+  the seek-and-write pattern entirely.
+fix: |
+  For IOR HDF5 collective I/O on VAST with Cray MPICH, the optimal configuration is:
+    MPICH_MPIIO_HINTS="*:romio_cb_write=enable"
+    IOR flags: -a HDF5 -b 64m -t 16m -s 4 -c -Y
+  Results vs baseline (-t 4m, no hints, 192 procs, 2 nodes, 48 GiB):
+    Total time:   168.8s -> 112.9s  (-33%)
+    Write BW:     352 -> 557 MiB/s  (+58%)
+    Read BW:      1705 -> 1991 MiB/s (+17%)
+    POSIX calls:  667,363 -> 73,991  (-89%)
+    seek_slope:   362 -> 9.96        (-97%)
+    data_slope:   74.3 -> 2.19       (-97%)
+  The -t 16m (larger transfer size) and -Y (collective HDF5 metadata) flags are
+  synergistic with cb_write — all three together eliminate the dominant bottlenecks.
+tags: [ior, hdf5, romio, vast, mpiio-hints, romio_cb_write, optimization, posix-slope]
+
+---
+date: 2026-06-24
+app: general
+context: dfanalyzer uses Hydra positional overrides, not GNU-style flags
+error: |
+  dfanalyzer: error: unrecognized arguments: --trace-path /path/to/traces
+    --view-type time_range -ahydra.analyzer/preset=posix
+    --analyzer.checkpoint=true --output=console --cluster=local
+  The mcp__dftracer__analyze tool (dfanalyzer_service.py) generated GNU-style
+  flags that dfanalyzer does not accept.
+root_cause: |
+  dfanalyzer is a Hydra-based CLI tool. Hydra apps use positional key=value overrides
+  to set configuration, not GNU-style --flag value pairs. The dfanalyzer_service.py
+  _hydra_args() function was incorrectly generating --flag syntax.
+fix: |
+  dfanalyzer CLI syntax uses Hydra positional overrides:
+    CORRECT:   dfanalyzer trace_path=/path/to/traces analyzer/preset=posix output=console
+    INCORRECT: dfanalyzer --trace-path /path/to/traces -ahydra.analyzer/preset=posix
+  Key overrides:
+    trace_path=<path>
+    view_types=[file_name,proc_name,time_range]   # Hydra list syntax with brackets
+    analyzer=dftracer
+    analyzer/preset=posix                          # forward-slash for config group
+    analyzer.checkpoint=True                       # dot notation for nested keys
+    analyzer.checkpoint_dir=<path>
+    output=console
+    cluster=local
+  The fix was applied to dfanalyzer_service.py _hydra_args() to use f-string
+  positional overrides instead of cmd.extend(["--flag", value]) patterns.
+tags: [dfanalyzer, hydra, cli, mcp-tool, dfanalyzer_service, configuration]
+
+---
+date: 2026-06-24
+app: general
+context: flux proxy does not propagate environment variables to compute nodes
+error: |
+  After setting MPICH_MPIIO_HINTS in the shell and connecting via flux proxy,
+  the env var was not visible on compute nodes. IOR ran without the ROMIO hints.
+  dftracer env vars (DFTRACER_ENABLE, DFTRACER_LOG_FILE, etc.) also require
+  explicit passing — they are silently dropped by flux proxy.
+root_cause: |
+  flux proxy creates a forwarded connection to the allocation's Flux broker but
+  does NOT export the current shell's environment variables to the broker environment.
+  When flux run spawns tasks inside the proxy, it inherits the broker's env (set at
+  alloc time), not the current shell's env. Variables set after flux alloc or
+  after entering flux proxy are invisible to job tasks.
+fix: |
+  Always pass env vars explicitly using --env flags with flux run:
+    flux proxy <JOBID> flux run \
+      -N 2 -n 192 \
+      --env MPICH_MPIIO_HINTS="*:romio_cb_write=enable" \
+      --env DFTRACER_ENABLE=1 \
+      --env DFTRACER_LOG_FILE=<prefix> \
+      --env DFTRACER_DATA_DIR=all \
+      --env DFTRACER_INC_METADATA=1 \
+      --env DFTRACER_INIT=FUNCTION \
+      --env LD_LIBRARY_PATH=<libs> \
+      <command>
+  Do NOT rely on 'export VAR=value' before flux proxy — it will NOT propagate.
+  Every env var that matters for the benchmark or tracing MUST be an explicit --env flag.
+tags: [flux, flux-proxy, env-vars, mpiio-hints, dftracer, tuolumne, cray-mpich]
 
 ---
 
