@@ -21,10 +21,13 @@ import asyncio
 import html
 import json
 import math
+import os
 import re
+import ssl
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
-from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import httpx
 from fastmcp import FastMCP
@@ -33,6 +36,46 @@ from ...mcp_service_factory import MCPService, MCPServiceFactory
 
 ARXIV_BASE = "https://export.arxiv.org/api/query"
 S2_BASE    = "https://api.semanticscholar.org/graph/v1"
+
+# ---------------------------------------------------------------------------
+# SSL configuration for HPC / corporate-CA environments
+#
+# On systems with custom certificate authorities (LLNL, AWS GovCloud, etc.)
+# the default system trust store may not include the right CA certs.
+# Resolution order:
+#   1. REQUESTS_CA_BUNDLE / SSL_CERT_FILE env var (user-supplied CA bundle)
+#   2. Common HPC CA bundle locations
+#   3. HTTPX_SSL_VERIFY=false → disable verification (last resort)
+# ---------------------------------------------------------------------------
+
+_HPC_CA_CANDIDATES = [
+    "/etc/pki/tls/certs/ca-bundle.crt",           # RHEL / CentOS / LLNL
+    "/etc/ssl/certs/ca-certificates.crt",           # Debian / Ubuntu
+    "/etc/ssl/ca-bundle.pem",                       # SUSE
+    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",  # RHEL update-ca-trust
+]
+
+
+def _ssl_verify() -> Union[bool, str]:
+    """Return the ssl verify value for httpx clients.
+
+    Returns a CA bundle path when one is found, False when SSL verification
+    is explicitly disabled via HTTPX_SSL_VERIFY=false, or True (default) to
+    let httpx use its bundled certifi store.
+    """
+    if os.environ.get("HTTPX_SSL_VERIFY", "").lower() in ("0", "false", "no"):
+        return False
+    for env_var in ("REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "CURL_CA_BUNDLE"):
+        val = os.environ.get(env_var, "")
+        if val and Path(val).exists():
+            return val
+    for candidate in _HPC_CA_CANDIDATES:
+        if Path(candidate).exists():
+            return candidate
+    return True  # fall back to httpx/certifi default
+
+
+_SSL_VERIFY = _ssl_verify()
 
 S2_PAPER_FIELDS  = (
     "title,authors,year,abstract,citationCount,referenceCount,"
@@ -364,7 +407,7 @@ async def _arxiv_search(query: str, max_results: int = 5, sort_by: str = "releva
         search_query += f" AND cat:{category}"
     params = {"search_query": search_query, "max_results": max_results,
               "sortBy": sort_by, "sortOrder": "descending"}
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=30, verify=_SSL_VERIFY) as client:
         resp = await client.get(ARXIV_BASE, params=params)
         resp.raise_for_status()
     ns = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
@@ -427,7 +470,7 @@ class AcademicPapersService(MCPService):
             """
             arxiv_id = arxiv_id.strip().lstrip("arxiv:").lstrip("arXiv:")
             params = {"id_list": arxiv_id, "max_results": 1}
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=30, verify=_SSL_VERIFY) as client:
                 resp = await client.get(ARXIV_BASE, params=params)
                 resp.raise_for_status()
             ns = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
@@ -464,7 +507,7 @@ class AcademicPapersService(MCPService):
             if fields_of_study:
                 params["fieldsOfStudy"] = fields_of_study
 
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=30, verify=_SSL_VERIFY) as client:
                 resp = await client.get(f"{S2_BASE}/paper/search", params=params)
                 resp.raise_for_status()
                 data = resp.json()
@@ -505,7 +548,7 @@ class AcademicPapersService(MCPService):
             Returns:
                 Detailed paper information including references.
             """
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=30, verify=_SSL_VERIFY) as client:
                 resp = await client.get(
                     f"{S2_BASE}/paper/{paper_id}",
                     params={"fields": S2_PAPER_FIELDS + ",references,citations"},
@@ -552,7 +595,7 @@ class AcademicPapersService(MCPService):
                 Author profile and list of their papers sorted by citation count.
             """
             max_results = max(1, min(20, max_results))
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=30, verify=_SSL_VERIFY) as client:
                 search_resp = await client.get(
                     f"{S2_BASE}/author/search",
                     params={"query": author_name, "limit": 1, "fields": S2_AUTHOR_FIELDS},
@@ -640,6 +683,7 @@ class AcademicPapersService(MCPService):
                 async with httpx.AsyncClient(
                     timeout=30,
                     follow_redirects=True,
+                    verify=_SSL_VERIFY,
                     headers={"User-Agent": _WEB_UA},
                 ) as client:
                     resp = await client.get(url)

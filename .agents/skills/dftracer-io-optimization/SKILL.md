@@ -3,6 +3,19 @@ name: dftracer-io-optimization
 description: Key literature, bottleneck-to-optimization mappings, and strategies for the dftracer I/O optimization pipeline
 ---
 
+## Related Skills
+
+Software-specific strategies are also available in dedicated skills:
+- **[[software-mpi]]** — MPI-IO/ROMIO details, Flux env propagation, Cray MPICH
+- **[[software-hdf5]]** — HDF5 version compatibility, chunk/cache tuning, build from source
+- **[[software-posix]]** — POSIX readahead, Lustre striping, OS/VM tuning, ops_slope bottlenecks
+
+Workload-specific results:
+- **[[workload-ior]]** — quantified ROMIO results on VAST NVMe (Tuolumne)
+- **[[workload-h5bench]]** — HDF5 CMake build and annotation pitfalls
+
+---
+
 ## Key Reference Papers
 
 ### WisIO (primary bottleneck → optimization guide)
@@ -239,7 +252,13 @@ These are configuration-level changes: environment variables, library hint files
 
 These are OS- and filesystem-level tuning changes. Many require `sudo` or storage-admin access. Every proposal MUST include a rollback command and a privilege classification (`no-sudo | sudo | admin-only`).
 
-### Lustre parallel filesystem  (bottleneck: any_io or bandwidth — metric: bandwidth or iops)
+**MANDATORY: Before proposing any L3 strategy, confirm the detected FS_TYPE
+(see Step 8-PRE of [[dftracer-pipeline]]). Only propose strategies whose
+"Valid FS_TYPE" column matches the detected filesystem. Strategies for the
+wrong filesystem are silently harmful — e.g., `romio_ds_write=disable` causes
+a 4× write regression on VAST NVMe but is safe on Lustre spinning disk.**
+
+### Lustre parallel filesystem  (FS_TYPE: lustre only — bottleneck: any_io or bandwidth — metric: bandwidth or iops)
 
 - **Stripe count** (no sudo, per-directory):
   `lfs setstripe -c <N> <WS>/traces/`
@@ -253,13 +272,13 @@ These are OS- and filesystem-level tuning changes. Many require `sudo` or storag
 - **Per-file stripe before write** (no sudo):
   `lfs setstripe -c 4 -S 4m <WS>/traces/<file>` before writing
 
-### Lustre metadata  (bottleneck: metadata_time high — metric: metadata_ops)
+### Lustre metadata  (FS_TYPE: lustre only — bottleneck: metadata_time high — metric: metadata_ops)
 
 - Disable file creation time tracking: `lfs setstripe --mdt-count 1` (for small dirs)
 - Use DNE (Distributed Namespace): `lfs mkdir -c <N>` (admin-only)
 - Client-side: mount with `-o localflock` to reduce lock traffic (requires remount — admin)
 
-### Linux kernel readahead  (bottleneck: read_time or seq_pct low — metric: time or bandwidth)
+### Linux kernel readahead  (FS_TYPE: local_nvme, local_hdd only — bottleneck: read_time or seq_pct low — metric: time or bandwidth)
 
 - **Per-device** (sudo):
   `sudo blockdev --setra <KB> /dev/<dev>`
@@ -270,7 +289,7 @@ These are OS- and filesystem-level tuning changes. Many require `sudo` or storag
   `posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL)` in source code
 - **Persistent** (sudo): `/etc/udev/rules.d/60-readahead.rules`
 
-### VM and page cache tuning  (bottleneck: write_time or checkpoint high — metric: time)
+### VM and page cache tuning  (FS_TYPE: local_nvme, local_hdd — bottleneck: write_time or checkpoint high — metric: time)
 
 - `sudo sysctl -w vm.dirty_ratio=20`
   (flush dirty pages when 20% of RAM is dirty; tune to 10–40)
@@ -281,29 +300,30 @@ These are OS- and filesystem-level tuning changes. Many require `sudo` or storag
 - `sudo sysctl -w vm.dirty_writeback_centisecs=500` (flush every 5 s)
 - Side effect: affects all dirty-page behavior on the node
 
-### VM page cache (read-heavy)  (bottleneck: read_time high, data fits in RAM)
+### VM page cache (read-heavy)  (FS_TYPE: local_nvme, local_hdd — bottleneck: read_time high, data fits in RAM)
 
 - `sudo sysctl -w vm.vfs_cache_pressure=50`
   (reduce kernel tendency to reclaim page cache; default 100)
   Rollback: `sudo sysctl -w vm.vfs_cache_pressure=100`
 
-### I/O scheduler  (bottleneck: rand_pct high on SSD/NVMe — metric: iops or time)
+### I/O scheduler  (FS_TYPE: local_nvme, local_hdd only — bottleneck: rand_pct high on SSD/NVMe — metric: iops or time)
 
 - Check current scheduler: `cat /sys/block/<dev>/queue/scheduler`
 - For NVMe (no scheduler overhead): `echo none | sudo tee /sys/block/<dev>/queue/scheduler`
 - For HDD: `echo mq-deadline | sudo tee /sys/block/<dev>/queue/scheduler`
 - Rollback: `echo <original_scheduler> | sudo tee /sys/block/<dev>/queue/scheduler`
 
-### NUMA memory binding  (bottleneck: fetch_pressure or intensity high — metric: time or bandwidth)
+### NUMA memory binding  (FS_TYPE: all — bottleneck: fetch_pressure or intensity high — metric: time or bandwidth)
 
 - Check topology: `numactl --hardware`
 - Pin process to NUMA node with local memory (no persistent side effect):
   `numactl --cpunodebind=0 --membind=0 <run_command>`
 - For MPI: `mpirun --map-by numa:pe=<cores_per_node>` (OpenMPI)
 
-### Network filesystems (NFS, GPFS, BeeGFS)  (bottleneck: read_time or metadata_time high)
+### Network filesystems (NFS, GPFS, BeeGFS)  (FS_TYPE: nfs | gpfs | beegfs only — bottleneck: read_time or metadata_time high)
 
 These typically require storage admin action — surface as MANUAL RECOMMENDATIONS only.
+Do NOT apply these to lustre, vast, or local filesystems.
 - NFS: mount with `rsize=1048576,wsize=1048576,async`
 - GPFS: `mmchattr -r pagePool=<size>` (admin tool)
 - BeeGFS: `beegfs-ctl --settuning --clientNumWorkerThreads=16` (admin)

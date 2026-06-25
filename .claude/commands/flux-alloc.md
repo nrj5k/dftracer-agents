@@ -1,0 +1,285 @@
+# Flux Job Allocation
+
+Allocate N nodes from an available Flux queue, then connect to the instance
+via `flux proxy` to run jobs inside it.
+
+## Step 1 — Discover available queues and resources
+
+```bash
+# List all queues with their status and limits
+flux queue list
+
+# Show free/idle nodes across queues
+flux resource list -s free
+
+# Check overall resource summary
+flux resource info
+```
+
+Identify a queue with free nodes that fits the time constraint.
+
+## Step 2 — Allocate nodes with `flux alloc`
+
+```bash
+# Basic: allocate N nodes interactively (opens a shell inside the instance)
+flux alloc -N <N> -q <QUEUE> -t <TIME>
+
+# With a bank (if the system uses flux-accounting)
+flux alloc -N <N> -q <QUEUE> -B <BANK> -t <TIME>
+
+# Background mode: allocate without attaching (returns a JOBID)
+flux alloc --bg -N <N> -q <QUEUE> -t <TIME>
+
+# Exclusive nodes, with a name tag
+flux alloc -N <N> -q <QUEUE> -t <TIME> -x --job-name=<NAME>
+```
+
+**Key flags:**
+
+| Flag | Meaning |
+| --- | --- |
+| `-N N` | Number of nodes |
+| `-q NAME` | Queue name |
+| `-B BANK` | Bank/account name (flux-accounting) |
+| `-t MIN` or `-t 1.5h` or `-t 90m` | Time limit (minutes, or Flux Standard Duration) |
+| `-x` | Exclusive node allocation |
+| `--bg` | Return immediately with JOBID instead of attaching |
+| `-n N` | Number of resource slots (alternative to `-N`) |
+| `-c N` | Cores per slot |
+| `-g N` | GPUs per slot |
+| `--urgency=N` | Priority 0–31 (hold=0, default=16, expedite=31) |
+
+## Step 3 — Connect to the allocated instance with `flux proxy`
+
+When `flux alloc --bg` was used, connect to the running instance:
+
+```bash
+# Get the JOBID from: flux jobs -a | head
+JOBID=$(flux jobs -a --no-header -o "{id}" | head -1)
+
+# Connect to the instance (spawns a new shell inside it)
+flux proxy $JOBID
+
+# Or connect to a nested instance using jobid/child-jobid path
+flux proxy $JOBID/$CHILD_JOBID
+
+# Or if running inside Slurm/another RM
+flux proxy slurm:<SLURM_JOBID>
+```
+
+Once inside the proxy shell, `FLUX_URI` is set and all `flux` commands
+target that allocation. Exit the shell to disconnect.
+
+## Step 4 — Run jobs inside the allocation
+
+Inside the proxy shell (or from `flux alloc` interactive shell):
+
+```bash
+# Run a command across all allocated nodes
+flux run -N <N> -n <NTASKS> <COMMAND>
+
+# Run with GPUs per task
+flux run -N <N> -n <NTASKS> -g 1 <COMMAND>
+
+# Submit non-blocking
+flux submit -N <N> -n <NTASKS> <COMMAND>
+
+# Check running jobs
+flux jobs
+
+# Wait for all jobs to finish
+flux queue idle
+```
+
+## Decision logic (when user asks to allocate)
+
+1. Run `flux queue list` to show available queues.
+2. Run `flux resource list -s free` to see free node counts per queue.
+3. Ask the user: how many nodes, how long, which queue (or auto-select
+   the queue with the most free nodes that fits the time limit).
+4. Run `flux alloc --bg -N <N> -q <QUEUE> -t <TIME>` and capture JOBID.
+5. Run `flux proxy <JOBID>` to hand control to the user inside the allocation,
+   or use `flux run` commands inside the proxy session to execute work.
+
+## Auto-scaling: use all nodes and physical cores
+
+When executing runs (smoke tests, dftracer runs, benchmarks) inside a flux proxy allocation:
+
+1. **Always use all available nodes** in the allocation unless the user specifies fewer.
+2. **Always use all physical cores per node** for MPI tasks — do not leave cores idle.
+
+```bash
+# Discover allocation size and compute task count at runtime
+N_NODES=$(flux resource list --format="{nnodes}" -s free 2>/dev/null | awk 'NR>1{print $1}' | head -1)
+CORES_PER_NODE=96   # tuolumne: 96 physical cores per MI300A node
+N_TASKS=$((N_NODES * CORES_PER_NODE))
+
+flux run -N $N_NODES -n $N_TASKS <CMD>
+```
+
+When proxying into an existing allocation with `flux proxy <JOBID> flux run ...`:
+
+```bash
+flux proxy <JOBID> flux run \
+  -N 8 -n 768 \         # use all nodes × 96 cores
+  --env LD_LIBRARY_PATH=<mpi_lib>:<cce_lib>:<app_libs> \
+  <CMD>
+```
+
+Always pass DFTRACER and LD_LIBRARY_PATH env vars explicitly with `--env` flags — they are NOT automatically inherited by compute nodes via flux proxy.
+
+## Env var pitfall: special characters in --env values
+
+**NEVER pass env vars containing semicolons, asterisks, or other shell metacharacters
+directly via `--env` to `flux proxy ... flux run`.** `flux proxy` parses the
+remaining command-line arguments and treats semicolons as command separators,
+silently dropping the binary argument and printing:
+
+```text
+flux-run: ERROR: job command and arguments are missing
+```
+
+This affects any value with `;` — including ROMIO/MPICH_MPIIO_HINTS, module
+load strings, and any colon-separated list with special chars mixed in.
+
+**Always use a wrapper script instead:**
+
+```bash
+# WRONG — semicolons in --env value cause flux-run to lose the command:
+flux proxy $JOB flux run -N 2 -n 192 \
+  --env 'MPICH_MPIIO_HINTS=*:romio_cb_write=enable;cb_buffer_size=64m' \
+  /path/to/binary args...    # ← binary is silently dropped
+
+# CORRECT — put complex env vars in a wrapper script:
+cat > /path/to/wrapper.sh << 'EOF'
+#!/bin/bash
+export MPICH_MPIIO_HINTS="*:romio_cb_write=enable;cb_buffer_size=67108864;cb_nodes=16"
+export MY_OTHER_COMPLEX_VAR="a=1;b=2;c=3"
+exec "$@"
+EOF
+chmod +x /path/to/wrapper.sh
+
+flux proxy $JOB flux run -N 2 -n 192 \
+  --env LD_LIBRARY_PATH=<libs> \
+  --env DFTRACER_ENABLE=1 \
+  bash /path/to/wrapper.sh /path/to/binary args...
+```
+
+**Rule: use `--env` only for simple key=value pairs with no semicolons, asterisks,
+or other metacharacters. For anything complex, write a wrapper script.**
+
+Note: `MPICH_MPIIO_HINTS` uses **colon-separated** key=value pairs (not semicolons):
+`"*:romio_cb_write=enable:cb_buffer_size=67108864:cb_nodes=16"` — see `software-mpi` skill
+for the full list of Cray MPICH 9.0.1 supported hints and how to discover them on new versions.
+
+## Tuolumne-specific notes
+
+On tuolumne, use `flux_wrappers` module — the `flux` command is already
+wrapped to handle the CORAL2-specific flags:
+
+```bash
+# Tuolumne-specific: allocate with chassis distribution
+flux alloc -N <N> -q <QUEUE> -t <TIME> --coral2-chassis=<C>
+
+# Set GPU compute partition mode (CPX/TPX/SPX)
+flux alloc -N <N> -q <QUEUE> -t <TIME> --amd-gpumode=CPX
+```
+
+## Full-allocation parallel job spawner
+
+When the user asks to "use all available resources" or "spawn jobs to use the entire allocation":
+
+### 1. Discover allocation size at runtime
+
+```bash
+TOTAL_NODES=$(flux proxy $FLUX_JOB flux resource list -s free --format="{nnodes}" 2>/dev/null \
+  | awk 'NR>1{s+=$1}END{print s}')
+[ -z "$TOTAL_NODES" ] && TOTAL_NODES=4   # fallback if resource list fails
+CORES_PER_NODE=96   # tuolumne: 96 physical cores per MI300A node
+NODES_PER_JOB=$(( TOTAL_NODES / 2 ))
+TASKS_PER_JOB=$(( NODES_PER_JOB * CORES_PER_NODE ))
+echo "Allocation: $TOTAL_NODES nodes → 2 jobs × ${NODES_PER_JOB}N × ${TASKS_PER_JOB} tasks each"
+```
+
+### 2. Generic parallel launcher template
+
+Run 2 jobs simultaneously in pairs, wait, then start the next pair.
+
+```bash
+#!/bin/bash
+# run_parallel_all.sh — use entire flux allocation, 2 jobs at a time
+
+FLUX_JOB=<JOBID>
+CORES_PER_NODE=96
+LDPATH="<full LD_LIBRARY_PATH>"
+LOGDIR="<log directory>"
+
+TOTAL_NODES=$(flux proxy $FLUX_JOB flux resource list -s free --format="{nnodes}" 2>/dev/null \
+  | awk 'NR>1{s+=$1}END{print s}')
+[ -z "$TOTAL_NODES" ] && TOTAL_NODES=4
+NODES_PER_JOB=$(( TOTAL_NODES / 2 ))
+TASKS_PER_JOB=$(( NODES_PER_JOB * CORES_PER_NODE ))
+
+run_bg() {
+  local name=$1; shift
+  flux proxy $FLUX_JOB flux run \
+    -N $NODES_PER_JOB -n $TASKS_PER_JOB \
+    --env "LD_LIBRARY_PATH=$LDPATH" \
+    "$@" > "$LOGDIR/${name}.log" 2>&1 &
+  echo $!
+}
+
+# Define workloads as pairs; last one runs solo if odd count
+declare -a NAMES=( workload_a  workload_b  workload_c  workload_d )
+declare -a CMDS=(
+  "<cmd_a> <args>"
+  "<cmd_b> <args>"
+  "<cmd_c> <args>"
+  "<cmd_d> <args>"
+)
+
+i=0
+while (( i < ${#NAMES[@]} )); do
+  NA="${NAMES[$i]}"; CA="${CMDS[$i]}"; i=$(( i+1 ))
+  if (( i < ${#NAMES[@]} )); then
+    NB="${NAMES[$i]}"; CB="${CMDS[$i]}"; i=$(( i+1 ))
+    echo "=== PAIR: $NA + $NB ==="
+    PA=$(run_bg "$NA" $CA); PB=$(run_bg "$NB" $CB)
+    wait $PA && echo "$NA DONE" || echo "$NA FAILED"
+    wait $PB && echo "$NB DONE" || echo "$NB FAILED"
+  else
+    echo "=== SOLO: $NA ==="
+    PA=$(run_bg "$NA" $CA)
+    wait $PA && echo "$NA DONE" || echo "$NA FAILED"
+  fi
+done
+echo "=== ALL COMPLETE ==="
+```
+
+### 3. Decision rules
+
+| Condition | Action |
+|-----------|--------|
+| `TOTAL_NODES == 1` | 1 job, all cores (`-N 1 -n 96`) |
+| `TOTAL_NODES == 2` | 1 job at a time (`-N 2 -n 192`) |
+| `TOTAL_NODES == 4` | 2 jobs × 2 nodes × 96 = 192 tasks each |
+| `TOTAL_NODES == 8` | 2 jobs × 4 nodes × 96 = 384 tasks each |
+| `TOTAL_NODES % 2 != 0` | `NODES_PER_JOB = TOTAL_NODES / 2` (floor); odd workload count → last runs solo |
+
+### 4. dftracer env flags (add to every `flux run`)
+
+```bash
+--env DFTRACER_ENABLE=1 \
+--env DFTRACER_INIT=FUNCTION \
+--env DFTRACER_INC_METADATA=1 \
+--env DFTRACER_DATA_DIR=all \
+--env "DFTRACER_LOG_FILE=$TRACES/${name}" \
+```
+
+### 5. OS cache avoidance requirement (R9)
+
+Each job must write > 50% of its allocated nodes' physical RAM to the filesystem.
+Tuolumne: MemTotal ≈ 502 GiB/node.
+
+- 2-node job: threshold > 502 GiB total → use `DIM_1=33554432` (768 GiB for 192 ranks) ✓
+- `DIM_1=16777216` gives 384 GiB for 192 ranks → does NOT bypass OS cache ✗
