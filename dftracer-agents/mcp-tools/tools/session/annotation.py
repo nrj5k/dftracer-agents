@@ -830,29 +830,35 @@ def _find_annotated_c_functions(path: Path) -> Set[str]:
 
 
 def _find_all_py_functions(path: Path) -> List[str]:
-    """Return top-level function names defined in a Python source file.
+    """Return function and method names defined in a Python source file.
 
-    Scans for lines matching ``^def <name>`` (column 0), which captures
-    module-level function definitions but excludes methods, nested functions,
-    and async definitions at non-zero indentation.
+    Scans for ``def`` and ``async def`` at any indentation level, capturing
+    both module-level functions and class methods.  Dunder names are included
+    (e.g. ``__getitem__``) because they may carry dftracer annotations.
+    Duplicate names (same name in multiple classes) appear once each in the
+    returned list, in first-seen order.
 
     Args:
         path: Absolute path to the Python source file to scan.
 
     Returns:
-        A list of top-level function names in source order.  Returns an
-        empty list if the file cannot be read or contains no top-level
-        ``def`` statements.
+        A list of unique function/method names in source order.  Returns an
+        empty list if the file cannot be read or contains no ``def`` statements.
     """
     try:
         lines = path.read_text(errors="ignore").splitlines()
     except OSError:
         return []
-    return [
-        re.match(r'^def\s+(\w+)', ln).group(1)
-        for ln in lines
-        if re.match(r'^def\s+(\w+)', ln)
-    ]
+    seen: set = set()
+    result: List[str] = []
+    for ln in lines:
+        m = re.match(r'^\s*(?:async\s+)?def\s+(\w+)', ln)
+        if m:
+            name = m.group(1)
+            if name not in seen:
+                seen.add(name)
+                result.append(name)
+    return result
 
 
 def _find_annotated_py_functions(path: Path) -> Set[str]:
