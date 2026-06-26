@@ -111,6 +111,83 @@ from .install import (
 
 
 # ---------------------------------------------------------------------------
+# HPC environment helpers
+# ---------------------------------------------------------------------------
+
+def _extract_module_load_lines(source_dir: Path) -> List[str]:
+    """Scan install/job scripts for 'ml ...' / 'module load ...' lines.
+
+    Returns a deduplicated list of shell lines (preserving order) that load
+    modules, suitable for prepending to any run command so that the same
+    environment used by the app's own scripts is reproduced consistently.
+
+    Scans *.sh, *.job, *.slurm, *.lsf, *.bsub files under source_dir.
+    Skips comment lines.  Stops collecting once a non-module-load line that
+    is not a blank or comment is encountered (avoids pulling in benchmark
+    body commands).
+    """
+    script_extensions = {".sh", ".job", ".slurm", ".lsf", ".bsub"}
+    module_re = re.compile(
+        r"^\s*(ml\s+\S|module\s+load\s+\S|module\s+add\s+\S)", re.I
+    )
+    seen: set = set()
+    lines: List[str] = []
+
+    script_files = sorted(
+        f for f in source_dir.rglob("*")
+        if f.is_file() and f.suffix.lower() in script_extensions
+    )
+    for f in script_files:
+        try:
+            text = f.read_text(errors="ignore")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if module_re.match(stripped):
+                if stripped not in seen:
+                    seen.add(stripped)
+                    lines.append(stripped)
+    return lines
+
+
+def _build_module_preamble(source_dir: Path) -> str:
+    """Return a shell snippet that loads modules extracted from app scripts.
+
+    Returns an empty string if no module-load lines are found.
+    The snippet initialises Lmod (sources /etc/profile.d/lmod.sh if present)
+    before issuing the module commands so the preamble works even in minimal
+    shell environments (e.g. inside flux run).
+    """
+    lines = _extract_module_load_lines(source_dir)
+    if not lines:
+        return ""
+    parts = [
+        "# Auto-detected module loads from app scripts",
+        "[ -f /etc/profile.d/lmod.sh ] && source /etc/profile.d/lmod.sh",
+    ] + lines
+    return "\n".join(parts) + "\n"
+
+
+def _has_mpi4py_dependency(source_dir: Path) -> bool:
+    """Return True if the project declares mpi4py as a dependency."""
+    import re as _re
+    for fname in ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"):
+        p = source_dir / fname
+        if not p.exists():
+            continue
+        try:
+            text = p.read_text(errors="ignore")
+        except OSError:
+            continue
+        if _re.search(r"\bmpi4py\b", text, _re.I):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Module-level implementation functions — exposed so optimization tools in
 # optimizations/ can import and call them directly without going through MCP.
 # The @mcp.tool() wrappers inside register_session_tools() delegate to these.
@@ -222,6 +299,53 @@ def _session_build_annotated_impl(
     return _ok("Annotated build succeeded", build_tool=bt, steps=steps)
 
 
+def _ensure_flux_proxy_wrapper(command: str, ws: Path, script_name: str) -> str:
+    """If *command* uses ``flux proxy`` with inline shell, rewrite it as a wrapper script.
+
+    When a command matches ``flux proxy <JOBID> bash -c "..."`` or any form where
+    the payload after ``flux proxy <JOBID>`` is not already a path to an existing
+    ``.sh`` file, we write the payload into a wrapper script under ``<ws>/tmp/``
+    that sources lmod and exports environment variables, then rewrite the command
+    to ``flux proxy <JOBID> bash <wrapper_script>``.
+
+    This is necessary because ``flux proxy <JOBID> bash -c "..."`` does not
+    propagate ``module load`` / lmod state into subprocesses; a wrapper script
+    that sources ``/usr/share/lmod/lmod/init/bash`` is the only reliable method.
+    """
+    import re as _re
+    import shlex as _shlex
+
+    # Match: flux proxy <JOBID> <rest>
+    m = _re.match(r'^(flux\s+proxy\s+\S+)\s+(.+)$', command.strip(), _re.DOTALL)
+    if not m:
+        return command
+
+    proxy_prefix = m.group(1)   # e.g. "flux proxy f3GW7fbdvodR"
+    rest = m.group(2).strip()   # e.g. 'bash -c "module load ..."' or 'bash /path/to/script.sh'
+
+    # If rest is already "bash <existing_script.sh>", no wrapping needed.
+    bash_script_m = _re.match(r'^bash\s+(\S+\.sh)$', rest)
+    if bash_script_m:
+        script_path = bash_script_m.group(1)
+        if Path(script_path).exists():
+            return command  # already wrapped
+
+    # Otherwise, the rest is an inline command — write it to a wrapper script.
+    tmp_dir = ws / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    wrapper = tmp_dir / script_name
+    # Strip outer "bash -c '...'" or 'bash -c "..."' if present.
+    inner_m = _re.match(r'^bash\s+-c\s+[\'"](.+)[\'"]$', rest, _re.DOTALL)
+    payload = inner_m.group(1) if inner_m else rest
+    wrapper.write_text(
+        "#!/bin/bash\n"
+        "source /usr/share/lmod/lmod/init/bash\n"
+        f"{payload}\n"
+    )
+    wrapper.chmod(0o755)
+    return f"{proxy_prefix} bash {wrapper}"
+
+
 def _session_run_with_dftracer_impl(
     run_id: str,
     command: str,
@@ -232,8 +356,24 @@ def _session_run_with_dftracer_impl(
 ) -> str:
     """Standalone implementation of session_run_with_dftracer."""
     ws = _ws(run_id)
-    traces_dir = ws / "traces"
-    traces_dir.mkdir(exist_ok=True)
+
+    # Prefer Lustre for trace output on LLNL systems — NFS is too slow for
+    # parallel trace writes from many ranks.  Fall back to ws/traces/ if Lustre
+    # is not available (containers, non-LLNL systems).
+    import os as _os
+    _user = _os.environ.get("USER", "unknown")
+    _lustre_base = Path(f"/p/lustre5/{_user}/workspaces")
+    _app_name = run_id.split("/")[0] if "/" in run_id else run_id
+    _lustre_traces = _lustre_base / _app_name / "traces"
+    if _lustre_base.exists():
+        traces_dir = _lustre_traces
+    else:
+        traces_dir = ws / "traces"
+    traces_dir.mkdir(parents=True, exist_ok=True)
+    # Keep a symlink in ws/traces so downstream tools find the files
+    ws_traces = ws / "traces"
+    if not ws_traces.exists():
+        ws_traces.symlink_to(traces_dir)
 
     cwd = ws / subfolder
     if not cwd.exists():
@@ -254,7 +394,15 @@ def _session_run_with_dftracer_impl(
         import json as _json
         env.update(_json.loads(env_extra))
 
-    r = _run(["/bin/sh", "-c", command], cwd=cwd, env=env, timeout=timeout)
+    # For flux proxy commands, always use a wrapper script — inline bash -c
+    # does not propagate module loads reliably inside flux proxy subprocesses.
+    command = _ensure_flux_proxy_wrapper(command, ws, "run_with_dftracer.sh")
+
+    # Prepend module-load preamble from the app's own scripts for ABI consistency.
+    preamble = _build_module_preamble(ws / "source")
+    run_command = (preamble + command) if preamble else command
+
+    r = _run(["/bin/sh", "-c", run_command], cwd=cwd, env=env, timeout=timeout)
     _save_state(run_id, {
         "step": "ran_with_dftracer",
         "dftracer_run": {"command": command, **r},
@@ -879,7 +1027,21 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             flags = ["install", "-e", str(src)] + (
                 extra_pip_flags.split() if extra_pip_flags else []
             )
-            r = _run([str(pip)] + flags, timeout=300)
+            # mpi4py must be compiled against the system MPI (not a wheel) so
+            # that it uses the same ABI as the rest of the MPI stack.
+            pip_env: Dict[str, str] = {}
+            if _has_mpi4py_dependency(src):
+                if "--no-binary=mpi4py" not in flags:
+                    flags.insert(flags.index(str(src)) + 1, "--no-binary=mpi4py")
+                # Point CC/CXX at MPI wrappers for consistent compilation.
+                import shutil as _shutil
+                mpicc = info.get("mpi_impl", {}).get("mpicc") or _shutil.which("mpicc") or ""
+                mpicxx = info.get("mpi_impl", {}).get("mpicxx") or _shutil.which("mpicxx") or _shutil.which("mpic++") or ""
+                if mpicc:
+                    pip_env["CC"] = mpicc
+                if mpicxx:
+                    pip_env["CXX"] = mpicxx
+            r = _run([str(pip)] + flags, env=pip_env if pip_env else None, timeout=300)
         else:
             return _err(f"Unsupported build tool: {bt}")
 
@@ -1018,6 +1180,16 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             env = json.loads(env_extra)
 
         safe_command, stripped = _strip_mpi_launcher(command)
+
+        # For flux proxy commands, always use a wrapper script — inline bash -c
+        # does not propagate module loads reliably inside flux proxy subprocesses.
+        safe_command = _ensure_flux_proxy_wrapper(safe_command, _ws(run_id), "run_smoke_test.sh")
+
+        # Prepend module-load preamble extracted from the app's own scripts so
+        # the run environment is consistent with what the app's job scripts use.
+        preamble = _build_module_preamble(_ws(run_id) / "source")
+        if preamble:
+            safe_command = preamble + safe_command
 
         r = _run(["/bin/sh", "-c", safe_command], cwd=cwd, env=env, timeout=timeout)
         _save_state(run_id, {"last_smoke_test": {"command": safe_command, **r}})
@@ -1331,6 +1503,7 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         state = _load_state(run_id)
         info = state.get("detection") or _detect_info(ws / "source")
         features = info.get("features", {})
+        bt = info.get("build_tool", state.get("build_tool", "unknown"))
 
         features_enabled = []
         compat_warnings: list = []
@@ -1378,15 +1551,34 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         if features.get("hwloc"):
             features_enabled.append("hwloc")
 
-        # Create (or reuse) a fresh isolated venv inside the workspace so that
-        # dftracer and its dependencies are completely separate from the MCP
-        # server's own Python environment.
-        try:
-            venv_python = _ensure_session_venv(ws)
-        except RuntimeError as exc:
-            return _err(f"session venv creation failed: {exc}")
-
-        venv_python_str = str(venv_python)
+        # For Python (ML/AI) projects, dftracer and the app MUST share the same
+        # venv (ws/install/) so `import dftracer` resolves at runtime without
+        # any path surgery.  Never create a parallel ws/venv/ for Python apps —
+        # it causes import errors when the app venv is active but dftracer lives
+        # in a different site-packages.
+        #
+        # For C/C++ projects, create an isolated session venv (ws/venv/) that is
+        # separate from the MCP server's own Python environment.
+        app_venv_python = ws / "install" / "bin" / "python"
+        if bt == "python":
+            if not app_venv_python.exists():
+                # App venv not yet created — create it now so dftracer and the
+                # app land in the same environment from the start.
+                try:
+                    import subprocess as _sp
+                    _sp.run(
+                        [sys.executable, "-m", "venv", str(ws / "install")],
+                        check=True, timeout=60,
+                    )
+                except Exception as exc:
+                    return _err(f"Failed to create app venv at ws/install/: {exc}")
+            venv_python_str = str(app_venv_python)
+        else:
+            try:
+                venv_python = _ensure_session_venv(ws)
+            except RuntimeError as exc:
+                return _err(f"session venv creation failed: {exc}")
+            venv_python_str = str(venv_python)
         _save_state(run_id, {"session_venv_python": venv_python_str})
 
         result = _install_dftracer_pip_direct(

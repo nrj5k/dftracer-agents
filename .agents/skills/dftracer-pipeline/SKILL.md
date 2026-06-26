@@ -40,6 +40,50 @@ ALWAYS annotate using MCP clang tools. NEVER do manual annotation.
   error): diagnose the tool error, do NOT switch to manual annotation.
   Report the tool failure to the user and stop.
 
+PYTHON AI/ML ANNOTATION — FUNCTIONS TO NEVER ANNOTATE:
+
+  The following Python patterns must not receive dftracer decorators.
+  Remove any auto-placed decorators from them before running:
+
+  ✗ @staticmethod functions — dftracer's wrapper passes self as the first
+    positional arg via *args, causing "multiple values for argument" errors
+    when the static method has keyword parameters.  Remove @_dlp.log_static
+    from any @staticmethod, leaving the @staticmethod decorator in place.
+
+  ✗ @numba.njit / @numba.jit / @cuda.jit compiled kernels — numba CPUDispatcher
+    objects do not support inspect.getfullargspec; dftracer's log decorator fails
+    at decoration time with "TypeError: unsupported callable".
+
+  ✗ @torch.jit.script decorated functions — same reason as numba.
+
+  ✗ __len__ on Dataset subclasses — DataLoader calls __len__ O(10000+) times
+    per epoch; annotating it overflows dftracer's C-level event buffer and
+    causes SIGABRT in DataLoader workers.  Leave __len__ unannotated.
+
+  For any of these, simply skip the decorator; the function will still be
+  called normally and its callers (which ARE annotated) will capture the timing.
+
+DFANALYZER PRESET SELECTION — DLIO vs POSIX:
+
+  dfanalyzer supports two analysis presets:
+    • posix  — generic POSIX I/O workload (default for C/C++/Fortran HPC apps)
+    • dlio   — deep learning workload (understands epoch/fetch_data/data_loader/
+               checkpoint/compute layers; use for PyTorch/TF/JAX/DALI/horovod apps)
+
+  The pipeline auto-detects the preset via _detect_analyzer_preset():
+    • If source code imports any of: torch, tensorflow, jax, keras, flax, mxnet,
+      horovod, deepspeed, megatron, FSDP, dali, dlio_benchmark, lightning
+      → preset is automatically set to dlio
+    • Otherwise → posix
+
+  When calling mcp__dftracer__analyze manually, always pass the correct preset:
+    • DL workload:   analyzer/preset=dlio
+    • Generic HPC:   analyzer/preset=posix
+
+  The dlio preset produces semantically richer bottleneck names (e.g.
+  reader_posix_read_ops_slope instead of posix_read_ops_slope for DataLoader
+  workers) and understands training-phase patterns that posix does not.
+
 ══════════════════════════════════════════════════════════════════════
 
 ══════════════════════════════════════════════════════════════════════
@@ -65,6 +109,12 @@ If a run_id was supplied skip Q1–Q4 and jump to Step 3.
 
 Print: "Starting pipeline for <APP_URL> @ <REF>"
 
+Note: every MCP tool call that runs a pipeline step returns timing fields
+``started_at``, ``ended_at``, and ``duration_s`` in its result.  Collect
+these into a running ``STEP_TIMINGS`` list as steps complete:
+
+    STEP_TIMINGS = []   # append {step, started_at, ended_at, duration_s} after each step
+
 
 ══════════════════════════════════════════════════════════════════════
 STEP 2 — SESSION SETUP  (MCP tools)
@@ -75,21 +125,19 @@ STEP 2 — SESSION SETUP  (MCP tools)
     session_create(url=APP_URL, ref=REF)
     → store RUN_ID, WS (workspace path)
 
-2b. Validate HDF5 version (only if project uses HDF5):
+2b. Check HDF5 version before configuring:
 
-    h5cc --version 2>/dev/null || h5dump --version 2>/dev/null || \
-      pkg-config --modversion hdf5 2>/dev/null
+    h5cc --version 2>/dev/null || h5pcc --version 2>/dev/null || \
+      find /usr -name "H5public.h" | xargs grep H5_VERS_INFO 2>/dev/null | head -1
 
-    dftracer-compatible HDF5 versions (exact series only):
-      1.8.23  |  1.10.5  |  1.12.3  |  1.14.5 (preferred)
-
-    If the system HDF5 is NOT in one of these series:
-      - Build HDF5 1.14.5 from source into <WS>/hdf5_1.14/ (see dftracer-install skill)
+    REQUIRED: HDF5 ≥ 1.14.x. If the system HDF5 is 1.10.x or 1.12.x:
+      - Build HDF5 1.14 from source into <WS>/hdf5_1.14/ (see dftracer-install skill)
       - Add "-DHDF5_DIR=<WS>/hdf5_1.14" to EXTRA_FLAGS for all cmake steps
       - Set HDF5_DIR and LD_LIBRARY_PATH in every subsequent shell command
 
-    The MCP session_detect tool reports hdf5_system.compatible=true/false and
-    hdf5_system.recommended with the preferred patch release for the detected series.
+    HDF5 1.14 unlocks: H5Pset_page_buffer_size with MPIO VFD,
+    async VOL (H5Fcreate_async), improved collective metadata flush,
+    and the full posix_close_ops_slope fix path.
 
 2c. Configure + build the original source:
 
@@ -102,6 +150,12 @@ STEP 2 — SESSION SETUP  (MCP tools)
     session_install_dftracer(run_id=RUN_ID)
 
     On failure → print the cmake/pip error and stop.
+
+    IMPORTANT for Python/AI/ML apps: dftracer and the app MUST share the
+    same venv (``ws/install/``).  ``session_install_dftracer`` enforces this
+    automatically for ``build_tool=python`` projects — it installs dftracer
+    into ``ws/install/`` and never creates a separate ``ws/venv/``.
+    If the app venv does not exist yet, it is created by this step.
 
 2d. Copy source to annotated/ workspace:
 
@@ -222,32 +276,23 @@ Print per-file status: ✓ <file>  (<n> functions annotated, lint PASSED)
 STEP 5 — BUILD ANNOTATED VERSION  (MCP tools)
 ══════════════════════════════════════════════════════════════════════
 
-5a. Detect explicit INIT usage to determine DFTRACER_INIT mode:
+5a. Set DFTRACER_INIT mode:
 
-    INIT_COUNT=$(grep -r "DFTRACER_C_INIT\|DFTRACER_CPP_INIT\|DFTracer.initialize_log" \
-      <WS>/annotated/ 2>/dev/null | wc -l)
-    FINI_COUNT=$(grep -r "DFTRACER_C_FINI\|DFTRACER_CPP_FINI\|dftracer.finalize_log" \
-      <WS>/annotated/ 2>/dev/null | wc -l)
+    Primary (always try first):
+      DFTRACER_INIT_ENV = {"DFTRACER_INIT": "FUNCTION"}
 
-    INIT_COUNT > 0 AND FINI_COUNT > 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "FUNCTION"}
-      (source has both INIT and FINI: use FUNCTION mode — function-level profiling,
-       no LD_PRELOAD needed)
+    FUNCTION mode works for both C/C++ and Python:
+    - C/C++: DFTRACER_C_INIT / DFTRACER_C_FINI macros in source
+    - Python: dftracer.initialize_log() / _dft_log.finalize() + decorators
 
-    INIT_COUNT > 0 AND FINI_COUNT == 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "PRELOAD"}
-      (missing FINI — FUNCTION/HYBRID would leave traces open; fall back to preload-only)
+    Fallback (only if FUNCTION produces an empty trace or crashes):
+      dftracer_lib=$(python -c "import dftracer; import os; print(os.path.join(os.path.dirname(dftracer.__file__), 'lib', 'libdftracer_preload.so'))")
+      DFTRACER_INIT_ENV = {"DFTRACER_INIT": "HYBRID",
+                           "LD_PRELOAD": "<dftracer_lib>"}
 
-    INIT_COUNT == 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "PRELOAD"}
-      (no annotations — preload-only transparent I/O interception)
+    PRELOAD-only mode is never used — annotations must always be present.
 
-    HYBRID mode is NOT the default for annotated code. Use HYBRID only when the
-    user explicitly requests BOTH function-level profiling AND I/O interception
-    via LD_PRELOAD on top of annotated source that has both INIT and FINI.
-
-    Important: NEVER set DFTRACER_INIT=0 — it disables POSIX-level
-    tracing. Valid values: FUNCTION (annotated source with both INIT+FINI,
-    default for annotated apps), PRELOAD (transparent I/O only, no annotations
-    or missing FINI), HYBRID (annotated source with both INIT+FINI AND
-    LD_PRELOAD for I/O interception, only on explicit user request).
+    Important: NEVER set DFTRACER_INIT=0 — it disables POSIX-level tracing.
     All values are CASE-SENSITIVE uppercase strings.
 
 5b. Build and install annotated version:
@@ -272,6 +317,12 @@ STEP 5 — BUILD ANNOTATED VERSION  (MCP tools)
     MPI/OpenMPI as root? Add env:
       OMPI_ALLOW_RUN_AS_ROOT=1, OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
 
+    Flux proxy systems (Tuolumne, etc.): if SMOKE_CMD contains ``flux proxy``,
+    the MCP tool automatically wraps the payload in a script under
+    ``<ws>/tmp/run_smoke_test.sh`` that sources lmod init and then runs the
+    command.  Never pass inline ``bash -c "module load ..."`` to flux proxy —
+    it fails to propagate module state into subprocesses.
+
     On failure: if DFTRACER symbols in error → re-annotate + retry.
     Otherwise ask: "Smoke test failed (non-annotation issue). Continue? [yes/stop]"
 
@@ -290,7 +341,23 @@ Print:
   │  comp:  io=<n>  comm=<n>  mem=<n>  cpu=<n>             │
   │  Build: PASSED   Smoke test: PASSED                     │
   │  Annotated source: workspaces/<RUN_ID>/annotated/       │
+  ├─────────────────────────────────────────────────────────┤
+  │  STEP TIMINGS (phase 1)                                 │
+  │  Step                         Duration                  │
+  │  step_1_clone                 N.NNNs                    │
+  │  step_2_detect                N.NNNs                    │
+  │  step_3_configure             N.NNNs                    │
+  │  step_4_build_install         N.NNNs                    │
+  │  step_5_smoke_test            N.NNNs                    │
+  │  step_6_copy_annotated        N.NNNs                    │
+  │  step_7_patch_build           N.NNNs                    │
+  │  step_8_annotate              N.NNNs                    │
+  │  Timing file: workspaces/<RUN_ID>/step_timings.json     │
   └─────────────────────────────────────────────────────────┘
+
+  Read timing data from the ``step_timings`` field in the tool result
+  (or from ``workspaces/<RUN_ID>/step_timings.json`` after the pipeline
+  completes) and append each entry to STEP_TIMINGS.
 
 Ask: "Proceed with dftracer trace run? [yes / no / fix <file> <feedback>]"
 
@@ -306,11 +373,17 @@ Ask: "Proceed with dftracer trace run? [yes / no / fix <file> <feedback>]"
 STEP 7 — TRACE COLLECTION + ANALYSIS  (MCP tools)
 ══════════════════════════════════════════════════════════════════════
 
-7a. Create the trace output subdirectory before running:
+7a. Create the trace output directory before running:
 
-    mkdir -p <WS>/traces/<app_name>
+    On LLNL systems (Tuolumne, Lassen, etc.) all trace output MUST go to
+    Lustre, not NFS.  ``session_run_with_dftracer`` auto-routes to Lustre
+    when ``/p/lustre5/$USER/workspaces/`` exists.  Verify before running:
 
-    (where app_name = first component of RUN_ID before "/")
+        mkdir -p /p/lustre5/$USER/workspaces/<app>/{traces,fractals,datasets,runs}
+
+    ``session_run_with_dftracer`` writes ``DFTRACER_LOG_FILE`` to the Lustre
+    path and creates a symlink at ``<WS>/traces/`` for downstream tools.
+    If Lustre is unavailable (containers, non-LLNL), traces land in ``<WS>/traces/``.
 
 7b. Run with dftracer:
 
@@ -325,6 +398,39 @@ STEP 7 — TRACE COLLECTION + ANALYSIS  (MCP tools)
     Always set DFTRACER_INC_METADATA=1 so UPDATE_STR/UPDATE_INT metadata
     (comp=, filename=, count=) is captured in the trace events.
     Always set DFTRACER_ENABLE=1 to ensure trace files are written.
+
+    AFTER the run — check trace file sizes BEFORE splitting:
+
+        ls -lh <WS>/traces/
+
+    EMPTY TRACES DIAGNOSIS (0-byte .pfw.gz files despite DFTRACER_ENABLE=1):
+
+    If dftracer printed "DFTracerCore::initialize" but trace files are 0 bytes,
+    dftracer initialized but never finalized.  Diagnose by layer:
+
+    Layer 1 — Main function annotations not appearing:
+      The app crashed or exited before reaching finalize().  Common causes:
+      - finalize() is called after MPI_Finalize / mpi4py atexit (mpi4py registers
+        an atexit that calls MPI_Finalize; dftracer's finalize then tries MPI
+        rank queries and crashes).
+        FIX: wrap the benchmark call in try/finally and call finalize() inside
+        the finally block, before any MPI teardown.
+      - An unhandled exception in the benchmark exits the process before finalize().
+        FIX: same try/finally wrapping.
+      - PyTorch destroy_process_group() or torchrun-hpc teardown runs before
+        finalize() is reached.
+        FIX: call finalize() immediately after benchmark.main() returns, still
+        inside the try block, before any dist.destroy_process_group() in callers.
+
+    Layer 2 — Main annotations appear but DataLoader I/O is absent:
+      PyTorch DataLoader workers are forked subprocesses.  In FUNCTION mode,
+      dftracer initializes in each worker on fork and finalizes when the worker
+      exits cleanly — so worker I/O WILL appear under normal conditions.
+      If worker I/O is missing, the workers exited uncleanly (SIGKILL, OOM,
+      uncaught exception).  Look for signal or OOM messages in stderr.
+      FIX: reduce num_workers, increase memory limits, or check for exceptions
+      in worker processes.  Do NOT switch to HYBRID mode just for this — FUNCTION
+      mode is correct and sufficient when workers exit cleanly.
 
 7c. Copy trace files up to the parent traces/ dir if needed
     (run_id subdirectory layout):
@@ -345,56 +451,6 @@ STEP 8 — OPTIMIZATION PIPELINE  (MCP tools)
 Ask: "Generate optimization proposals? [yes / no]"
 
 If yes:
-
-8-PRE. DETECT FILESYSTEM AND STORAGE CONTEXT (mandatory before any proposals)
-
-    Before searching for papers or generating proposals, identify the actual
-    filesystem where the application is performing I/O.  This drives which
-    L2/L3 strategies are valid and which search terms to use.
-
-    Detect filesystem type of the data directory:
-      stat -f --format="%T" <DATA_DIR>   # e.g. "nfs", "ext2/ext3", "lustre"
-      df -T <DATA_DIR>                   # shows filesystem type
-      lfs getname <DATA_DIR> 2>/dev/null # non-empty → Lustre
-      # For VAST: usually shows as NFS mount but df -T shows "nfs" or "tmpfs"
-      # Check mount source: mount | grep <DATA_DIR>
-
-    Store the result as FS_TYPE. Classify into one of:
-      FS_TYPE = "lustre"      # lfs command works; OST/MDT visible
-      FS_TYPE = "vast"        # NVMe-backed NFS or proprietary; no lfs commands
-      FS_TYPE = "gpfs"        # IBM Spectrum Scale / GPFS
-      FS_TYPE = "beegfs"      # BeeGFS distributed FS
-      FS_TYPE = "nfs"         # standard NFS (no parallel I/O tuning)
-      FS_TYPE = "local_nvme"  # local NVMe SSD
-      FS_TYPE = "local_hdd"   # local spinning disk
-      FS_TYPE = "unknown"     # could not determine
-
-    Print: "I/O filesystem detected: <FS_TYPE> at <DATA_DIR>"
-
-    FS_TYPE is used in:
-      - Paper search queries (include filesystem name)
-      - system_score assignment (papers for wrong FS score 0)
-      - L3 strategy filtering (only propose valid strategies for FS_TYPE)
-
-    FILESYSTEM COMPATIBILITY TABLE FOR L3 PROPOSALS:
-    ┌──────────────────────────┬─────────────────────────────────────────┐
-    │ Strategy                 │ Valid FS_TYPE                           │
-    ├──────────────────────────┼─────────────────────────────────────────┤
-    │ lfs setstripe / stripe   │ lustre only                             │
-    │ lfs mkdir -c (DNE)       │ lustre only                             │
-    │ romio_ds_write=disable   │ lustre only (FATAL on vast/NVMe)        │
-    │ romio_cb_read=enable     │ lustre, gpfs, nfs (HARMFUL on vast)     │
-    │ romio_cb_write=enable    │ all parallel FS (lustre, vast, gpfs…)   │
-    │ blockdev --setra          │ local_nvme, local_hdd only              │
-    │ I/O scheduler (none/mq)  │ local_nvme, local_hdd only              │
-    │ vm.dirty_* sysctl        │ all local filesystems                   │
-    │ mmchattr (GPFS)          │ gpfs only                               │
-    │ beegfs-ctl tuning        │ beegfs only                             │
-    │ NFS rsize/wsize mount    │ nfs only                                │
-    └──────────────────────────┴─────────────────────────────────────────┘
-
-    DO NOT propose L3 strategies for a different FS_TYPE.
-    For "unknown" FS_TYPE: propose only L1 and L2 strategies; omit L3.
 
 8a. Run the baseline iteration loop (profiling + diagnosis + literature search):
 
@@ -437,31 +493,12 @@ If yes:
         •  0 — paper is topically unrelated to the bottleneck
 
       system_score (0–30):
-        How well does the paper match the ACTUAL detected filesystem and stack?
-        This score is filesystem-specific — a paper about Lustre tuning scores 0
-        when the detected FS_TYPE is "vast" or "local_nvme", even though both
-        are "parallel filesystems."
-
-        • 30 — paper studies the SAME filesystem/storage product as FS_TYPE
-                (e.g., FS_TYPE=lustre and paper evaluates on Lustre;
-                 FS_TYPE=vast and paper evaluates on VAST or all-NVMe NAS)
-        • 25 — same library/runtime regardless of filesystem
-                (e.g., paper uses HDF5 + ROMIO; or MPI-IO collective I/O
-                 technique validated on multiple filesystems)
-        • 15 — same storage technology class (NVMe vs spinning disk vs network)
-                (e.g., FS_TYPE=local_nvme and paper studies NVMe-based storage;
-                 FS_TYPE=vast and paper studies NVMe-backed parallel storage)
-        • 10 — same application domain (scientific HPC I/O, checkpoint)
-                on a DIFFERENT storage class
-        •  0 — paper is for a DIFFERENT specific filesystem
-                (e.g., paper is Lustre-only when FS_TYPE=vast or gpfs;
-                 paper is cloud/object-store when FS_TYPE=lustre)
-        •  0 — different system class (cloud-only, database, in-memory)
-
-        HARD RULE: A paper that proposes a strategy that is KNOWN TO HARM
-        the detected FS_TYPE (see compatibility table in 8-PRE) must score 0
-        on system_score, even if it scores high on bottleneck_score.
-        Do NOT rank it as a citation for a proposal on this system.
+        How well does the paper match the target system/software stack?
+        • 30 — same library/runtime (e.g., paper uses HDF5 + ROMIO on MPI)
+        • 20 — same storage tier or middleware class (e.g., parallel filesystem,
+                object store, two-phase I/O)
+        • 10 — same application domain (e.g., scientific HPC I/O, checkpoint)
+        •  0 — different system class (e.g., cloud-only, database, in-memory)
 
       recency_score (0–20):
         age_years = current_year - publication_year
@@ -479,22 +516,17 @@ If yes:
 8b-ii. PAPER SEARCH PROCEDURE
 
     If session_generate_optimization_proposals returns empty or unsupported
-    bottlenecks, search manually.  ALWAYS include FS_TYPE in the queries:
+    bottlenecks, search manually:
 
       dftracer__search_arxiv / dftracer__search_semantic_scholar with queries:
-        - Bottleneck metric name + I/O domain + FS_TYPE
-          (e.g., "posix close latency HDF5 VAST NVMe parallel I/O")
-          (e.g., "posix seek ops collective I/O Lustre MPI-IO")
-        - Broader technique synonyms + FS_TYPE
-          (e.g., "collective buffering MPI-IO NVMe storage")
-          (e.g., "metadata caching HDF5 Lustre parallel filesystem")
-        - System-specific terms from the detected stack
-          (e.g., "ROMIO two-phase I/O VAST" or "ROMIO Lustre striping checkpoint")
+        - Bottleneck metric name + I/O domain
+          (e.g., "posix close latency HDF5 parallel I/O")
+        - Broader technique synonyms
+          (e.g., "collective buffering MPI-IO", "metadata caching HDF5")
+        - System-specific terms from the stack
+          (e.g., "ROMIO two-phase I/O", "Lustre striping checkpoint")
 
-      If FS_TYPE is "unknown", omit the filesystem name and search broadly,
-      then mark all L3 proposals as "requires filesystem verification."
-
-      Score every result using the rubric above, applying the filesystem filter.
+      Score every result using the rubric above.
       If top score < 20 after 3 searches → state:
         "Best available citation scores <N>/100 for this bottleneck
          (title: <title>, year: <year>). Proceeding with caveat."
@@ -504,7 +536,6 @@ If yes:
 
     ┌─────────────────────────────────────────────────────────────┐
     │  OPTIMIZATION PROPOSAL — <bottleneck> (<severity>)          │
-    │  Filesystem: <FS_TYPE> at <DATA_DIR>                        │
     ├─────────────────────────────────────────────────────────────┤
     │  Evidence: <paper title>, <authors>, <year>                 │
     │  URL: <arxiv or doi url>                                    │
@@ -512,12 +543,8 @@ If yes:
     ├─────────────────────────────────────────────────────────────┤
     │  L1 (application):  <specific code/config change>           │
     │  L2 (middleware):   <library/runtime tuning>                │
-    │  L3 (filesystem):   <FS_TYPE-specific config — or N/A>      │
+    │  L3 (filesystem):   <storage/system config change>          │
     └─────────────────────────────────────────────────────────────┘
-
-    If no valid L3 strategy exists for the detected FS_TYPE, write:
-      "L3 (filesystem): N/A — no validated strategy for <FS_TYPE>"
-    NEVER propose an L3 strategy from the incompatibility table above.
 
 8d. ITERATIVE OPTIMIZATION LOOP  (max 10 iterations)
 
@@ -535,128 +562,17 @@ If yes:
 
     For each iteration i = 1 … 10:
 
-    8d-0.  SMOKE VALIDATION BEFORE PRODUCTION RUN  ← MANDATORY BEFORE EVERY ITER
+    8d-i.  Apply all three layers in sequence:
 
-        Before running any optimization at production scale, validate each
-        proposed change with a smoke run using minimal resources and tiny data.
-        Test each optimization in isolation (L1 alone, L2 alone, L3 alone,
-        then combinations) and scale up gradually until you find the smallest
-        configuration that fails OR confirm all pass.
+        session_optimize_l1_app(run_id=RUN_ID)
+        session_optimize_l2_software(run_id=RUN_ID)
+        session_optimize_l3_filesystem(run_id=RUN_ID)
 
-        Gradual scale steps (Tuolumne example):
-          Step 1 — 1 node, 4 ranks, DIM_1=1M, TIMESTEPS=2   (~seconds)
-          Step 2 — 1 node, 96 ranks, same small DIM          (~seconds)
-          Step 3 — 2 nodes, 192 ranks, small DIM             (~seconds)
-          Step 4 — 2 nodes, 192 ranks, medium DIM (½ of production)
-          Step 5 — production scale only if all above pass
+        If any layer reports "no applicable optimizations", record that
+        layer as exhausted for this iteration but still run the remaining
+        layers. Do NOT skip the re-profile step.
 
-        For each step, test in this order:
-          a) baseline (no optimization) — confirm it passes at this scale
-          b) L3 only (filesystem: lfs setstripe)
-          c) L2 only (middleware: ROMIO hints via wrapper script)
-          d) L1 only (app: config changes)
-          e) L3 + L2 combined
-          f) all three combined
-
-        If a combination fails at step N, binary-search within that combination
-        (e.g. remove hints one at a time) to find the specific offending param.
-
-        Smoke run template (h5bench on Tuolumne):
-          cat > smoke.cfg << 'EOF'
-          MEM_PATTERN=CONTIG
-          FILE_PATTERN=CONTIG
-          TIMESTEPS=2
-          DELAYED_CLOSE_TIMESTEPS=0
-          COLLECTIVE_DATA=YES
-          COLLECTIVE_METADATA=YES
-          NUM_DIMS=1
-          DIM_1=1048576
-          EOF
-
-          flux proxy $JOB flux run -N 1 -n 4 --env LD_LIBRARY_PATH=$LDPATH \
-            bash wrapper.sh $BIN smoke.cfg /p/lustre5/$USER/smoke_test/out.h5
-
-        Record failures in the workload/software skill BEFORE running at scale.
-        Only proceed to production run with configurations confirmed at all steps.
-        See R11 in [[dftracer-annotation-lessons]] for full rationale.
-
-    8d-i.  Apply optimizations ONE AT A TIME, measure each individually,
-        then measure the combined effect.
-
-        !! MANDATORY — never apply all three layers in one shot and compare
-        only the combined result. The user must always see per-optimization
-        impact so they know which change contributed what. !!
-
-        For each proposed optimization OPT_k in (L3, L2, L1):
-
-          a) Apply OPT_k on top of BASELINE (not on top of previous opts).
-          b) Run the benchmark with OPT_k only:
-               session_optimization_iteration(run_id=RUN_ID, command=SMOKE_CMD,
-                 app_name=APP_NAME, data_dir="all",
-                 env_extra=DFTRACER_INIT_ENV,
-                 optimization_applied="iter-<i>: <OPT_k name> only",
-                 rebuild=<True if L1, False if L2/L3-only>)
-             Store trace as TRACE_OPT_k.
-          c) Compare OPT_k vs BASELINE using the comparator:
-               comparator(trace_a=TRACE_BASELINE, trace_b=TRACE_OPT_k)
-             Record impact: IMPROVED / NEUTRAL / REGRESSED per metric.
-
-        After all individual OPT_k runs:
-
-          d) Apply ALL passing opts together (those that were IMPROVED or
-             at least NEUTRAL on their own):
-               session_optimization_iteration(run_id=RUN_ID, command=SMOKE_CMD,
-                 app_name=APP_NAME, data_dir="all",
-                 env_extra=DFTRACER_INIT_ENV,
-                 optimization_applied="iter-<i>: all combined",
-                 rebuild=True)
-             Store trace as TRACE_COMBINED.
-
-        Then run the N-WAY COMPARATOR to show all traces at once:
-
-          e) comparator(
-               trace_a = TRACE_BASELINE,
-               trace_b = TRACE_OPT_1,
-               trace_c = TRACE_OPT_2,
-               trace_d = TRACE_OPT_3,
-               trace_e = TRACE_COMBINED
-             )
-
-        This produces a single table showing the contribution of each
-        optimization independently AND their synergistic combined effect.
-
-        Present results as:
-          OPT          | raw_rate  | delta vs baseline | key bottleneck change        | citation (author, year, score/100)
-          -------------|-----------|-------------------|-----------------------------|---------------------------------
-          baseline     | <val>     | —                 | —                           | —
-          L3 only      | <val>     | +X%               | <metric improved>           | <Author et al., YYYY, NN/100>
-          L2 only      | <val>     | +X%               | <metric improved>           | <Author et al., YYYY, NN/100>
-          L1 only      | <val>     | +X%               | <metric improved>           | <Author et al., YYYY, NN/100>
-          L3+L2+L1     | <val>     | +X%               | cumulative                  | —
-
-        !! MANDATORY: Every optimization row MUST have a citation. If the hint was
-        silently dropped or unrecognized, note "N/A — hint unrecognized" in the
-        key bottleneck change column but still show the citation that motivated
-        the attempt. Never leave the citation column blank for a tested OPT. !!
-
-        Any optimization that is REGRESSED or NEUTRAL individually:
-          → Do NOT include in the combined run.
-          → Record it immediately as a failed config (see 8d-iii-FAIL).
-          → Note in the table with reason (e.g. "SKIP — neutral alone").
-
-        IMPORTANT: Run the individual optimization runs in parallel where
-        the allocation has enough nodes (e.g. L3-only and L2-only can run
-        simultaneously if nodes are available, since each is applied on
-        top of BASELINE, not on top of each other).
-
-        If any layer reports "no applicable optimizations", skip it and
-        continue with the remaining layers. Do NOT skip the combined run.
-
-    8d-ii. Re-profile with the combined changes (if step 8d-i-d above ran):
-
-        The TRACE_COMBINED from 8d-i-d is the authoritative profile for
-        this iteration. Use it as the basis for next-iteration bottleneck
-        analysis and proposals.
+    8d-ii. Re-profile with the applied changes:
 
         session_optimization_iteration(run_id=RUN_ID, command=SMOKE_CMD,
           app_name=APP_NAME, data_dir="all",
@@ -686,40 +602,6 @@ If yes:
 
         For the baseline comparison (i = 1), use TRACE_ITER_0 as trace_a.
 
-    8d-iii-FAIL. Record any regressed or neutral configurations IMMEDIATELY.
-
-        After every comparator result, classify each applied change as:
-          IMPROVED  — metric improved vs previous iteration
-          NEUTRAL   — change within ±5% (no meaningful effect)
-          REGRESSED — metric worsened by > 5%
-
-        For every NEUTRAL or REGRESSED change, write a failed-config entry
-        to the appropriate skill file RIGHT NOW (do not wait for Step 9).
-
-        Use the ROUTING TABLE from Step 9 to pick the target file.
-        Append this block under the "## Failed Configurations" section
-        of that skill file (create the section if it does not exist):
-
-          ---
-          date: YYYY-MM-DD
-          app: <APP_URL>
-          workload: <APP_NAME>
-          filesystem: <FS_TYPE>
-          system: <HPC system, e.g. Tuolumne>
-          bottleneck: <bottleneck metric that was targeted>
-          config_attempted: |
-            <exact env vars, flags, or code changes that were applied>
-          result: REGRESSED | NEUTRAL
-          metrics_before: <key metric values from TRACE_ITER_<i-1>>
-          metrics_after:  <key metric values from TRACE_ITER_<i>>
-          delta: <pct change, e.g. "-70% read BW", "+0% write BW">
-          root_cause: <why this configuration hurt or had no effect>
-          do_not_use_when: <condition under which this config is harmful>
-          ---
-
-        IMPORTANT: Roll back the regressed changes before continuing the loop.
-        Do NOT carry a known-bad configuration into the next iteration.
-
     8d-iv. Generate updated proposals for newly surfaced bottlenecks:
 
         session_generate_optimization_proposals(run_id=RUN_ID, iteration=i)
@@ -729,19 +611,10 @@ If yes:
         already fully addressed in a prior iteration (no new proposals
         means no proposal box for that bottleneck).
 
-        BEFORE proposing any configuration: check the "## Failed Configurations"
-        section of every relevant skill file (workload, software, filesystem).
-        If the proposed config matches a known REGRESSED entry for the same
-        FS_TYPE and workload, SKIP that proposal and note:
-          "Skipped: <config> previously caused <delta> regression on
-           <FS_TYPE>/<workload> — see <skill_file>#Failed Configurations"
-
     8d-v. Update the loop state table and print a one-line delta summary
         derived from the comparator output:
 
         "Iter <i>: resolved=<n> bottlenecks, new=<m>, raw_rate <before>→<after> GB/s (comparator: <overall verdict>)"
-        "  Applied: <list of changes>"
-        "  Regressed/rolled back: <list, or 'none'>"
 
 8e. Check termination conditions after each iteration:
 
@@ -755,8 +628,8 @@ If yes:
                    completion time worsened by > 5% versus the previous
                    iteration. Use the comparator's metric delta output as
                    the authoritative source — do not recompute manually.
-                   (Roll back the last iteration's changes; the failed-config
-                   entry was already written in 8d-iii-FAIL. Stop loop.)
+                   (Roll back the last iteration's changes, mark as
+                   "regressed", and stop.)
       MAX_ITERS  — 10 iterations completed.
 
     On stopping, print the reason:
@@ -773,42 +646,8 @@ If yes:
 STEP 9 — UPDATE LESSONS LEARNED
 ══════════════════════════════════════════════════════════════════════
 
-Append any new pitfalls discovered this session to the CORRECT file
-based on the nature of the lesson:
-
-  ROUTING TABLE
-  ─────────────────────────────────────────────────────────────────
-  Lesson type                          → Target file
-  ─────────────────────────────────────────────────────────────────
-  IOR-specific (build, annotation,     → .agents/skills/workload-ior/SKILL.md
-    ROMIO tuning, smoke test)
-  H5Bench-specific (build, CMake,      → .agents/skills/workload-h5bench/SKILL.md
-    config, annotation edge cases)
-  MPI/ROMIO software tuning,           → .agents/skills/software-mpi/SKILL.md
-    Flux env propagation, Cray MPICH
-  HDF5 version, chunk/cache tuning,    → .agents/skills/software-hdf5/SKILL.md
-    Cray chid_t, dftracer HDF5 support
-  POSIX readahead, Lustre striping,    → .agents/skills/software-posix/SKILL.md
-    OS/VM tuning, ops_slope bottlenecks
-  New workload (not IOR or H5Bench)    → create .agents/skills/workload-<name>/SKILL.md
-  New software (not MPI/HDF5/POSIX)   → create .agents/skills/software-<name>/SKILL.md
-  General/cross-cutting annotation     → .agents/skills/dftracer-annotation-lessons/SKILL.md
-  ─────────────────────────────────────────────────────────────────
-
-  ALWAYS also append a one-line cross-reference entry to
-  dftracer-annotation-lessons/SKILL.md pointing at the target file,
-  so agents loading the general lessons file can find the new entry.
-
-  NEW WORKLOAD / SOFTWARE SKILL:
-  If the workload or software has no existing skill file, create one:
-    1. mkdir -p .agents/skills/workload-<name>/
-    2. Write SKILL.md with frontmatter (name, description), cross-reference
-       links to [[dftracer-annotation-lessons]] and related skills, and the
-       lesson entry below.
-    3. Add a cross-reference line to dftracer-annotation-lessons/SKILL.md
-       under "Related Skills" pointing at the new skill.
-
-Entry format (same regardless of target file):
+Append any new pitfalls discovered this session to the lessons file.
+Format:
 
   ---
   date: YYYY-MM-DD
@@ -910,15 +749,41 @@ For each pitfall encountered, include a sub-section:
 
 ---
 
+## Step Timings
+
+| Step | Started at | Ended at | Duration (s) |
+| ---- | ---------- | -------- | ------------ |
+| step_1_clone | ... | ... | ... |
+| step_2_detect | ... | ... | ... |
+| step_3_configure | ... | ... | ... |
+| step_4_build_install | ... | ... | ... |
+| step_5_smoke_test | ... | ... | ... |
+| step_6_copy_annotated | ... | ... | ... |
+| step_7_patch_build | ... | ... | ... |
+| step_8_annotate | ... | ... | ... |
+| step_8_5_install_dftracer | ... | ... | ... |
+| step_9_10_build_and_run | ... | ... | ... |
+| step_11_split_traces | ... | ... | ... |
+| step_12_analyze_traces | ... | ... | ... |
+| step_13_diagnose | ... | ... | ... |
+
+Fill this table from ``STEP_TIMINGS`` (collected throughout the pipeline)
+or read ``workspaces/<RUN_ID>/step_timings.json`` which is written at the
+end of ``session_run_pipeline``.  The JSON file is the authoritative source
+for post-session analysis.
+
+---
+
 ## Artifacts
 
 | Artifact | Path |
 |---|---|
-| Annotated source | workspaces/<RUN_ID>/annotated/ |
-| Annotated build | workspaces/<RUN_ID>/build_ann/ |
-| Trace files | workspaces/<RUN_ID>/traces/ |
-| Split traces | workspaces/<RUN_ID>/traces_split/ |
-| Session report | workspaces/<RUN_ID>/session_report.md |
+| Annotated source | workspaces/RUN_ID/annotated/ |
+| Annotated build | workspaces/RUN_ID/build_ann/ |
+| Trace files | workspaces/RUN_ID/traces/ |
+| Split traces | workspaces/RUN_ID/traces_split/ |
+| Step timings | workspaces/RUN_ID/step_timings.json |
+| Session report | workspaces/RUN_ID/session_report.md |
 
 ---
 

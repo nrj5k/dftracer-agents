@@ -41,7 +41,6 @@ def _hydra_args(
     analyzer: str = "dftracer",
     analyzer_preset: str = "posix",
     analyzer_checkpoint: Optional[bool] = None,
-    analyzer_checkpoint_dir: Optional[str] = None,
     analyzer_time_approximate: Optional[bool] = None,
     analyzer_time_granularity: Optional[float] = None,
     analyzer_time_resolution: Optional[float] = None,
@@ -177,9 +176,7 @@ def _hydra_args(
     if analyzer_checkpoint_dir is not None:
         cmd.append(f"analyzer.checkpoint_dir={analyzer_checkpoint_dir}")
     if analyzer_time_approximate is not None:
-        cmd.append(
-            f"analyzer.time_approximate={'True' if analyzer_time_approximate else 'False'}"
-        )
+        cmd.append(f"analyzer.time_approximate={'True' if analyzer_time_approximate else 'False'}")
     if analyzer_time_granularity is not None:
         cmd.append(f"analyzer.time_granularity={analyzer_time_granularity}")
     if analyzer_time_resolution is not None:
@@ -282,7 +279,6 @@ class DFAnalyzerService(MCPService):
             analyzer: str = "dftracer",
             analyzer_preset: str = "posix",
             analyzer_checkpoint: Optional[bool] = None,
-            analyzer_checkpoint_dir: Optional[str] = None,
             analyzer_time_approximate: Optional[bool] = None,
             analyzer_time_granularity: Optional[float] = None,
             analyzer_time_resolution: Optional[float] = None,
@@ -307,7 +303,6 @@ class DFAnalyzerService(MCPService):
                 analyzer=analyzer,
                 analyzer_preset=analyzer_preset,
                 analyzer_checkpoint=analyzer_checkpoint,
-                analyzer_checkpoint_dir=analyzer_checkpoint_dir,
                 analyzer_time_approximate=analyzer_time_approximate,
                 analyzer_time_granularity=analyzer_time_granularity,
                 analyzer_time_resolution=analyzer_time_resolution,
@@ -430,16 +425,7 @@ class DFAnalyzerService(MCPService):
             ``"Would run: dfanalyzer ..."`` showing the full command that
             *would* be executed.  Never returns ``None``.
         """
-        valid_keys = {
-            "trace_path", "view_types", "debug", "verbose", "analyzer",
-            "analyzer_preset", "analyzer_checkpoint", "analyzer_checkpoint_dir",
-            "analyzer_time_approximate", "analyzer_time_granularity",
-            "analyzer_time_resolution", "output_format", "output_compact",
-            "output_root_only", "output_name", "output_run_db_path",
-            "cluster_type", "cluster_n_workers", "cluster_memory_limit",
-            "cluster_processes", "cluster_cores", "cluster_memory",
-        }
-        cmd_string = " ".join(_hydra_args(**{k: v for k, v in data.items() if k in valid_keys}))
+        cmd_string = " ".join(_hydra_args(**{k: v for k, v in data.items() if k != "command"}))
         return f"Would run: {cmd_string}"
 
     @property
