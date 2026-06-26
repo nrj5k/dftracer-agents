@@ -185,6 +185,47 @@ This returns the exact decorator and a ready-to-use code example.
       collate                                 → @dft_ai.data.preprocess.derive(name="collate")
       to_device / .cuda() / .to(device)       → @dft_ai.device.transfer
 
+    **Data I/O rules (ML-R25) — use `ai.data.io.*` for explicit open/read/write/close:**
+
+    Annotate each I/O phase separately instead of lumping everything into `data.item`.
+    ALWAYS compute and pass `image_size` (bytes) as metadata to every I/O region.
+
+    Phase mapping:
+      open file / open dataset / h5py.File(...)  → @dft_ai.data.io.open
+      np.load / f.read() / dataset[idx]          → @dft_ai.data.io.read  + image_size
+      f.write() / np.save()                      → @dft_ai.data.io.write + image_size
+      f.close() / file handle cleanup            → @dft_ai.data.io.close
+
+    image_size MUST be the byte size of the actual DATA ARRAY, computed from the
+    loaded/written object — NEVER from the path string or file metadata:
+
+      ✅ numpy array:   image_size=array.nbytes          (in-memory array bytes)
+      ✅ torch tensor:  image_size=tensor.element_size() * tensor.nelement()
+      ✅ bytes object:  image_size=len(buf)
+      ✅ checkpoint:    image_size=sum(t.nbytes for t in state_dict.values() if hasattr(t, "nbytes"))
+      ❌ WRONG:         image_size=os.path.getsize(path) (file-system metadata, not data)
+      ❌ WRONG:         image_size=len(path)             (path string length)
+
+    Pass image_size via update() AFTER the read/write so the value is known:
+
+    ```python
+    from dftracer.python import ai
+
+    # numpy example
+    def load_sample(path: str):
+        with ai.data.io.open:
+            pass
+        with ai.data.io.read:
+            data = np.load(path)
+            ai.data.io.read.update(image_size=data.nbytes)
+        with ai.data.io.close:
+            pass
+        return data
+    ```
+
+    Context-manager style is preferred when the function mixes phases.
+    Decorator style is preferred when the method maps 1:1 to a phase.
+
 ### 4d. Checkpoint files
 
     python_annotate_ai_file(run_id=RUN_ID, filepath=<file>,
@@ -194,7 +235,98 @@ This returns the exact decorator and a ready-to-use code example.
       save / save_checkpoint / write_ckpt     → @dft_ai.checkpoint.capture
       load / load_checkpoint / restore_ckpt  → @dft_ai.checkpoint.restart
 
-### 4e. Distributed communication files  (when DISTRIBUTED=True)
+    **Checkpoint I/O rules (ML-R26) — use `ai.checkpoint.io.*` for explicit phases:**
+
+    Wrap the four I/O phases inside the outer capture/restart context.
+    ALWAYS compute and pass `image_size` (bytes of the checkpoint) as metadata.
+
+    Phase mapping:
+      open file for checkpoint               → @ai.checkpoint.io.open
+      torch.load / pickle.load / f.read()    → @ai.checkpoint.io.read  + image_size
+      torch.save / pickle.dump / f.write()   → @ai.checkpoint.io.write + image_size
+      f.close() / os.remove()               → @ai.checkpoint.io.close
+
+    image_size for checkpoints = total bytes of all tensors in the state dict.
+    Compute from the in-memory data — NOT from os.path.getsize or len(path):
+
+      read:  sum(t.nbytes for t in checkpoint.get("model_state_dict", {}).values() if hasattr(t, "nbytes"))
+      write: sum(t.nbytes for t in state_dict.get("model_state_dict", {}).values() if hasattr(t, "nbytes"))
+
+    ```python
+    from dftracer.python import ai
+    import torch
+
+    def save_checkpoint(model, path: str):
+        state_dict = {"model_state_dict": model.state_dict()}
+        ckpt_bytes = sum(t.nbytes for t in state_dict["model_state_dict"].values() if hasattr(t, "nbytes"))
+        with ai.checkpoint.capture:
+            with ai.checkpoint.io.open:
+                f = open(path, "wb")
+            with ai.checkpoint.io.write:
+                torch.save(state_dict, f)
+                ai.checkpoint.io.write.update(image_size=ckpt_bytes)
+            with ai.checkpoint.io.close:
+                f.close()
+
+    def load_checkpoint(path: str):
+        with ai.checkpoint.restart:
+            with ai.checkpoint.io.open:
+                f = open(path, "rb")
+            with ai.checkpoint.io.read:
+                state = torch.load(f)
+                ckpt_bytes = sum(t.nbytes for t in state.get("model_state_dict", {}).values() if hasattr(t, "nbytes"))
+                ai.checkpoint.io.read.update(image_size=ckpt_bytes)
+            with ai.checkpoint.io.close:
+                f.close()
+        return state
+    ```
+
+### 4e. Other I/O files  (config reads, stats writes, utility I/O — ML-R27)
+
+Any I/O that is NOT inside the DataLoader path or checkpoint save/restore goes
+under `ai.other.io.*`. This covers: config file reads, CSV/stats file writes,
+rendezvous/coordination files, datagen scripts, logging helpers.
+
+    Phase mapping:
+      open file / open dataset           → dft_ai.other.io.open
+      f.read() / yaml.load / np.load()   → dft_ai.other.io.read  + image_size
+      f.write() / outfile.write(row)     → dft_ai.other.io.write + image_size
+      f.close()                          → dft_ai.other.io.close
+
+    Use `ai.other.log` for logging/print sinks that should be traced but
+    carry no I/O bytes.
+
+    image_size rules are identical to ML-R25:
+      bytes object:  image_size=len(buf)
+      numpy array:   image_size=array.nbytes
+      encoded str:   image_size=len(s.encode())
+      NEVER os.path.getsize or len(path)
+
+    Category decision tree:
+      Is the I/O inside __getitem__ / DataLoader path?  → data.io.*
+      Is the I/O torch.save / torch.load of model weights?  → checkpoint.io.*
+      Everything else  → other.io.*
+
+    ```python
+    from dftracer.python import ai
+
+    # config read example
+    with ai.other.io.open:
+        f = open(config_path, "rb")
+    with ai.other.io.read:
+        raw = f.read()
+        cfg = yaml.safe_load(raw)
+        ai.other.io.read.update(image_size=len(raw))
+    with ai.other.io.close:
+        f.close()
+
+    # stats CSV write example
+    with ai.other.io.write:
+        outfile.write(row)
+        ai.other.io.write.update(image_size=len(row.encode()))
+    ```
+
+### 4f. Distributed communication files  (when DISTRIBUTED=True)
 
     python_annotate_ai_file(run_id=RUN_ID, filepath=<file>,
       category=<module_stem>)
@@ -205,7 +337,7 @@ This returns the exact decorator and a ready-to-use code example.
       dist.broadcast(...)    → with dft_ai.comm.broadcast(): ...
       dist.all_gather(...)   → with dft_ai.comm.all_gather(): ...
 
-### 4f. Generic expensive functions  (python_extract_functions + cost estimation)
+### 4g. Generic expensive functions  (python_extract_functions + cost estimation)
 
 For every remaining file in OTHER_FILES:
 
@@ -216,7 +348,7 @@ For every remaining file in OTHER_FILES:
         category=<module_stem>)
       → uses @_dlp.log / @_dlp.log_init / @_dlp.log_static
 
-### 4g. PyTorch / Framework-specific rules
+### 4h. PyTorch / Framework-specific rules
 
   PyTorch DDP (ML-R11): Annotate INNER model.forward(), not the DDP wrapper.
   Lightning (ML-R12):   training_step → @dft_ai.compute
@@ -244,6 +376,11 @@ Check:
   ☐ ai.update(step=, epoch=) inside batch loop
   ☐ Comm ops use context manager style (not decorator)
   ☐ optimizer.step uses start/stop style (not decorator)
+  ☐ Data I/O phases use ai.data.io.open/read/write/close (ML-R25)
+  ☐ Checkpoint I/O phases use ai.checkpoint.io.open/read/write/close (ML-R26)
+  ☐ Non-dataloader/non-checkpoint I/O uses ai.other.io.open/read/write/close (ML-R27)
+  ☐ image_size metadata passed in every data.io.read / checkpoint.io.read / write region
+  ☐ image_size metadata passed in every other.io.read / other.io.write region
 
 For any missing item:
   - Re-run python_annotate_ai_file for the relevant file
@@ -334,7 +471,13 @@ STEP 7 — TRACE COLLECTION + VERIFICATION
 7d. Verify AI/ML categories in trace (ML-R15):
 
     Check that the trace summary includes categories:
-      pipeline, compute, data, dataloader
+      pipeline, compute, data, dataloader, data.io, checkpoint.io, other
+
+    Also verify that data.io, checkpoint.io, and other.io events carry image_size in args.
+    Missing image_size means ML-R25/ML-R26/ML-R27 was not applied — re-annotate.
+
+    checkpoint.io events will be ABSENT if checkpoint_interval=-1 (checkpointing disabled).
+    This is expected — do not treat absent checkpoint.io as an annotation failure.
 
     If HIP_NEEDED and "hip" category absent (ML-R16):
       PITFALLS.append({phase:"run", error:"HIP events absent from trace",
@@ -600,6 +743,13 @@ NEVER:
   • Use @dft_ai.compute.step as a function decorator (use start/stop style)
   • Use @dft_ai.comm.* as a function decorator (use context manager style)
   • Double-wrap a for-loop that already uses dft_ai.*.iter()
+  • Omit image_size from data.io.read / data.io.write / checkpoint.io.read / checkpoint.io.write
+  • Compute image_size BEFORE the operation (size must be known after read/write completes)
+  • Use os.path.getsize(path) or len(path) for image_size — must be in-memory byte count
+  • Write DFTRACER_LOG_FILE to Lustre when using session_optimization_iteration — the tool
+    looks for traces in the session workspace (<WS>/traces/); write there instead
+  • Use -n <total_procs> with torchrun-hpc — the -n flag is procs-PER-NODE;
+    for 8 nodes × 4 GPUs/node use: torchrun-hpc -N 8 -n 4 --gpus-per-proc 1
 
 
 ══════════════════════════════════════════════════════════════════════
@@ -616,6 +766,8 @@ Map new applications' structural equivalents to these files:
 | dlio_benchmark/reader/hdf5_reader.py           | @dft_ai.data.item on __getitem__          |
 | dlio_benchmark/data_generator/hdf5_generator.py| @dft_ai.data.preprocess, @_dlp.log       |
 | dlio_benchmark/checkpointing/torch_checkpoint.py| @dft_ai.checkpoint.capture/.restart      |
+|                                                | ai.checkpoint.io.write + image_size      |
+| dlio_benchmark/reader/hdf5_reader.py           | ai.data.io.open/read + image_size        |
 | dlio_benchmark/utils/utility.py                | @_dlp.log on expensive helpers           |
 
 Epoch loop: `for epoch in dft_ai.pipeline.epoch.iter(range(num_epochs)):`
