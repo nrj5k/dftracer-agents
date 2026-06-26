@@ -93,6 +93,28 @@ STEP 2 — SESSION SETUP
 
     On failure → record pitfall in PITFALLS, then stop.
 
+2e. PyTorch extras (ML-R28, ML-R29) — always run when "pytorch" in FRAMEWORKS:
+
+    After session_install_dftracer completes, install pydftracer from the
+    feature/explict-io branch (has data.io, checkpoint.io, other.io — ML-R25/R26/R27)
+    combined with the [dynamo] extra. Use PEP 440 direct-reference syntax:
+
+      pip install --no-cache-dir "pydftracer[dynamo] @ git+https://github.com/llnl/pydftracer.git@feature/explict-io"
+
+    WARNING: do NOT use "git+url@ref[extra]" syntax — pip parses [extra] as part
+    of the ref and the checkout fails. Always use "pkg[extra] @ git+url@ref" form.
+
+    This provides:
+      - dftracer.python.torch.trace_handler  (PyTorch Profiler → category PP)
+      - dftracer.python.dynamo.create_backend / @dynamo.compile  (Dynamo → category DY)
+      - ai.data.io, ai.checkpoint.io, ai.other.io  (explicit IO phases — ML-R25/R26/R27)
+
+    Verify after install:
+      python -c "from dftracer.python.torch import trace_handler; from dftracer.python.dynamo import create_backend; from dftracer.python import ai; assert hasattr(ai.data,'io')"
+
+    Store result:
+      PYTORCH_EXTRAS_OK = True on success, False on failure (record pitfall but continue)
+
 Print: "Setup complete. RUN_ID=<RUN_ID>  dftracer installed."
 
 
@@ -226,6 +248,101 @@ For every remaining file in OTHER_FILES:
                         tf.function itself.
   JAX (ML-R14):         Call jax.block_until_ready(result) inside annotated fns.
 
+  Numba/C-ext (ML-R30): NEVER apply @_dlp.log to @numba.njit, @numba.jit, or
+  Cython/C-extension functions — they raise "TypeError: unsupported callable" at
+  import time. Instead, rename to _<name>_impl and create a Python wrapper:
+    ```python
+    @numba.njit
+    def _fn_impl(x): ...
+
+    def fn(x):
+        _ctx = DFTracerFn("fn")
+        with _ctx:
+            return _fn_impl(x)
+    ```
+
+  Static methods (ML-R31): Always place @staticmethod ABOVE @_dlp.log_static.
+  Wrong order causes "got multiple values for argument" TypeError at call time:
+    ```python
+    # CORRECT              # WRONG
+    @staticmethod          @_dlp.log_static
+    @_dlp.log_static       @staticmethod
+    def fn(x): ...         def fn(x): ...
+    ```
+  After auto-annotation, batch-fix with:
+    `re.sub(r'@_dlp\.log_static\n(\s+)@staticmethod', r'@staticmethod\n\1@_dlp.log_static', txt)`
+
+### 4h. PyTorch Profiler integration (ML-R28) — when "pytorch" in FRAMEWORKS
+
+  When PYTORCH_EXTRAS_OK is True, inject the PyTorch Profiler wrapper into the
+  TRAIN_FILE that contains the batch loop. Do this AFTER python_annotate_ai_file
+  so the batch loop is already wrapped with dft_ai.dataloader.fetch.iter().
+
+  Inject at the top of the training file (after the dftracer import block):
+
+    ```python
+    from torch.profiler import profile, schedule, ProfilerActivity
+    from dftracer.python.torch import trace_handler as _dft_torch_trace_handler
+
+    _dft_prof_schedule = schedule(wait=1, warmup=1, active=3, repeat=1)
+    ```
+
+  Wrap the batch loop body with the profiler context (enclose the `for batch in ...`
+  loop, call `prof.step()` at end of each batch iteration):
+
+    ```python
+    with profile(
+        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+        schedule=_dft_prof_schedule,
+        on_trace_ready=_dft_torch_trace_handler,
+        record_shapes=True,
+        with_stack=False,
+    ) as _dft_prof:
+        for batch in dft_ai.dataloader.fetch.iter(loader):
+            # ... forward / backward / optimizer step ...
+            _dft_prof.step()
+    ```
+
+  Rules:
+    - Use ONLY `_dft_torch_trace_handler`; do NOT also set tensorboard handler.
+    - `prof.step()` must fire once per batch, inside the batch loop.
+    - schedule(wait=1, warmup=1, active=3) skips cold-start batches.
+    - Trace verification: category `PP` must appear in session_analyze_traces output.
+
+### 4i. PyTorch Dynamo integration (ML-R29) — when "pytorch" in FRAMEWORKS
+
+  When PYTORCH_EXTRAS_OK is True and the source calls `torch.compile` (or the
+  model would benefit from compile-level tracing), replace the bare
+  `model = torch.compile(model)` with the dftracer Dynamo backend.
+
+  At the top of the training file (after the dftracer import block):
+
+    ```python
+    from dftracer.python.dynamo import create_backend as _dft_create_backend
+    ```
+
+  In the training loop, replace bare `torch.compile(model)` with:
+
+    ```python
+    _dft_dynamo_backend = _dft_create_backend(name="<app_name>", epoch=epoch, step=step)
+    compiled_model = torch.compile(model, backend=_dft_dynamo_backend)
+    ```
+
+  If `torch.compile` is NOT present in the source, add it before the training loop:
+
+    ```python
+    # dftracer Dynamo tracing — wraps model forward pass at compile level
+    _dft_dynamo_backend = _dft_create_backend(name="<app_name>", epoch=0, step=0)
+    model = torch.compile(model, backend=_dft_dynamo_backend)
+    ```
+
+  Rules:
+    - Update epoch/step each iteration: recreate backend or call update() if available.
+    - Do NOT use both `@dynamo.compile` and `create_backend` on the same function.
+    - On AMD/ROCm without triton, compile falls back to eager — events still appear.
+    - Trace verification: category `DY` must appear in session_analyze_traces output.
+    - If model is already wrapped in DDP, apply torch.compile BEFORE DDP wrapping.
+
 Print per-file status after each file: ✓ <file> (<N> AI regions, <M> generic)
 
 
@@ -244,6 +361,8 @@ Check:
   ☐ ai.update(step=, epoch=) inside batch loop
   ☐ Comm ops use context manager style (not decorator)
   ☐ optimizer.step uses start/stop style (not decorator)
+  ☐ [pytorch] PyTorch Profiler wrapper injected (trace_handler, prof.step()) — ML-R28
+  ☐ [pytorch] Dynamo backend wired to torch.compile or model forward — ML-R29
 
 For any missing item:
   - Re-run python_annotate_ai_file for the relevant file
@@ -258,6 +377,8 @@ Print:
   │  Entry file:        <name>  initialize_log: YES/NO     │
   │  Frameworks:        <FRAMEWORKS>                       │
   │  HIP tracing:       <HIP_NEEDED>                       │
+  │  PyTorch Profiler:  YES/NO  (category PP expected)     │
+  │  PyTorch Dynamo:    YES/NO  (category DY expected)     │
   └────────────────────────────────────────────────────────┘
 
 Ask: "Proceed with build + trace run? [yes / no / fix <file> <feedback>]"
@@ -340,6 +461,18 @@ STEP 7 — TRACE COLLECTION + VERIFICATION
       PITFALLS.append({phase:"run", error:"HIP events absent from trace",
         root_cause:"DFTRACER_ENABLE_HIP_TRACING=ON not set at dftracer install time",
         fix:"Re-install dftracer with DFTRACER_ENABLE_HIP_TRACING=ON, re-run with DFTRACER_INIT=FUNCTION; if still absent fall back to HYBRID with LD_PRELOAD=libdftracer_preload.so"})
+
+    If "pytorch" in FRAMEWORKS and PYTORCH_EXTRAS_OK:
+
+      Check for category "PP" (PyTorch Profiler) — ML-R28:
+        If absent → PITFALLS.append({phase:"run", error:"PP category absent",
+          root_cause:"trace_handler not invoked — profiler context not entered or prof.step() not called",
+          fix:"Verify profiler `with profile(...)` block encloses the batch loop and prof.step() is called at end of each batch"})
+
+      Check for category "DY" (PyTorch Dynamo) — ML-R29:
+        If absent → PITFALLS.append({phase:"run", error:"DY category absent",
+          root_cause:"create_backend not passed to torch.compile, or torch.compile never executed a forward pass in this run",
+          fix:"Confirm torch.compile(model, backend=_dft_dynamo_backend) is called before the training loop; add at least one forward pass to the smoke test"})
 
     Print missing categories as warnings.
 

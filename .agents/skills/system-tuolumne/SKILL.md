@@ -243,7 +243,56 @@ patterns to find the ROCm version — no need to have the module pre-loaded.
 
 ### Environment consistency rules (ABI safety)
 
-These rules apply whenever installing or running any Python ML/DL app on Tuolumne:
+These rules apply whenever installing or running any Python ML/DL app on Tuolumne.
+**The install procedure and the run procedure share the same first three steps — this is what guarantees a consistent library stack.**
+
+#### Canonical Python environment setup (install AND run)
+
+```
+Step 1 — Load app modules
+  Source the app's install script (or its module block) to get the exact module stack
+  the app was designed for. Never guess or use a different set.
+  e.g.  source /usr/share/lmod/lmod/init/bash
+        module load cce/21.0.0 cray-mpich/9.1.0 rocm/7.1.1 rccl/fast-env-slows-mpi
+
+Step 2 — Load / activate extra software (source-built HDF5, custom libs, etc.)
+  Set LD_LIBRARY_PATH with session-local paths FIRST so they shadow system/anaconda versions.
+  e.g.  export LD_LIBRARY_PATH="$SESSION/install/hdf5/lib:$LD_LIBRARY_PATH"
+
+Step 3 — Activate the Python venv (shared by app + dftracer + all dependencies)
+  source "$SESSION/install/bin/activate"
+```
+
+Steps 1–3 are IDENTICAL in the install script and in every run script.
+This is the only way to guarantee that `ldd` of every `.so` shows the same libraries at install time and at runtime.
+
+#### Install-only steps (after step 3)
+
+```
+Step 4 — Set CC/CXX to the correct compiler
+  If MPI is in the stack: export CC=cc CXX=CC   (Cray MPI wrapper)
+  Otherwise:              export CC=gcc CXX=g++
+
+Step 5 — Install all app + dftracer + dependency packages with a single pip install
+  One pip invocation to resolve the full dependency graph consistently.
+  For packages that can't be pip-built on NFS (mpi4py), use manual wheel extraction
+  + patchelf (see item 4 below). For packages requiring source build (h5py), pass
+  HDF5_DIR=<session_hdf5> before the pip call.
+
+Step 6 — Verify every C-extension .so with ldd
+  After install, run ldd on key .so files:
+    - h5py:    ldd <venv>/lib/python3.13/site-packages/h5py/defs.cpython-313-*.so
+    - mpi4py:  ldd <venv>/lib/python3.13/site-packages/mpi4py/MPI.mpich.cpython-313-*.so
+    - dftracer: ldd <venv>/lib/python3.13/site-packages/dftracer/lib64/libdftracer_core.so
+    - torch:   ldd <venv>/lib/python3.13/site-packages/torch/lib/libtorch_python.so
+  Each must resolve to the session-local or module-provided library, NOT system/anaconda.
+  If any .so resolves to the wrong library, fix with patchelf --set-rpath or
+  --replace-needed BEFORE running anything.
+```
+
+The install.sh in `<session>/annotated/scripts/` is the single source of truth for the full stack.
+
+---
 
 1. **Isolated app venv** — `session_configure` creates `ws/install/` venv, separate
    from the agents' own `.venv`. Never mix them.
@@ -258,16 +307,37 @@ These rules apply whenever installing or running any Python ML/DL app on Tuolumn
    If FUNCTION produces an empty trace, fall back to `DFTRACER_INIT=HYBRID` with
    `LD_PRELOAD=<venv>/lib/.../libdftracer_preload.so`. PRELOAD-only is never used.
 
-4. **mpi4py compiled from source against the loaded Cray MPICH** — if `mpi4py`
-   is in the app's requirements, always install with:
-   `CC=$(which mpicc) CXX=$(which mpicxx) pip install --no-binary=mpi4py mpi4py`
-   while `cce/21.0.0` and `cray-mpich/9.1.0` are loaded.  Pre-built wheels link
-   to `libmpi_gnu.so.12` (generic MPICH); on Tuolumne the app runs against
-   `libmpi_cray.so.12` (CCE variant).  The ABI mismatch causes silent MPI
-   collective failures (MPI_Barrier, MPI_Comm_rank) mid-run — often presenting
-   as "Attempting to use an MPI routine after finalizing MPICH" errors.
-   Verify with: `ldd $(find <venv>/lib -name 'MPI*.so' | head -1) | grep mpi`
-   — must show `libmpi_cray.so.12`, not `libmpi_gnu.so.12`.
+4. **mpi4py on Python 3.13 with cray-mpich: use manylinux wheel + patchelf + MPI4PY_MPIABI** —
+   `mpi4py<4.0` can't build on Python 3.13 (old setuptools API). `mpi4py>=4.0` ships a
+   manylinux wheel with ABI-specific backends (`MPI.mpich.cpython-313-*.so`,
+   `MPI.openmpi.cpython-313-*.so`); auto-detection of the ABI fails on some Tuolumne
+   nodes. Use this install recipe:
+
+   ```bash
+   # 1. Download wheel to project tmp/ (pip NFS rename fails; extract manually)
+   pip download 'mpi4py==4.1.1' --no-deps -d "$SESSION/tmp"
+   # 2. Extract with Python (avoids pip's atomic-rename NFS issue)
+   python3 -c "
+   import zipfile, os, stat, sys
+   whl, site = sys.argv[1], sys.argv[2]
+   with zipfile.ZipFile(whl) as zf:
+       for m in zf.namelist():
+           if (m.startswith('mpi4py') and not m.startswith('mpi4py-')) or '.dist-info' in m:
+               d = os.path.join(site, m)
+               os.makedirs(os.path.dirname(d), exist_ok=True)
+               if not m.endswith('/'):
+                   open(d,'wb').write(zf.read(m))
+                   if m.endswith('.so'): os.chmod(d, 0o755)
+   " "$SESSION/tmp/mpi4py-4.1.1-cp313*.whl" "$VENV/lib/python3.13/site-packages"
+   # 3. Patch MPICH backend to find cray-mpich library
+   patchelf --replace-needed libmpi.so.12 libmpi_cray.so \
+     "$VENV/lib/python3.13/site-packages/mpi4py/MPI.mpich.cpython-313-x86_64-linux-gnu.so"
+   # 4. Set ABI env var in all run scripts — auto-detect fails on tuolumne[1764+] nodes
+   export MPI4PY_MPIABI=mpich
+   ```
+
+   **NEVER** use `--no-binary=mpi4py` on Python 3.13 + NFS (build succeeds but pip
+   rename to NFS fails with `[Errno 2] No such file or directory` on the output `.so`).
 
 5. **All dataset/fractal/checkpoint I/O on Lustre** — for AI/ML workloads,
    ALL data directories (fractals, datasets, checkpoints, trace output) must
@@ -289,7 +359,49 @@ These rules apply whenever installing or running any Python ML/DL app on Tuolumn
 7. **patchelf for SONAME mismatches** — after WCI wheel install, patch any `.so`
    still referencing `libmpi_gnu_112.so.12` → `libmpi_gnu.so.12` (see install script).
 
-8. **flux proxy always uses a wrapper script** — never pass `module load` or env
+8. **h5py source-build + patchelf: always fix RPATH after install** —
+   `pip install --no-binary=h5py h5py` with `HDF5_DIR=<session_hdf5>` source-builds h5py,
+   but pip adds anaconda's lib dir to RPATH FIRST (it was on PATH during compilation).
+   Result: anaconda's `libhdf5.so.310` is loaded at runtime instead of the session-built one.
+   Immediately after the pip install, fix all h5py `.so` RPATH entries:
+
+   ```bash
+   for so in "$VENV/lib/python3.13/site-packages/h5py/"*.so; do
+     patchelf --set-rpath "$SESSION/install/hdf5/lib" "$so"
+   done
+   ```
+
+   Verify: `objdump -p <h5py_so> | grep RUNPATH` should show ONLY the session HDF5 path.
+
+9. **dftracer + HDF5: patchelf dftracer libs + set DFTRACER_DISABLE_IO=1 for HDF5 workloads** —
+   dftracer pip wheels link against system `libhdf5.so.103` (1.10.x) via GOTCHA hooks. When a
+   session uses source-built HDF5 1.14.5 (`libhdf5.so.310`), two HDF5 instances load simultaneously.
+   GOTCHA hooks inherited by forked DataLoader workers cause `RuntimeError: Not a property list class`
+   in h5py. Two-step fix:
+
+   Step A — patchelf dftracer C libraries to use session HDF5:
+   ```bash
+   for so in "$VENV/lib/python3.13/site-packages/dftracer/lib64/libdftracer_core.so" \
+             "$VENV/lib/python3.13/site-packages/dftracer/lib64/libdftracer_preload.so"; do
+     patchelf --replace-needed libhdf5.so.103 libhdf5.so.310 "$so"
+     patchelf --set-rpath "$SESSION/install/hdf5/lib" "$so"
+   done
+   ```
+
+   NEVER set `DFTRACER_DISABLE_IO=1` — GOTCHA interception must stay active for complete HDF5
+   I/O tracing. The patchelf step above is the correct and complete fix.
+
+10. **Library stack consistency: enforce in install.sh, verify with ldd** —
+    Every session install script must build ALL C-extension packages (h5py, mpi4py, dftracer)
+    against session-local libraries. After each pip build, verify with ldd:
+    ```bash
+    ldd "$VENV/lib/python3.13/site-packages/h5py/defs.cpython-313-x86_64-linux-gnu.so" \
+      | grep -E "hdf5|mpi"
+    ```
+    No `/usr/lib64/libhdf5` or `/collab/...anaconda.../lib/libhdf5` should appear.
+    The install.sh in `<session>/annotated/scripts/` is the single source of truth.
+
+11. **flux proxy always uses a wrapper script** — never pass `module load` or env
    exports inline via `flux proxy <JOBID> bash -c "..."`. Always write the payload
    to `<ws>/tmp/<name>.sh` (sourcing `/usr/share/lmod/lmod/init/bash` at the top),
    then run `flux proxy <JOBID> bash <ws>/tmp/<name>.sh`. The MCP tools
@@ -316,7 +428,90 @@ flux proxy <JOBID> bash <ws>/tmp/run_benchmark.sh
 
 Use `-g=1` (1 GPU per task) in flux alloc for GPU-bound jobs.
 
+## Software / Library Discovery Rules
+
+**NEVER use `find /usr/tce`, `find /opt/cray`, `find /opt/rh`, or similar recursive
+filesystem searches to locate compilers, libraries, or tools.** These trees are very
+large and will exhaust system resources or time out.
+
+Instead, always discover software through the module system:
+
+```bash
+module avail hdf5          # find HDF5 installations
+module avail cray-hdf5     # Cray-specific HDF5
+module avail python        # Python versions
+module avail rocm          # ROCm versions
+module avail cray-mpich    # MPI variants
+module spider <name>       # detailed search including dependencies
+module show <module/ver>   # show paths and env vars for a specific module
+```
+
+Once a module is found, get its library and include paths from `module show`:
+
+```bash
+module show cray-hdf5/1.14.3.3
+# Look for HDF5_DIR, HDF5_ROOT, CPATH, LD_LIBRARY_PATH entries in output
+```
+
+### Module Compatibility and Inactive Module Detection
+
+After loading any module stack, **always check the output for "Inactive Modules"**:
+
+```
+Inactive Modules:
+  1) cray-hdf5-parallel/1.14.3.7
+```
+
+An inactive module means it is **incompatible with the current stack** and was
+silently disabled. Do NOT assume it is loaded.
+
+**Known incompatibility on Tuolumne**: loading
+`cce/21.0.0 cray-mpich/9.1.0 rocm/7.1.1 rccl/fast-env-slows-mpi`
+deactivates `cray-hdf5-parallel/1.14.3.7`.
+
+#### Rules by software type when a module goes inactive:
+
+**HDF5 (or any data-format library)** → **source install**:
+  The system HDF5 module is incompatible with the cce/cray-mpich/rocm stack.
+  Build HDF5 from source into the session workspace install prefix:
+  ```bash
+  wget https://support.hdfgroup.org/releases/hdf5/v1_14/v1_14_5/downloads/hdf5-1.14.5.tar.gz
+  tar xf hdf5-1.14.5.tar.gz && cd hdf5-1.14.5
+  ./configure --prefix=<WS>/install/hdf5 --enable-shared --disable-static
+  make -j8 && make install
+  HDF5_DIR=<WS>/install/hdf5 pip install --no-binary=h5py h5py
+  ```
+
+**MPI or Compiler** → **NEVER source install**. Always find the correct compatible
+  module combination. Strategy: load the **most constrained/dependent** software first
+  and let lmod resolve the rest. Example — loading `rccl/fast-env-slows-mpi` first
+  forces the correct `cce`, `cray-mpich`, and `rocm` versions automatically:
+  ```bash
+  module load rccl/fast-env-slows-mpi    # most constrained → forces others
+  module list 2>&1 | grep -A5 "Inactive" # verify nothing went inactive
+  ```
+  If MPI is still inactive, use `module spider <mpi_module>` to find the required
+  prerequisite chain, then load those first.
+
+#### Detecting inactive modules in wrapper scripts
+
+Add this guard after any `module load` block:
+
+```bash
+INACTIVE=$(module list 2>&1 | awk '/Inactive Modules/{f=1; next} f && /^$/{f=0} f{print}')
+if [ -n "$INACTIVE" ]; then
+  echo "ERROR: Inactive modules detected: $INACTIVE" >&2
+  exit 1
+fi
+```
+
 ## Notes
 
 - APU means CPU and GPU share memory — no explicit data transfer needed between host and device.
 - If `module` commands fail, ensure `StdEnv` is active: `module list | grep StdEnv`.
+- h5py installed via plain `pip install h5py` bundles its own HDF5 (fork-unsafe).
+  On Tuolumne, `cray-hdf5` goes Inactive with the cce/cray-mpich/rocm stack, so
+  `module load cray-hdf5` is not an option. Instead: build HDF5 from source and
+  install h5py against it (see Software / Library Discovery Rules above). As a
+  temporary workaround, set `multiprocessing_context="spawn"` on DataLoader to
+  avoid fork-safety issues — but source-built HDF5 is the permanent fix.

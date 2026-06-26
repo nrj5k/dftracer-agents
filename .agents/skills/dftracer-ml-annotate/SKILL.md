@@ -634,7 +634,102 @@ STEP 7 — TRACE COLLECTION + VERIFICATION
 
 
 ══════════════════════════════════════════════════════════════════════
-STEP 8 — UPDATE LESSONS LEARNED  (MANDATORY — always run)
+STEP 8 — TRACE ORGANIZATION (MANDATORY)
+══════════════════════════════════════════════════════════════════════
+
+All traces MUST be organized in the session workspace under a consistent hierarchy
+so runs are comparable and reproducible. Never leave raw traces flat in traces/.
+
+Structure:
+  <WS>/traces/
+    baseline/
+      raw/         ← DFTRACER_LOG_FILE points here (e.g. <WS>/traces/baseline/raw)
+      compact/     ← split output (dftracer split → <WS>/traces/baseline/compact)
+    opt1/
+      raw/
+      compact/
+    opt2/
+      raw/
+      compact/
+    ...
+
+Rules:
+  1. Set DFTRACER_LOG_FILE=<WS>/traces/<label>/raw/<app_name> before each run.
+  2. After each run, split immediately: dftracer split → <WS>/traces/<label>/compact/
+  3. Label convention: "baseline", "opt1", "opt2", ... matching session_optimization_iteration numbering.
+  4. Never write DFTRACER_LOG_FILE to Lustre for optimization pipeline runs — the MCP
+     tools only scan the project workspace for traces.
+
+When `session_optimization_iteration` runs the profile step, ensure its command
+sets DFTRACER_LOG_FILE inside the workspace, not on Lustre:
+  env_extra = {"DFTRACER_LOG_FILE": "<WS>/traces/<label>/raw/<app_name>"}
+
+
+══════════════════════════════════════════════════════════════════════
+STEP 9 — PATCH GENERATION (MANDATORY — run after every annotation and every opt iteration)
+══════════════════════════════════════════════════════════════════════
+
+Every change made during annotation or optimization MUST be captured as a unified diff
+patch stored in `<WS>/patches/` so the work is reproducible and PR-ready.
+
+### Patch structure:
+
+  <WS>/patches/
+    npy_annotation.patch          ← annotated/ScaFFold vs source/ScaFFold (full annotation diff)
+    hdf5_data_loading.patch       ← HDF5 I/O changes only (data_loading.py annotated vs source)
+    scripts_and_configs.patch     ← all new run/install scripts + new configs (new-file diffs)
+    opt1_<description>.patch      ← diff between annotated/ and opt1/annotated_snapshot/
+    opt2_<description>.patch      ← diff between opt1/ and opt2/
+    dftracer_upstream_<fix>.patch ← patches to pydftracer site-packages (upstream PR candidates)
+
+### When to generate each patch:
+
+  After Step 4 (annotation): generate `npy_annotation.patch` and `hdf5_data_loading.patch`
+  After each run script is written: regenerate `scripts_and_configs.patch`
+  After each `session_optimization_iteration`: generate `opt<N>_<description>.patch`
+  After any dftracer site-packages fix: generate `dftracer_upstream_<fix>.patch`
+
+### How to generate (use session_snapshot_l1_source or raw diff):
+
+  # Full annotation patch
+  diff -ruN --exclude="__pycache__" --exclude="*.pyc" \
+    <WS>/source/ScaFFold/ <WS>/annotated/ScaFFold/ \
+    > <WS>/patches/npy_annotation.patch
+
+  # Single-file HDF5 patch
+  diff -u <WS>/source/ScaFFold/utils/data_loading.py \
+          <WS>/annotated/ScaFFold/utils/data_loading.py \
+    > <WS>/patches/hdf5_data_loading.patch
+
+  # New scripts (no source equivalent) — new-file format
+  for f in <WS>/annotated/ScaFFold/scripts/*.sh <WS>/annotated/ScaFFold/configs/<new>.yml; do
+    rel="${f#<WS>/annotated/ScaFFold/}"
+    { echo "--- /dev/null"; echo "+++ b/$rel"
+      echo "@@ -0,0 +1,$(wc -l < "$f") @@"; sed 's/^/+/' "$f"; echo ""; }
+  done > <WS>/patches/scripts_and_configs.patch
+
+  # Opt iteration delta patch
+  diff -ruN --exclude="__pycache__" --exclude="*.pyc" \
+    <WS>/opt<N-1>/annotated_snapshot/ <WS>/opt<N>/annotated_snapshot/ \
+    > <WS>/patches/opt<N>_<description>.patch
+
+  # dftracer upstream patch
+  diff -u <original_common.py> <fixed_common.py> > <WS>/patches/dftracer_upstream_torch_input_shapes.patch
+
+### Rules:
+  - NEVER skip patch generation — patches are the audit trail for PRs.
+  - Regenerate after every file change; stale patches are worse than none.
+  - Use `session_snapshot_l1_source` MCP tool to capture opt iteration snapshots
+    before generating opt<N> patches.
+  - Patches in `<WS>/patches/` are source-controlled alongside the session.
+  - After `session_optimization_iteration`, call `session_snapshot_l1_source`
+    BEFORE the next iteration so each opt<N> delta is clean.
+
+Print: "Patches written to <WS>/patches/ — <N> files"
+
+
+══════════════════════════════════════════════════════════════════════
+STEP 10 — UPDATE LESSONS LEARNED  (MANDATORY — always run)
 ══════════════════════════════════════════════════════════════════════
 
 This step runs whether or not the pipeline completed. Any pitfall discovered
@@ -671,7 +766,53 @@ Print: "Lessons file updated: workspaces/.agents/skills/dftracer-ml-annotation-l
 
 
 ══════════════════════════════════════════════════════════════════════
-STEP 9 — SESSION REPORT
+STEP 11 — FINAL COMPARATOR REPORT  (MANDATORY — always run at session end)
+══════════════════════════════════════════════════════════════════════
+
+After all optimization iterations are complete (or at the end of any profiling session
+with ≥2 trace sets), run the dftracer comparator across all compact trace directories
+and present the results to the user.
+
+11a. Run comparator:
+
+    comparator(
+      traces=[
+        "<WS>/traces/baseline/compact",
+        "<WS>/traces/opt1/compact",
+        ...
+      ],
+      labels=["baseline", "opt1", ...],
+      metrics=["time", "bandwidth", "iops", "metadata_ops"],
+    )
+
+11b. Present results as a color-coded table with three highlight classes:
+  🟢 GREEN  — metric improved by > 5%  (positive change)
+  🔴 RED    — metric regressed by > 5% (negative change)
+  ⚪ NEUTRAL — metric within ±5%       (no significant change)
+
+  Format:
+
+  | Metric              | baseline | opt1    | Δ%      | Trend |
+  |---------------------|----------|---------|---------|-------|
+  | Total I/O time (s)  | 12.4     | 8.1     | -35%    | 🟢    |
+  | Read BW (MB/s)      | 220      | 310     | +41%    | 🟢    |
+  | Write BW (MB/s)     | 180      | 175     | -3%     | ⚪    |
+  | IOPS                | 450      | 980     | +118%   | 🟢    |
+  | Metadata ops/s      | 1200     | 800     | -33%    | 🔴    |
+  | data.io.read (ms)   | 45       | 28      | -38%    | 🟢    |
+  | other.io.write (ms) | 3.2      | 3.1     | -3%     | ⚪    |
+
+11c. Follow the table with a 3–5 sentence analyst summary:
+  - What changed and why (link to optimization applied)
+  - What regressed and what to investigate next
+  - Overall verdict: net improvement / neutral / net regression
+
+Print this report as the LAST output of every session so the user has a
+single consolidated view of what changed.
+
+
+══════════════════════════════════════════════════════════════════════
+STEP 13 — SESSION REPORT
 ══════════════════════════════════════════════════════════════════════
 
 Write <WS>/session_report.md with:
@@ -737,6 +878,7 @@ TOOL REFERENCE
 | Analyze traces                        | session_analyze_traces            |
 | Search local optimization papers      | session_search_local_papers       |
 | Append lesson to lessons file         | session_ml_append_lesson          |
+| Compare ≥2 trace sets (final report)  | comparator                        |
 
 NEVER:
   • Use Edit/Write to manually insert decorators into source files
@@ -750,6 +892,13 @@ NEVER:
     looks for traces in the session workspace (<WS>/traces/); write there instead
   • Use -n <total_procs> with torchrun-hpc — the -n flag is procs-PER-NODE;
     for 8 nodes × 4 GPUs/node use: torchrun-hpc -N 8 -n 4 --gpus-per-proc 1
+  • Skip the final comparator report — it is MANDATORY at the end of every session
+  • Use `find /usr/tce`, `find /opt/cray` etc. — use `module avail <name>` instead
+  • Install h5py with plain `pip install h5py` on Tuolumne — bundled HDF5 clashes
+    with system HDF5 in forked DataLoader workers; use `module load cray-hdf5 &&
+    HDF5_DIR=$HDF5_DIR pip install --no-binary=h5py h5py` instead
+  • Keep install/run scripts in tmp/ — always write them to annotated/scripts/ or
+    opt<N>/scripts/ so they are tracked with the source and reproducible
 
 
 ══════════════════════════════════════════════════════════════════════
