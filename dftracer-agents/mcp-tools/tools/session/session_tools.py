@@ -155,9 +155,23 @@ def _extract_module_load_lines(source_dir: Path) -> List[str]:
             if not stripped or stripped.startswith("#"):
                 continue
             if module_re.match(stripped):
-                if stripped not in seen:
-                    seen.add(stripped)
-                    lines.append(stripped)
+                # Lines are often compound (e.g. "ml load python/3.13.2 &&
+                # python3 -m venv .venv && pip install ..."). Only keep the
+                # leading module-load segment(s); stop at the first "&&"
+                # segment that is not itself a module command, so we never
+                # prepend venv-creation / pip-install / activate commands
+                # into an unrelated run's preamble.
+                segments = [s.strip() for s in stripped.split("&&")]
+                kept = []
+                for seg in segments:
+                    if module_re.match(seg):
+                        kept.append(seg)
+                    else:
+                        break
+                module_only = " && ".join(kept)
+                if module_only and module_only not in seen:
+                    seen.add(module_only)
+                    lines.append(module_only)
     return lines
 
 
@@ -331,8 +345,11 @@ def _ensure_flux_proxy_wrapper(command: str, ws: Path, script_name: str) -> str:
     proxy_prefix = m.group(1)   # e.g. "flux proxy f3GW7fbdvodR"
     rest = m.group(2).strip()   # e.g. 'bash -c "module load ..."' or 'bash /path/to/script.sh'
 
-    # If rest is already "bash <existing_script.sh>", no wrapping needed.
-    bash_script_m = _re.match(r'^bash\s+(\S+\.sh)$', rest)
+    # If rest already references an existing "bash <script.sh>" invocation
+    # anywhere in the string (e.g. "flux run ... bash wrapper.sh args..."),
+    # no wrapping is needed — the referenced script is expected to handle
+    # its own lmod/module initialisation internally.
+    bash_script_m = _re.search(r'\bbash\s+(\S+\.sh)\b', rest)
     if bash_script_m:
         script_path = bash_script_m.group(1)
         if Path(script_path).exists():
@@ -477,6 +494,14 @@ def _session_run_with_dftracer_impl(
     # do NOT go to Lustre because the MCP analysis tools (session_split_traces,
     # session_analyze_traces, session_optimization_iteration) read from the
     # workspace directory, not from Lustre.
+    #
+    # Clear any stale files left behind by a previous attempt for this same
+    # run_name (e.g. an orphaned flux job whose Python-side subprocess.run
+    # was killed by a timeout but which kept running on the cluster and wrote
+    # trace files after the fact) — otherwise a later, successful attempt
+    # would silently read a mix of old and new trace data.
+    import shutil as _sh_traces
+    _sh_traces.rmtree(str(_run_dir(ws, run_name) / "traces" / "raw"), ignore_errors=True)
     traces_dir = _run_traces_raw(ws, run_name)
 
     cwd = ws / subfolder
@@ -485,9 +510,14 @@ def _session_run_with_dftracer_impl(
     if not cwd.exists():
         cwd = ws / "source"
 
-    # Use <run_name> as the trace file prefix so files are named
-    # <run_name>-<hash>-.pfw.gz and are easy to identify per iteration.
-    log_file_prefix = str(traces_dir / run_name)
+    # Use <run_name>-<attempt> as the trace file prefix so files are named
+    # <run_name>-<attempt>-<hash>-.pfw.gz. The attempt suffix is unique per
+    # call (not just per run_name) so that an orphaned process from a killed
+    # attempt can never write into the same file prefix a later attempt uses,
+    # even if it isn't actually terminated by the timeout.
+    import uuid as _uuid_traces
+    attempt_suffix = _uuid_traces.uuid4().hex[:8]
+    log_file_prefix = str(traces_dir / f"{run_name}-{attempt_suffix}")
 
     env: Dict[str, str] = {
         "DFTRACER_ENABLE": "1",
@@ -507,7 +537,7 @@ def _session_run_with_dftracer_impl(
     preamble = _build_module_preamble(ws / "source")
     run_command = (preamble + command) if preamble else command
 
-    r = _run(["/bin/sh", "-c", run_command], cwd=cwd, env=env, timeout=timeout)
+    r = _run(["/bin/bash", "-c", run_command], cwd=cwd, env=env, timeout=timeout)
     _save_state(run_id, {
         "step": "ran_with_dftracer",
         "dftracer_run": {"command": command, "run_name": run_name, **r},
@@ -1300,7 +1330,7 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         if preamble:
             safe_command = preamble + safe_command
 
-        r = _run(["/bin/sh", "-c", safe_command], cwd=cwd, env=env, timeout=timeout)
+        r = _run(["/bin/bash", "-c", safe_command], cwd=cwd, env=env, timeout=timeout)
         _save_state(run_id, {"last_smoke_test": {"command": safe_command, **r}})
         _write_artifact_log(_ws(run_id), 5, "session_run_smoke_test", {
             "command_original": command,

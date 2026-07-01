@@ -1,8 +1,10 @@
 """
-Custom build hook: copies .agents/ from the project root into
+Custom build hook: links .agents/ from the project root into
 dftracer-agents/.agents/ before each build so the skills are
-always in sync and included in the installed package.
+included in the installed package without duplicating the files
+on disk (a symlink, not a copy).
 """
+import os
 import shutil
 from pathlib import Path
 
@@ -16,9 +18,12 @@ class BuildPy(build_py):
         src = root / ".agents"
         dst = root / "dftracer-agents" / ".agents"
         if src.exists():
-            if dst.exists():
-                shutil.rmtree(dst)
-            shutil.copytree(src, dst)
+            if dst.is_symlink() or dst.exists():
+                if dst.is_symlink() or dst.is_file():
+                    dst.unlink()
+                else:
+                    shutil.rmtree(dst)
+            dst.symlink_to(os.path.relpath(src, dst.parent), target_is_directory=True)
         super().run()
 
 

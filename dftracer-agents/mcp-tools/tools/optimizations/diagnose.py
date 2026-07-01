@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastmcp import FastMCP
@@ -18,16 +19,56 @@ def _session_diagnose_bottlenecks_impl(
     view_types: Optional[str] = "time_range",
     metric_boundaries: Optional[str] = None,
     timeout: int = 600,
+    traces_dir: Optional[str] = None,
 ) -> str:
     """Implementation of session_diagnose_bottlenecks (callable without MCP).
 
     Shared between the MCP tool and session_optimization_iteration.
+
+    Args:
+        traces_dir: Optional explicit path to the split/compact trace
+            directory to analyze. Defaults to ``<ws>/traces_split/`` (the
+            standalone-tool convention). ``session_optimization_iteration``
+            passes its own per-iteration ``<ws>/opt{N}/traces/compact/``
+            directory here — without this, every iteration would silently
+            re-analyze whatever is sitting in the shared ``traces_split/``
+            directory instead of that iteration's own freshly-collected data.
     """
     ws = _ws(run_id)
-    traces_split = ws / "traces_split"
+    try:
+        return _session_diagnose_bottlenecks_impl_inner(
+            run_id, ws, analyzer_preset, view_types, metric_boundaries, timeout, traces_dir,
+        )
+    except Exception as _exc:
+        import traceback as _tb
+        crash_file = ws / "diagnosis_crash.json"
+        crash_file.write_text(json.dumps({
+            "run_id": run_id,
+            "traces_dir": traces_dir,
+            "exception": str(_exc),
+            "traceback": _tb.format_exc(),
+        }, indent=2))
+        return _err(
+            f"_session_diagnose_bottlenecks_impl raised an unexpected exception: {_exc}",
+            run_id=run_id,
+            crash_file=str(crash_file),
+            traceback=_tb.format_exc(),
+        )
+
+
+def _session_diagnose_bottlenecks_impl_inner(
+    run_id: str,
+    ws: Path,
+    analyzer_preset: str,
+    view_types: Optional[str],
+    metric_boundaries: Optional[str],
+    timeout: int,
+    traces_dir: Optional[str],
+) -> str:
+    traces_split = Path(traces_dir) if traces_dir else (ws / "traces_split")
     if not traces_split.exists():
         return _err(
-            "traces_split/ not found — run session_split_traces first",
+            f"{traces_split} not found — run session_split_traces first",
             run_id=run_id,
         )
 

@@ -36,8 +36,38 @@ After loading modules, set:
 
 ```bash
 GCC_MODULE="cce/20.0.0"
-export LD_LIBRARY_PATH="/opt/cray/pe/${GCC_MODULE}/cce/x86_64/lib:/opt/cray/pe/${GCC_MODULE}/cce/x86_64/lib/default64:${LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="/opt/cray/pe/${GCC_MODULE}/cce/x86_64/lib:/opt/cray/pe/${GCC_MODULE}/cce/x86_64/lib/default64:/usr/lib64:${LD_LIBRARY_PATH}"
 echo "Updated LD_LIBRARY_PATH for CCE: $LD_LIBRARY_PATH"
+```
+
+### Pitfall: anaconda `compiler_compat/ld` breaks native C/C++ builds (undefined ZSTD_* references)
+
+When building native extensions via a Python from
+`/collab/usr/gapps/python/toss_4_x86_64_ib/anaconda3-*` (e.g. `pip install -e .`
+for `dftracer-utils`/`dftracer-agents`), the link step can fail with errors like:
+
+```
+.../anaconda3-2025.3.1/compiler_compat/ld: lib/librocksdb.so.10.10.1: undefined reference to `ZSTD_CCtx_setParameter'
+.../anaconda3-2025.3.1/compiler_compat/ld: lib/libdftracer_utils_utilities.so.0.0.10: undefined reference to `ZSTD_compress'
+```
+
+**Root cause**: PATH resolution picks anaconda's `compiler_compat/ld` ahead of
+the Cray `ld` (`/opt/cray/pe/cce/20.0.0/binutils/.../ld`). That `ld` was built
+with a relocatable/placeholder default sysroot, so its built-in
+`SEARCH_DIR("=/usr/lib64")` resolves to a nonexistent placeholder path instead
+of the real `/usr/lib64` — even though `/usr/lib64/libzstd.so` (with all the
+needed symbols) is present on the system. GNU `ld` also consults
+`LD_LIBRARY_PATH` as a fallback search path, so including `/usr/lib64` there
+(as in the export above) is sufficient to work around the broken sysroot
+without needing to touch PATH or find a different `ld`.
+
+**Verify the fix** before a full rebuild:
+
+```bash
+echo 'extern void *ZSTD_createCDict(const void*, unsigned long, int); int main(){ZSTD_createCDict(0,0,0);return 0;}' > /tmp/zstd_test.c
+gcc /tmp/zstd_test.c -o /tmp/zstd_test -lzstd \
+  -B/collab/usr/gapps/python/toss_4_x86_64_ib/anaconda3-2025.3.1/compiler_compat
+# Should link and run cleanly once LD_LIBRARY_PATH includes /usr/lib64.
 ```
 
 ## I/O and Workspace

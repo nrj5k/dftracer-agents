@@ -142,6 +142,7 @@ def register_iteration_tools(mcp: FastMCP) -> None:
             * ``recommendation``  — plain-text guidance for the next step.
         """
         import json as _json
+        import shutil as _sh
 
         state = _load_state(run_id)
         history: list = state.get("optimization_history", [])
@@ -226,15 +227,15 @@ def register_iteration_tools(mcp: FastMCP) -> None:
                 "profile": profile_result,
                 "iteration": iteration,
             })
-        profile_summary = {
-            "returncode": profile_result.get("returncode"),
-            "elapsed_s":  profile_result.get("elapsed_s"),
-            "trace_files": profile_result.get("trace_files", []),
-        }
-
         # ── Step 3: split traces into per-iteration compact dir ──────────────
         # Reads from ws/<run_name>/traces/raw/, writes to ws/<run_name>/traces/compact/
         _session_split_traces_impl(run_id=run_id, app_name=app_name, run_name=run_name)
+        profile_summary = {
+            "returncode": profile_result.get("returncode"),
+            "elapsed_s":  profile_result.get("elapsed_s"),
+            "trace_files": [str(p) for p in iter_traces_dir.glob("*.pfw.gz")]
+                            + [str(p) for p in iter_traces_dir.glob("*.pfw")],
+        }
 
         # ── Step 3b: compare against previous iteration traces ───────────────
         comparison: Dict[str, Any] = {}
@@ -277,7 +278,14 @@ def register_iteration_tools(mcp: FastMCP) -> None:
             import shutil as _sh2
             _sh2.rmtree(str(_ckpt))
         _ckpt.mkdir(exist_ok=True)
-        raw = _session_diagnose_bottlenecks_impl(run_id=run_id, timeout=timeout)
+        # Use the DLIO preset for ML/DL workloads so dfanalyzer surfaces
+        # dataloader/compute-specific metrics (e.g. data_loader_ops_slope,
+        # compute_ops_slope) instead of only generic POSIX metrics.
+        _preset = "dlio" if (state.get("frameworks") or state.get("ml_frameworks_list")) else "posix"
+        raw = _session_diagnose_bottlenecks_impl(
+            run_id=run_id, timeout=timeout, traces_dir=str(iter_split_dir),
+            analyzer_preset=_preset,
+        )
         diag_result = _json.loads(raw)
         current_bottlenecks: list = diag_result.get("bottlenecks", [])
         diag_summary = {
