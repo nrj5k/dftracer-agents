@@ -38,6 +38,7 @@ from .strategies import (
     _metric_category,
     _DL_ALWAYS_ON_METRICS,
 )
+from .memory import _memory_retrieve, _memory_write, _memory_reflect
 
 
 def register_iteration_tools(mcp: FastMCP) -> None:
@@ -340,26 +341,65 @@ def register_iteration_tools(mcp: FastMCP) -> None:
             description = bn.get("description", "")
             severity    = bn.get("severity", "")
 
-            queries = _bottleneck_search_queries(
-                metric=metric,
-                description=description,
-                sys_context=sys_context,
-                max_queries=max_attempts,
-            )
-
             found_papers: List[Dict[str, Any]] = []
             queries_tried: List[str] = []
 
-            for q in queries:
-                queries_tried.append(q)
-                papers = _fetch_arxiv_papers(q, n=n_papers)
-                for p in papers:
-                    title_key = p["title"].lower()[:80]
-                    if title_key not in seen_titles:
-                        seen_titles.add(title_key)
-                        found_papers.append({**p, "query": q, "bottleneck": metric})
+            # ── Agentic RAG: read Tier-2 project memory before searching ────
+            # A citation already validated (improved/resolved a matching
+            # bottleneck, here or in a prior session) is used directly,
+            # skipping the live arXiv round-trip entirely. A record with
+            # only failed attempts (negative confidence) is not surfaced,
+            # so the loop naturally re-searches instead of repeating a
+            # known-bad fix.
+            mem_matches = _memory_retrieve(metric, sys_context, k=1)
+            if mem_matches and mem_matches[0].get("successes", 0) > mem_matches[0].get("failures", 0):
+                m = mem_matches[0]
+                cite = m.get("citation", {})
+                found_papers.append({
+                    "title":     cite.get("title", m.get("strategy_title", "")),
+                    "authors":   cite.get("authors", []),
+                    "published": f"{cite.get('year','')}-01-01" if cite.get("year") else "",
+                    "abstract":  f"Retrieved from project memory: used {m.get('uses',0)}x, "
+                                 f"{m.get('successes',0)} success(es), {m.get('failures',0)} failure(s).",
+                    "url":       cite.get("url", ""),
+                    "query":     "<memory>",
+                    "bottleneck": metric,
+                    "source":    "memory",
+                })
+            else:
+                queries = _bottleneck_search_queries(
+                    metric=metric,
+                    description=description,
+                    sys_context=sys_context,
+                    max_queries=max_attempts,
+                )
+                for q in queries:
+                    queries_tried.append(q)
+                    papers = _fetch_arxiv_papers(q, n=n_papers)
+                    for p in papers:
+                        title_key = p["title"].lower()[:80]
+                        if title_key not in seen_titles:
+                            seen_titles.add(title_key)
+                            found_papers.append({**p, "query": q, "bottleneck": metric, "source": "arxiv"})
+                    if found_papers:
+                        break  # stop as soon as at least one paper is found
+                # Record the attempt in Tier-2 memory (outcome unknown yet —
+                # session_optimization_iteration's next call reflects on it).
                 if found_papers:
-                    break  # stop as soon as at least one paper is found
+                    top = found_papers[0]
+                    _memory_write(
+                        metric=metric,
+                        sys_context=sys_context,
+                        strategy_title=top.get("title", "")[:120],
+                        citation={
+                            "authors": top.get("authors", []),
+                            "title":   top.get("title", ""),
+                            "venue":   f"arXiv {(top.get('published') or '')[:4]}",
+                            "year":    (top.get("published") or "")[:4],
+                            "url":     top.get("url", ""),
+                        },
+                        source="searched",
+                    )
 
             entry = {
                 "bottleneck":    metric,
@@ -528,6 +568,12 @@ def register_iteration_tools(mcp: FastMCP) -> None:
         history.append(entry)
         _save_state(run_id, {"optimization_history": history, "step": "optimization_loop"})
 
+        # ── Agentic RAG: reflect — write back whether the *previous*
+        # iteration's cited fix actually worked, now that this iteration's
+        # delta makes that observable. No-op on the baseline (iteration 0).
+        memory_reflection = _memory_reflect(run_id, iteration=iteration) if iteration > 0 else \
+            {"written": 0, "detail": "baseline iteration — nothing to reflect on yet"}
+
         # Save full literature results to workspace for reference
         lit_file = ws / f"optimization_literature_iter{iteration}.json"
         iter_summary = {
@@ -565,6 +611,7 @@ def register_iteration_tools(mcp: FastMCP) -> None:
             iter_dir=str(iter_dir),
             citations=citations,
             recommendation=recommendation,
+            memory_reflection=memory_reflection,
         )
 
     @mcp.tool()

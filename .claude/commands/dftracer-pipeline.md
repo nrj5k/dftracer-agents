@@ -694,6 +694,14 @@ If yes:
         already fully addressed in a prior iteration (no new proposals
         means no proposal box for that bottleneck).
 
+        NOTE: session_optimization_iteration already reads Tier-2 project
+        memory (session_memory_retrieve) before issuing a live arXiv query
+        for each bottleneck, and auto-reflects (session_memory_write via
+        session_memory_reflect) on the previous iteration's outcome once
+        this iteration's delta is known — see 'memory_reflection' in its
+        return value. Use session_memory_stats() to inspect what the loop
+        has learned across all sessions on this system.
+
     8d-v. Update the loop state table and print a one-line delta summary
         derived from the comparator output:
 
