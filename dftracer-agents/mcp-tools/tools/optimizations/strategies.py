@@ -122,7 +122,92 @@ _METRIC_SYNONYM_PAIRS: Dict[str, List[tuple]] = {
         ("elastic training optimization",              "fault tolerant training I/O"),
         ("synchronous SGD straggler",                  "all-reduce optimization HPC"),
     ],
+    "fs_bw": [
+        ("parallel filesystem bandwidth utilization",  "storage system throughput HPC"),
+        ("OST bandwidth balance Lustre",                "filesystem contention optimization"),
+        ("storage system utilization study HPC",        "parallel file system workload characterization"),
+        ("I/O bandwidth saturation shared filesystem",  "filesystem client tuning HPC"),
+        ("production filesystem bandwidth analysis",    "storage utilization deep learning HPC"),
+    ],
+    "comm": [
+        ("MPI collective communication optimization",  "collective algorithm selection HPC"),
+        ("MPI point-to-point latency optimization",     "network communication overlap HPC"),
+        ("all-reduce communication optimization",       "gradient communication overlap distributed training"),
+        ("communication computation overlap MPI",       "non-blocking collective optimization"),
+        ("interconnect topology-aware communication",   "collective communication tuning HPC"),
+    ],
+    "mem_bw": [
+        ("memory bandwidth optimization HPC",          "STREAM benchmark memory-bound kernel"),
+        ("NUMA memory locality optimization",           "cache-aware data layout HPC"),
+        ("memory access pattern optimization",          "cache blocking tiling optimization"),
+        ("memory-bound kernel optimization",            "data locality optimization HPC"),
+        ("bandwidth-limited loop kernel optimization",  "memory hierarchy optimization HPC"),
+    ],
+    "compute": [
+        ("roofline compute optimization HPC",          "arithmetic intensity optimization"),
+        ("compute kernel vectorization optimization",   "SIMD optimization HPC"),
+        ("GPU utilization optimization deep learning",  "kernel occupancy optimization"),
+        ("compute bound optimization parallel",         "instruction-level parallelism optimization"),
+        ("floating point performance optimization HPC", "compute throughput tuning"),
+    ],
 }
+
+#: Canonical optimization-loop order: I/O first, then communication, then
+#: memory, then compute.  Bottlenecks and proposals are always addressed in
+#: this order regardless of raw severity score, so I/O issues (the cheapest
+#: and highest-leverage fixes in most HPC/DL workloads) are never starved by
+#: a lower tier of the stack.
+_CATEGORY_ORDER: List[str] = ["io", "communication", "memory", "compute"]
+
+#: Metric-name fragment -> optimization category. Checked in fragment order;
+#: first match wins. Anything unmatched defaults to "io" since the current
+#: DFDiagnoser presets are still primarily I/O-metric based.
+_METRIC_CATEGORY: Dict[str, str] = {
+    "comm":            "communication",
+    "mpi_wait":        "communication",
+    "collective":      "communication",
+    "sync_time":       "communication",
+    "allreduce":       "communication",
+    "mem_bw":          "memory",
+    "memory":          "memory",
+    "cache_miss":      "memory",
+    "numa":            "memory",
+    "compute":         "compute",
+    "cpu_bound":       "compute",
+    "gpu_util":        "compute",
+    "flops":           "compute",
+    # Everything else (small_io, read_time, write_time, metadata, fetch_pressure,
+    # epoch_straggler, fs_bw, rand, seq, imbalance, bw, intensity, checkpoint, ...)
+    # is an I/O-tier metric.
+}
+
+#: DL-specific dimensions that must always be evaluated in every optimization
+#: iteration for deep-learning workloads, independent of raw severity ranking:
+#:   1. application dataloader / epoch-time performance
+#:   2. filesystem bandwidth / utilization for the storage the run is on
+_DL_ALWAYS_ON_METRICS: Dict[str, List[str]] = {
+    "dataloader_epoch": ["fetch_pressure", "epoch_straggler"],
+    "fs_bandwidth":     ["fs_bw", "bw", "imbalance"],
+}
+
+
+def _metric_category(metric: str) -> str:
+    """Classify *metric* into one of ``_CATEGORY_ORDER`` (default: ``"io"``)."""
+    m = (metric or "").lower()
+    for fragment, category in _METRIC_CATEGORY.items():
+        if fragment in m:
+            return category
+    return "io"
+
+
+def _category_sort_key(bottleneck: Dict[str, Any]) -> tuple:
+    """Sort key enforcing I/O -> communication -> memory -> compute ordering,
+    with severity as the tiebreaker within a category."""
+    _SEV = {"trivial": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+    cat = _metric_category(bottleneck.get("metric", ""))
+    cat_rank = _CATEGORY_ORDER.index(cat) if cat in _CATEGORY_ORDER else len(_CATEGORY_ORDER)
+    sev_rank = _SEV.get(bottleneck.get("severity", "trivial"), 0)
+    return (cat_rank, -sev_rank)
 
 # Broadest final-fallback queries used when all metric-specific attempts exhaust
 _GENERAL_FALLBACK_QUERIES = [
@@ -190,6 +275,56 @@ _BUILTIN_REFS: Dict[str, Dict[str, Any]] = {
         "year": "2022",
         "url": "https://ieeexplore.ieee.org/document/10027503",
     },
+    "mpi_collective": {
+        "authors": ["Thakur, R.", "Rabenseifner, R.", "Gropp, W."],
+        "title": "Optimization of Collective Communication Operations in MPICH",
+        "venue": "Intl. Journal of High Performance Computing Applications, 19(1), pp. 49–66",
+        "year": "2005",
+        "url": "https://doi.org/10.1177/1094342005051521",
+    },
+    "stream": {
+        "authors": ["McCalpin, J.D."],
+        "title": "Memory Bandwidth and Machine Balance in Current High Performance Computers",
+        "venue": "IEEE Computer Society Technical Committee on Computer Architecture Newsletter",
+        "year": "1995",
+        "url": "https://www.cs.virginia.edu/stream/ref.html",
+    },
+    "roofline": {
+        "authors": ["Williams, S.", "Waterman, A.", "Patterson, D."],
+        "title": "Roofline: An Insightful Visual Performance Model for Multicore Architectures",
+        "venue": "Communications of the ACM, 52(4), pp. 65–76",
+        "year": "2009",
+        "url": "https://doi.org/10.1145/1498765.1498785",
+    },
+    "data_stalls": {
+        "authors": ["Mohan, J.", "Phanishayee, A.", "Raniwala, A.", "Chidambaram, V."],
+        "title": "Analyzing and Mitigating Data Stalls in DNN Training",
+        "venue": "Proc. VLDB Endowment, 14(5), pp. 771–784",
+        "year": "2021",
+        "url": "https://doi.org/10.14778/3446095.3446100",
+    },
+    "fs_bandwidth": {
+        "authors": ["Lockwood, G.K.", "Snyder, S.", "Wang, T.", "Byna, S.", "Carns, P.", "Wright, N.J."],
+        "title": "A Year in the Life of a Parallel File System",
+        "venue": "Proc. SC18: Intl. Conf. for High Performance Computing, Networking, Storage and Analysis",
+        "year": "2018",
+        "url": "https://doi.org/10.1109/SC.2018.00077",
+    },
+}
+
+#: Default built-in citation per optimization category, used when a strategy
+#: does not already specify a more specific ``builtin_cite`` key.
+_CATEGORY_DEFAULT_CITE: Dict[str, str] = {
+    "io":            "wisio",
+    "communication": "mpi_collective",
+    "memory":        "stream",
+    "compute":       "roofline",
+}
+
+#: Built-in citation overrides for the two always-on DL dimensions.
+_DL_DIMENSION_CITE: Dict[str, str] = {
+    "dataloader_epoch": "data_stalls",
+    "fs_bandwidth":     "fs_bandwidth",
 }
 
 # ── Per-level strategy tables (from optimize-l1/l2/l3-*.yaml) ───────────
@@ -273,8 +408,8 @@ _L1_STRATEGIES: Dict[str, List[Dict[str, Any]]] = {
          "change": "Set DataLoader(num_workers=os.cpu_count()//2, prefetch_factor=4, persistent_workers=True)",
          "expected_delta": "–20–50% fetch latency",
          "risk": "LOW",
-         "builtin_cite": "wisio",
-         "finding": "WisIO fetch-pressure L1 fix: increase DataLoader workers and prefetch factor"},
+         "builtin_cite": "data_stalls",
+         "finding": "Mohan et al. (VLDB'21): increasing DataLoader workers/prefetch factor mitigates data stalls"},
     ],
     "epoch_straggler": [
         {"title": "Sort dataset by sample size before training",
@@ -283,6 +418,30 @@ _L1_STRATEGIES: Dict[str, List[Dict[str, Any]]] = {
          "risk": "LOW",
          "builtin_cite": "wisio",
          "finding": "WisIO stragglers L1 fix: homogeneous batch sizes reduce rank imbalance"},
+    ],
+    "comm_wait": [
+        {"title": "Overlap gradient all-reduce with backward pass compute",
+         "change": "Register gradient-ready hooks to launch all-reduce as soon as each layer's gradient is computed, instead of waiting for the full backward pass",
+         "expected_delta": "–15–35% communication-bound step time",
+         "risk": "MEDIUM",
+         "builtin_cite": "mpi_collective",
+         "finding": "Thakur et al.: overlapping collective communication with computation hides communication latency"},
+    ],
+    "mem_bw": [
+        {"title": "Increase batch/tile size to raise arithmetic intensity",
+         "change": "Restructure the hot loop to reuse loaded data across more operations before eviction (cache blocking)",
+         "expected_delta": "–10–25% memory-bound stall time",
+         "risk": "LOW",
+         "builtin_cite": "stream",
+         "finding": "McCalpin STREAM: memory-bound kernels benefit from maximizing data reuse per byte fetched"},
+    ],
+    "compute_time": [
+        {"title": "Vectorize / batch the hot compute loop",
+         "change": "Replace per-element Python/scalar loop with a vectorized (NumPy/SIMD) batched operation",
+         "expected_delta": "–20–50% compute time",
+         "risk": "LOW",
+         "builtin_cite": "roofline",
+         "finding": "Williams et al. Roofline: compute-bound kernels below peak FLOP/s benefit from vectorization"},
     ],
 }
 
@@ -340,10 +499,20 @@ _L2_STRATEGIES: Dict[str, List[Dict[str, Any]]] = {
          "change": "Set OMP_NUM_THREADS=<cores>, MALLOC_ARENA_MAX=2 to reduce threading/memory overhead",
          "expected_delta": "–5–15% DataLoader overhead",
          "risk": "LOW",
-         "builtin_cite": "wisio",
-         "finding": "WisIO fetch-pressure L2: threading and malloc tuning reduces worker coordination cost",
+         "builtin_cite": "data_stalls",
+         "finding": "Mohan et al. (VLDB'21): DNN data stalls are reduced by tuning worker threading/memory overhead",
          "delivery": "env_var",
          "env_key": "OMP_NUM_THREADS"},
+    ],
+    "comm_wait": [
+        {"title": "Select topology-aware collective algorithm",
+         "change": "Set OMPI_MCA_coll_hcoll_enable=1 (or MPICH equivalent) to select a topology-aware all-reduce/all-gather algorithm",
+         "expected_delta": "–10–25% collective communication time",
+         "risk": "LOW",
+         "builtin_cite": "mpi_collective",
+         "finding": "Thakur et al.: algorithm selection based on message size and topology reduces collective latency",
+         "delivery": "env_var",
+         "env_key": "OMPI_MCA_coll_hcoll_enable"},
     ],
     "write_time": [
         {"title": "Tune Linux dirty page flush timing",
@@ -421,8 +590,19 @@ _L3_STRATEGIES: Dict[str, List[Dict[str, Any]]] = {
          "privilege": "no-sudo",
          "rollback": "Remove numactl prefix from run command",
          "side_effect": "Restricts process to one NUMA node; may underutilize cores on other nodes",
-         "builtin_cite": "wisio",
-         "finding": "WisIO fetch-pressure: NUMA-local memory reduces cross-node bandwidth pressure"},
+         "builtin_cite": "stream",
+         "finding": "McCalpin STREAM: NUMA-local memory placement reduces cross-node bandwidth pressure"},
+    ],
+    "fs_bw": [
+        {"title": "Increase Lustre stripe count across more OSTs to raise aggregate bandwidth",
+         "change": "lfs setstripe -c 8 -S 4m <data_dir>  (spread I/O across more OSTs)",
+         "expected_delta": "+20–50% aggregate filesystem bandwidth for large shared datasets",
+         "risk": "LOW",
+         "privilege": "no-sudo",
+         "rollback": "lfs setstripe -c 1 -S 1m <data_dir>",
+         "side_effect": "Affects new files created in that directory only; higher OST contention if many jobs share the filesystem",
+         "builtin_cite": "fs_bandwidth",
+         "finding": "Lockwood et al. (SC'18): production parallel filesystem bandwidth is underutilized without wide OST striping"},
     ],
 }
 
@@ -437,6 +617,11 @@ def _gen_level_proposals(
 ) -> Tuple[List[Dict[str, Any]], int, int]:
     """Map *bottlenecks* to *strat_table* strategies, attach citations.
 
+    Bottlenecks are processed in the canonical optimization order
+    I/O -> communication -> memory -> compute (``_category_sort_key``), with
+    severity as the tiebreaker within a category, so lower layers of the
+    stack are never optimized ahead of I/O.
+
     Returns (proposals, cited_searched, cited_builtin).
     Proposals without a URL-backed citation are silently dropped.
     """
@@ -446,9 +631,7 @@ def _gen_level_proposals(
     cited_builtin  = 0
     prop_counter   = [0]
 
-    for bn in sorted(bottlenecks,
-                     key=lambda b: _SEV.get(b.get("severity", "trivial"), 0),
-                     reverse=True):
+    for bn in sorted(bottlenecks, key=_category_sort_key):
         met = bn.get("metric", "")
         sev = bn.get("severity", "trivial")
         if _SEV.get(sev, 0) < 2:
@@ -485,8 +668,14 @@ def _gen_level_proposals(
                 )
                 cited_searched += 1
             else:
-                key = strat.get("builtin_cite", "wisio")
-                cite_src = dict(_BUILTIN_REFS.get(key, _BUILTIN_REFS["wisio"]))
+                if met in _DL_ALWAYS_ON_METRICS["dataloader_epoch"]:
+                    default_key = _DL_DIMENSION_CITE["dataloader_epoch"]
+                elif met in _DL_ALWAYS_ON_METRICS["fs_bandwidth"]:
+                    default_key = _DL_DIMENSION_CITE["fs_bandwidth"]
+                else:
+                    default_key = _CATEGORY_DEFAULT_CITE.get(_metric_category(met), "wisio")
+                key = strat.get("builtin_cite", default_key)
+                cite_src = dict(_BUILTIN_REFS.get(key, _BUILTIN_REFS[default_key]))
                 finding  = strat.get("finding", "")
                 cited_builtin += 1
 

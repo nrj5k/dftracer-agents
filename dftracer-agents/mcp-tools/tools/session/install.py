@@ -204,6 +204,7 @@ def _dftracer_utils_split(
     directory: str,
     output_dir: str,
     app_name: str = "app",
+    chunk_size_mb: int = 512,
 ) -> Dict[str, Any]:
     """Compact raw dftracer trace files using the ``split`` tool.
 
@@ -229,6 +230,9 @@ def _dftracer_utils_split(
             Created by the split tool if it does not exist.
         app_name: Application name tag embedded in the output file names.
             Defaults to ``"app"``.
+        chunk_size_mb: Target chunk size in MB for each output file.
+            Defaults to ``512``.  Larger chunks reduce index overhead
+            at the cost of coarser granularity per analysis query.
 
     Returns:
         Dict[str, Any]: A normalised result dict with keys:
@@ -255,7 +259,7 @@ def _dftracer_utils_split(
                 if fn is not None:
                     try:
                         kwargs = {"directory": directory, "output_dir": output_dir,
-                                  "app_name": app_name}
+                                  "app_name": app_name, "chunk_size": chunk_size_mb}
                         result = (asyncio.run(fn(**kwargs))
                                   if asyncio.iscoroutinefunction(fn) else fn(**kwargs))
                         return {"success": True, "returncode": 0,
@@ -268,7 +272,8 @@ def _dftracer_utils_split(
 
     # Fallback: call binary directly
     return _run(
-        ["dftracer_split", "-n", app_name, "-d", directory, "-o", output_dir],
+        ["dftracer_split", "--app-name", app_name, "--directory", directory,
+         "--output", output_dir, "--chunk-size", str(chunk_size_mb), "--compress"],
         timeout=600,
     )
 

@@ -17,6 +17,10 @@ from ..session.session_tools import (
     _session_run_with_dftracer_impl,
     _session_split_traces_impl,
     _session_collect_system_info_impl,
+    _run_source_dir,
+    _run_patches_dir,
+    _snapshot_source,
+    _generate_patch,
 )
 from .diagnose import _session_diagnose_bottlenecks_impl
 from .strategies import (
@@ -30,6 +34,9 @@ from .strategies import (
     _GENERAL_FALLBACK_QUERIES,
     _build_sys_context,
     _bottleneck_search_queries,
+    _category_sort_key,
+    _metric_category,
+    _DL_ALWAYS_ON_METRICS,
 )
 
 
@@ -62,10 +69,17 @@ def register_iteration_tools(mcp: FastMCP) -> None:
         5. **System context** — collect or re-read ``system_config.json`` so
            hardware details (CPU arch, filesystem type, network) are available
            to refine search queries.
-        6. **Literature search** — for each of the top-5 highest-severity
-           bottlenecks, search arXiv with up to *max_search_attempts*
-           progressively fuzzier queries that combine the bottleneck behaviour
-           **and** the system hardware context:
+        6. **Literature search** — bottlenecks are ranked and addressed in the
+           canonical order **I/O -> communication -> memory -> compute**
+           (severity is only the tiebreaker *within* a category, so a
+           critical compute issue never jumps ahead of a medium I/O issue).
+           For deep-learning workloads, two additional dimensions are always
+           evaluated regardless of severity: (a) application dataloader /
+           epoch-time performance, and (b) filesystem bandwidth/utilization
+           for the storage the run is on. For the resulting top bottlenecks,
+           search arXiv with up to *max_search_attempts* progressively
+           fuzzier queries that combine the bottleneck behaviour **and** the
+           system hardware context:
 
            * Attempts 1-2: most specific phrase + system context.
            * Attempts 3-8: synonym phrase pairs with/without system context.
@@ -153,34 +167,46 @@ def register_iteration_tools(mcp: FastMCP) -> None:
 
         # ── Per-iteration artifact directory ─────────────────────────────────
         ws = _ws(run_id)
-        iter_dir = ws / f"opt{iteration}"
+        run_name = f"opt{iteration}"
+        iter_dir = ws / run_name
         iter_dir.mkdir(exist_ok=True)
-        iter_traces_dir  = iter_dir / "traces"
-        iter_split_dir   = iter_dir / "traces_split"
-        iter_traces_dir.mkdir(exist_ok=True)
-        iter_split_dir.mkdir(exist_ok=True)
+        # Canonical run structure: traces/raw, traces/compact, source/, patches/
+        iter_traces_dir = iter_dir / "traces" / "raw"
+        iter_split_dir  = iter_dir / "traces" / "compact"
+        iter_traces_dir.mkdir(parents=True, exist_ok=True)
+        iter_split_dir.mkdir(parents=True, exist_ok=True)
 
-        # Capture a diff of annotated source vs the previous iteration
-        import subprocess as _sp
-        prev_patch = iter_dir / "changes.patch"
-        if iteration == 0:
-            prev_patch.write_text("# baseline — no prior iteration\n")
-        else:
-            _diff = _sp.run(
-                ["git", "diff", "--no-index",
-                 str(ws / f"opt{iteration - 1}" / "annotated_snapshot"),
-                 str(ws / "annotated")],
-                capture_output=True, text=True,
-            )
-            prev_patch.write_text(_diff.stdout or "# no diff\n")
-        # Snapshot the current annotated tree
-        import shutil as _sh
-        ann_snapshot = iter_dir / "annotated_snapshot"
-        if ann_snapshot.exists():
-            _sh.rmtree(ann_snapshot)
-        _sh.copytree(str(ws / "annotated"), str(ann_snapshot))
+        # ── Source snapshot + patch ──────────────────────────────────────────
+        # Snapshot current annotated source into opt{N}/source/.
+        # Generate a patch vs the previous iteration's source snapshot.
+        ann_src = ws / "annotated"
+        if ann_src.exists():
+            source_dest = _run_source_dir(ws, run_name)
+            _snapshot_source(ann_src, source_dest)
+            # Determine previous run: opt{N-1}/source/ or annotated/source/
+            if iteration == 0:
+                prev_src = ws / "annotated" / "source"
+                if not prev_src.exists():
+                    prev_src = ws / "annotated"
+                    # Try the structured annotated run snapshot
+                    if (ws / "annotated" / "source").exists():
+                        prev_src = ws / "annotated" / "source"
+                # For iteration 0, diff vs the annotated run's source snapshot
+                prev_src = ws / "annotated" / "source" if (ws / "annotated" / "source").exists() else None
+                if prev_src:
+                    patch_file = _run_patches_dir(ws, run_name) / "from_annotated.patch"
+                    _generate_patch(prev_src, source_dest, patch_file)
+                else:
+                    patch_file = _run_patches_dir(ws, run_name) / "from_annotated.patch"
+                    patch_file.write_text("# no annotated/source/ snapshot available\n")
+            else:
+                prev_src = ws / f"opt{iteration - 1}" / "source"
+                if prev_src.exists():
+                    patch_file = _run_patches_dir(ws, run_name) / f"from_opt{iteration - 1}.patch"
+                    _generate_patch(prev_src, source_dest, patch_file)
 
         # ── Step 2: profile run ──────────────────────────────────────────────
+        # Traces go directly into ws/<run_name>/traces/raw/ via run_name routing
         raw = _session_run_with_dftracer_impl(
             run_id=run_id,
             command=command,
@@ -188,6 +214,7 @@ def register_iteration_tools(mcp: FastMCP) -> None:
             data_dir=data_dir,
             timeout=timeout,
             env_extra=env_extra,
+            run_name=run_name,
         )
         profile_result = _json.loads(raw)
         if profile_result.get("status") != "ok":
@@ -204,25 +231,14 @@ def register_iteration_tools(mcp: FastMCP) -> None:
             "trace_files": profile_result.get("trace_files", []),
         }
 
-        # Copy raw traces to per-iteration directory
-        import glob as _glob
-        for _pfw in _glob.glob(str(ws / "traces" / "*.pfw.gz")):
-            _sh.copy2(_pfw, str(iter_traces_dir))
-        # Also handle run_id-subdirectory layout (traces/<prefix>/*.pfw.gz)
-        _run_prefix = run_id.split("/")[0]
-        for _pfw in _glob.glob(str(ws / "traces" / _run_prefix / "*.pfw.gz")):
-            _sh.copy2(_pfw, str(iter_traces_dir))
-
-        # ── Step 3: split traces into per-iteration split dir ────────────────
-        _session_split_traces_impl(run_id=run_id, app_name=app_name)
-        # Copy split output to per-iteration directory
-        for _chunk in _glob.glob(str(ws / "traces_split" / "*.pfw.gz")):
-            _sh.copy2(_chunk, str(iter_split_dir))
+        # ── Step 3: split traces into per-iteration compact dir ──────────────
+        # Reads from ws/<run_name>/traces/raw/, writes to ws/<run_name>/traces/compact/
+        _session_split_traces_impl(run_id=run_id, app_name=app_name, run_name=run_name)
 
         # ── Step 3b: compare against previous iteration traces ───────────────
         comparison: Dict[str, Any] = {}
         if iteration > 0:
-            prev_split = ws / f"opt{iteration - 1}" / "traces_split"
+            prev_split = ws / f"opt{iteration - 1}" / "traces" / "compact"
             if prev_split.exists() and any(prev_split.glob("*.pfw.gz")):
                 try:
                     cmp_raw = _dftracer_utils_comparator(
@@ -280,12 +296,38 @@ def register_iteration_tools(mcp: FastMCP) -> None:
             sys_info = _json.loads(raw_sys)
         sys_context = _build_sys_context(sys_info)
 
-        # ── Step 6: literature search — top 5 bottlenecks ───────────────────
-        top5 = sorted(
-            current_bottlenecks,
-            key=lambda b: _SEV.get(b.get("severity", "trivial"), 0),
-            reverse=True,
-        )[:5]
+        # ── Step 6: literature search — top bottlenecks ─────────────────────
+        # Bottlenecks are addressed in the canonical order I/O -> communication
+        # -> memory -> compute (severity is only the tiebreaker within a
+        # category), so a critical compute issue never jumps ahead of a
+        # medium-severity I/O issue.
+        ranked = sorted(current_bottlenecks, key=_category_sort_key)
+        top5 = ranked[:5]
+
+        # For deep-learning workloads, always evaluate two additional
+        # dimensions regardless of severity ranking: (1) application
+        # dataloader / epoch-time performance, and (2) filesystem bandwidth /
+        # utilization for the storage the run is on.  If a matching
+        # bottleneck exists but fell outside the top5, pull it in.
+        is_dl_workload = bool(
+            state.get("frameworks") or state.get("ml_frameworks_list")
+            or any(
+                any(dl_met in b.get("metric", "") for dl_met in _DL_ALWAYS_ON_METRICS["dataloader_epoch"])
+                for b in current_bottlenecks
+            )
+        )
+        if is_dl_workload:
+            top5_metrics = {b.get("metric", "") for b in top5}
+            for dim, metric_fragments in _DL_ALWAYS_ON_METRICS.items():
+                if any(any(frag in m for frag in metric_fragments) for m in top5_metrics):
+                    continue  # already represented
+                candidate = next(
+                    (b for b in ranked
+                     if any(frag in b.get("metric", "") for frag in metric_fragments)),
+                    None,
+                )
+                if candidate is not None:
+                    top5.append({**candidate, "dl_dimension": dim})
 
         max_attempts = max(1, min(10, max_search_attempts))
         n_papers     = max(1, min(5, papers_per_query))
@@ -541,10 +583,19 @@ def register_iteration_tools(mcp: FastMCP) -> None:
         tables (L1 application, L2 software/middleware, L3 system/filesystem),
         and attaches a verifiable citation (URL) to every proposal.
 
+        Bottlenecks are processed in the canonical optimization order
+        I/O -> communication -> memory -> compute (severity is the tiebreaker
+        within a category), so proposal ``id`` ordering reflects that pipeline.
+
         Citation priority per proposal:
         1. Papers found by the arXiv / Semantic Scholar search in the latest iteration.
-        2. Built-in reference: WisIO (Yildirim et al., ICS 2025) or
-           Drishti (Bez et al., PDSW 2022) — whichever is most relevant.
+        2. Built-in reference matched to the bottleneck's category: I/O ->
+           WisIO (Yildirim et al., ICS 2025) or Drishti (Bez et al., PDSW 2022);
+           communication -> Thakur et al. (IJHPCA 2005); memory -> McCalpin
+           STREAM (1995); compute -> Williams et al. Roofline (CACM 2009).
+           The two always-on DL dimensions use Mohan et al. (VLDB 2021) for
+           dataloader/epoch stalls and Lockwood et al. (SC 2018) for
+           filesystem bandwidth/utilization.
 
         A proposal is OMITTED if neither a searched paper nor a built-in reference
         can be matched to the bottleneck + strategy combination.

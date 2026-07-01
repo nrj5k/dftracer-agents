@@ -275,6 +275,10 @@ def register_diagnose_tools(mcp: FastMCP) -> None:
             "intensity":       "I/O intensity compute I/O overlap optimization",
             "imbalance":       "I/O load imbalance optimization distributed HPC",
             "bw":              "bandwidth utilization optimization parallel I/O filesystem",
+            "fs_bw":           "parallel filesystem bandwidth utilization storage system throughput HPC",
+            "comm":            "MPI collective communication optimization overlap HPC",
+            "mem_bw":          "memory bandwidth optimization NUMA cache-aware HPC",
+            "compute":         "compute kernel vectorization roofline optimization HPC",
         }
 
         # Collect unique topics from high/critical bottlenecks

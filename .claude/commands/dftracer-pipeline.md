@@ -60,6 +60,48 @@ PYTHON AI/ML ANNOTATION — FUNCTIONS TO NEVER ANNOTATE:
     per epoch; annotating it overflows dftracer's C-level event buffer and
     causes SIGABRT in DataLoader workers.  Leave __len__ unannotated.
 
+  DataLoader worker segfault on cleanup: annotating `__len__` on Dataset
+  subclasses causes dftracer's C-level event buffer to overflow (DataLoader
+  calls __len__ O(10000+) times per epoch to build sampler state). The overflow
+  corrupts memory and causes SIGSEGV in worker processes during teardown after
+  training is otherwise complete. The fix is to NEVER annotate __len__ — simply
+  omit @_dlp.log from it. The function still works normally; its callers capture
+  the timing context. Do NOT attempt to fix this by disabling dftracer in workers.
+
+  DataLoader worker segfault during dftracer finalize (flockfile/BufferManager):
+  Root cause confirmed on Tuolumne with DFTRACER_ENABLE_HIP_TRACING=ON.
+  When dftracer initializes with HIP tracing in the parent process and PyTorch
+  forks DataLoader workers, the forked children inherit open FILE* handles.
+  On worker exit, dftracer's C++ destructor calls DFTracerCore::finalize() →
+  BufferManager::finalize() → flockfile_wrapper() on the inherited FILE*.
+  The file's internal mutex is in an inconsistent state (locked in parent thread
+  that no longer exists in child), causing a C++ exception during _Unwind_Resume
+  which itself SIGSEGV's. Fix: dftracer bugfix/reinitializelogfile branch adds
+  fork detection via getpid()/getppid() so finalize() safely no-ops in forked
+  children that haven't re-initialized. To rebuild dftracer from that branch,
+  see the manual cmake procedure below.
+
+  HOW TO DEBUG DataLoader worker crashes:
+  1. Enable core dumps on Lustre (NOT NFS — NFS truncates to 16K):
+       ulimit -c unlimited
+       COREDIR=/p/lustre5/$USER/workspaces/<session>/cores
+       mkdir -p ${COREDIR} && cd ${COREDIR}
+     Then launch Python from that directory so workers write cores there.
+  2. Add libSegFault.so for C-level backtrace (survives Python teardown):
+       export LD_PRELOAD=/usr/lib64/libSegFault.so:${LD_PRELOAD}
+       export SEGFAULT_SIGNALS=all
+     NOTE: Python faulthandler CANNOT catch crashes that happen after
+     Py_Finalize() (C++ destructors run post-Python). Use libSegFault instead.
+  3. After crash, run gdb on the full core (redirect stderr to suppress warnings):
+       CORE=/p/lustre5/$USER/workspaces/<session>/cores/<node>-<proc>-<pid>.core
+       PYTHON=<ws>/install/bin/python3.13
+       gdb -batch -ex "bt 20" -ex "info threads" $PYTHON $CORE 2>/dev/null
+     Key: look for frames from libdftracer_core.so to identify dftracer source.
+  4. Check whether crash is triggered by a specific env var (bisect):
+     Run once with DFTRACER_ENABLE_HIP_TRACING=ON and once without. If the
+     no-HIP run completes cleanly, the crash is in librocprofiler-sdk state
+     inherited across fork.
+
   For any of these, simply skip the decorator; the function will still be
   called normally and its callers (which ARE annotated) will capture the timing.
 
@@ -85,6 +127,26 @@ DFANALYZER PRESET SELECTION — DLIO vs POSIX:
   workers) and understands training-phase patterns that posix does not.
 
 ══════════════════════════════════════════════════════════════════════
+
+SESSION HYGIENE — SKILL UPDATES AND CONTEXT MANAGEMENT:
+
+  While waiting for long-running jobs (smoke test, dftracer run, optimization
+  iteration), always use the idle time to update skill files with lessons
+  learned so far in the session. Do not wait until the end — capture pitfalls
+  as soon as they are resolved so they are not lost to context compaction.
+
+  Protocol:
+    1. After any bug fix or new pitfall discovered, immediately update the
+       relevant skill file (.claude/commands/*.md) with the lesson.
+    2. While a flux job is running and output has not yet appeared, update skills.
+    3. If conversation context exceeds ~60%, update all relevant skill files
+       with current lessons, then run /compact to free context before continuing.
+    4. After /compact, re-read the task list and resume from where you left off.
+
+  Skill files to update when relevant:
+    • dftracer-ml-annotate.md  — new Python annotation pitfalls
+    • dftracer-pipeline.md     — new pipeline protocol rules
+    • flux-alloc.md            — new Flux job management lessons
 
 ══════════════════════════════════════════════════════════════════════
 STEP 1 — GATHER INPUTS  (if not supplied via arguments)
@@ -463,6 +525,20 @@ If yes:
     searches arXiv/Semantic Scholar for papers relevant to each bottleneck.
     Repeat for each optimization iteration.
 
+    COMPONENT ORDER: bottlenecks are always addressed in the order
+    I/O -> communication -> memory -> compute. Severity only breaks ties
+    within a component — a critical compute bottleneck is never optimized
+    ahead of a medium-severity I/O bottleneck, since I/O fixes are cheaper
+    and higher-leverage for most HPC/DL workloads. This is independent of
+    the L1/L2/L3 application/middleware/filesystem layering below.
+
+    DEEP-LEARNING WORKLOADS: two additional dimensions are always evaluated
+    every iteration, regardless of severity ranking:
+      1. Application dataloader / epoch-time performance (fetch_pressure,
+         epoch_straggler) — cited against Mohan et al. (VLDB 2021).
+      2. Filesystem bandwidth/utilization for the storage the run is on
+         (fs_bw) — cited against Lockwood et al. (SC 2018).
+
 8b. Generate citation-backed proposals from the iteration results:
 
     session_generate_optimization_proposals(run_id=RUN_ID, iteration=-1)
@@ -484,13 +560,20 @@ If yes:
 
       bottleneck_score (0–50):
         How directly does the paper address the specific bottleneck metric?
-        • 50 — paper directly studies this metric or the exact I/O pattern
-                (e.g., paper on "POSIX close latency in HDF5 timestep writes")
-        • 35 — paper addresses the broader I/O category
-                (e.g., "collective metadata performance in parallel I/O")
+        First classify the bottleneck's component (I/O, communication,
+        memory, or compute) and require the paper to match that component:
+        • 50 — paper directly studies this metric within its component
+                (e.g., "POSIX close latency in HDF5 timestep writes" for I/O;
+                "all-reduce overlap with backward pass" for communication;
+                "STREAM memory bandwidth of a kernel" for memory;
+                "roofline arithmetic intensity" for compute)
+        • 35 — paper addresses the broader component category
+                (e.g., "collective metadata performance in parallel I/O",
+                "MPI collective algorithm selection", "NUMA-aware memory
+                placement", "SIMD vectorization of compute kernels")
         • 20 — paper addresses an adjacent technique that indirectly applies
                 (e.g., "MPI-IO collective buffering" for a metadata bottleneck)
-        •  0 — paper is topically unrelated to the bottleneck
+        •  0 — paper is topically unrelated to the bottleneck or its component
 
       system_score (0–30):
         How well does the paper match the target system/software stack?

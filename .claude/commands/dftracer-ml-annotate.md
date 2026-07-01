@@ -269,8 +269,50 @@ For every remaining file in OTHER_FILES:
     @_dlp.log_static       @staticmethod
     def fn(x): ...         def fn(x): ...
     ```
-  After auto-annotation, batch-fix with:
-    `re.sub(r'@_dlp\.log_static\n(\s+)@staticmethod', r'@staticmethod\n\1@_dlp.log_static', txt)`
+  After auto-annotation, batch-fix with (indentation-aware regex):
+
+    ```python
+    import re
+    from pathlib import Path
+    for pyfile in Path("annotated").rglob("*.py"):
+        text = pyfile.read_text()
+        # Fix wrong-indent pattern produced by naive regex swap
+        fixed = re.sub(
+            r'^ {8}@staticmethod\n( {4})@_dlp\.log_static',
+            r'    @staticmethod\n\1@_dlp.log_static',
+            text, flags=re.MULTILINE
+        )
+        # Fix same-indent wrong order
+        fixed = re.sub(
+            r'^(\s+)@_dlp\.log_static\n\1@staticmethod',
+            r'\1@staticmethod\n\1@_dlp.log_static',
+            fixed, flags=re.MULTILINE
+        )
+        if fixed != text:
+            pyfile.write_text(fixed)
+    ```
+
+  **CRITICAL**: After swapping decorators, always run `python3 -m py_compile` on
+  all affected files. A naive regex that doesn't preserve indentation will place
+  `@staticmethod` inside a preceding method body (after `return`), causing
+  `IndentationError: unexpected unindent` at startup.
+
+  Numba JIT functions (ML-R32): NEVER apply @_dlp.log (or any dftracer decorator)
+  to functions also decorated with @numba.njit (or @numba.jit). Numba JIT
+  objects are not regular Python callables; `inspect.getfullargspec` will raise
+  `TypeError: unsupported callable` at import time, crashing all ranks.
+  Detection: grep for `@numba` in the annotated files after annotation; remove
+  any `@_dlp.log*` decorator stacked above (outer to) a `@numba.*` decorator.
+    ```python
+    # WRONG — crashes at import with TypeError: unsupported callable
+    @_dlp.log
+    @numba.njit
+    def generate_fractal_points(...): ...
+
+    # CORRECT — never annotate numba JIT functions
+    @numba.njit
+    def generate_fractal_points(...): ...
+    ```
 
 ### 4h. PyTorch Profiler integration (ML-R28) — when "pytorch" in FRAMEWORKS
 
