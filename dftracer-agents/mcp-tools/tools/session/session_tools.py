@@ -91,6 +91,7 @@ from fastmcp import FastMCP
 from .workspace import (
     _ws, _load_state, _save_state, _write_artifact_log,
     _ok, _err, _new_run_id, _create_run, _run, _workspaces_root,
+    _safe_session_path,
 )
 from .detection import (
     _detect_info,
@@ -421,6 +422,103 @@ def _run_traces_compact(ws: Path, run_name: str) -> Path:
     d = _run_dir(ws, run_name) / "traces" / "compact"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+_SCRIPT_STUB = "#!/usr/bin/env bash\n"
+
+
+def _ensure_script_stub(scripts_dir: Path, name: str) -> None:
+    """Create ``<scripts_dir>/<name>`` with an executable stub if it doesn't exist."""
+    p = scripts_dir / name
+    if not p.exists():
+        p.write_text(_SCRIPT_STUB)
+        p.chmod(0o755)
+
+
+def _init_structure(ws: Path, dataset_path: Optional[str] = None) -> Dict[str, Any]:
+    """Build the canonical session directory skeleton under *ws*, idempotently.
+
+    Layout created (existing paths/files are left untouched)::
+
+        baseline/source/, baseline/scripts/{compile.sh,run.sh}
+        annotated/source/, annotated/scripts/{compile.sh,run.sh},
+                  annotated/traces/{raw,compact}/, annotated/analysis-diagnostics/
+        artifacts/
+        tmp/
+        dataset/            ← symlink to dataset_path if given, else empty dir
+        session_report.md   ← skeleton header, not overwritten if present
+
+    ``opt<n>/`` run directories are intentionally *not* pre-created here — they
+    are created lazily and on-demand by ``_run_dir(ws, f"opt{n}")`` when the
+    optimization loop actually starts a new iteration, using the same
+    ``source/patches/scripts/traces/{raw,compact}`` sub-layout as ``annotated/``.
+
+    Args:
+        ws: Session workspace root (created if missing).
+        dataset_path: Absolute path to a dataset directory (typically on a
+            parallel filesystem such as Lustre) to symlink as ``dataset/``.
+            When omitted or when the symlink cannot be created, ``dataset/``
+            is created as a plain empty directory instead.
+
+    Returns:
+        Dict[str, Any]: Paths and flags describing what was created, suitable
+            for merging into an MCP tool's JSON response.
+    """
+    ws.mkdir(parents=True, exist_ok=True)
+
+    baseline_source = _run_source_dir(ws, "baseline")
+    baseline_scripts = _run_dir(ws, "baseline") / "scripts"
+    baseline_scripts.mkdir(parents=True, exist_ok=True)
+    _ensure_script_stub(baseline_scripts, "compile.sh")
+    _ensure_script_stub(baseline_scripts, "run.sh")
+
+    annotated_source = _run_source_dir(ws, "annotated")
+    annotated_scripts = _run_dir(ws, "annotated") / "scripts"
+    annotated_scripts.mkdir(parents=True, exist_ok=True)
+    _ensure_script_stub(annotated_scripts, "compile.sh")
+    _ensure_script_stub(annotated_scripts, "run.sh")
+    _run_traces_raw(ws, "annotated")
+    _run_traces_compact(ws, "annotated")
+    (_run_dir(ws, "annotated") / "analysis-diagnostics").mkdir(parents=True, exist_ok=True)
+
+    artifacts = ws / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+
+    tmp = ws / "tmp"
+    tmp.mkdir(exist_ok=True)
+
+    dataset = ws / "dataset"
+    dataset_kind = "none"
+    if dataset_path:
+        if dataset.is_symlink() or dataset.exists():
+            dataset_kind = "existing"
+        else:
+            try:
+                dataset.symlink_to(Path(dataset_path).resolve())
+                dataset_kind = "symlink"
+            except OSError:
+                dataset.mkdir(exist_ok=True)
+                dataset_kind = "dir_fallback"
+    elif not dataset.exists():
+        dataset.mkdir(exist_ok=True)
+        dataset_kind = "dir"
+    else:
+        dataset_kind = "existing"
+
+    report = ws / "session_report.md"
+    if not report.exists():
+        ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        report.write_text(f"# Session Report: {ws.name}\n\n_Generated {ts}_\n")
+
+    return {
+        "baseline": str(_run_dir(ws, "baseline")),
+        "annotated": str(_run_dir(ws, "annotated")),
+        "artifacts": str(artifacts),
+        "tmp": str(tmp),
+        "dataset": str(dataset),
+        "dataset_kind": dataset_kind,
+        "session_report": str(report),
+    }
 
 
 def _snapshot_source(src: Path, dest: Path) -> Dict[str, Any]:
@@ -895,20 +993,28 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         url: str,
         ref: str = "main",
         run_id: Optional[str] = None,
+        dataset_path: Optional[str] = None,
     ) -> str:
         """Clone a Git repository into a new, isolated session workspace.
 
         Creates a timestamped workspace directory under
         ``workspaces/<app_name>/<YYYYMMDD_HHMMSS>/`` (where *app_name* is
         derived from *url*), clones *url* at *ref* into the ``source/``
-        sub-folder, and persists initial session state to ``session.json``.
+        sub-folder, builds the canonical session directory skeleton (see
+        ``session_init_structure``), and persists initial session state to
+        ``session.json``.
 
         A shallow clone (``--depth 1``) is attempted first for speed.  If the
         branch/tag does not exist on the remote the tool retries with a bare
         clone followed by ``git checkout <ref>``.
 
         Side effects:
-            * Creates ``workspaces/<app>/<ts>/source/`` on disk.
+            * Creates ``workspaces/<app>/<ts>/source/`` on disk (the raw clone).
+            * Creates ``baseline/source/`` and ``annotated/source/`` as copies
+              of the clone, plus ``baseline/scripts/``, ``annotated/scripts/``,
+              ``annotated/traces/{raw,compact}/``, ``artifacts/``, ``tmp/``,
+              ``dataset/`` (symlinked to *dataset_path* if given), and
+              ``session_report.md`` — see ``session_init_structure``.
             * Writes ``workspaces/<app>/.current_run`` pointer so that
               ``pipeline_get_run_id`` can recall this session.
             * Persists ``{"url", "ref", "step": "cloned"}`` to ``session.json``.
@@ -918,6 +1024,10 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             ref: Branch, tag, or commit SHA to checkout (default: ``"main"``).
             run_id: Optional fixed RUN-ID string.  A UUID-based ID is generated
                 when omitted.
+            dataset_path: Optional absolute path (typically on a parallel
+                filesystem such as Lustre) to symlink as ``dataset/`` in the
+                workspace.  When omitted, ``dataset/`` is created as a plain
+                empty directory.
 
         Returns:
             JSON string with keys:
@@ -926,6 +1036,8 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
                 * ``run_id`` — the session identifier for all subsequent calls.
                 * ``workspace`` — absolute path to the session root directory.
                 * ``source`` — absolute path to the cloned source tree.
+                * ``baseline``, ``annotated``, ``artifacts``, ``tmp``, ``dataset``,
+                  ``session_report`` — paths created by ``session_init_structure``.
 
         Raises:
             Returns ``{"status": "error"}`` JSON when both clone attempts fail,
@@ -955,17 +1067,66 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
                 return _err("git clone failed", clone_stderr=r2["stderr"])
             _run(["git", "checkout", ref], cwd=src)
 
+        structure = _init_structure(ws, dataset_path)
+        for target_name in ("baseline", "annotated"):
+            target_source = Path(structure[target_name]) / "source"
+            if not any(target_source.iterdir()):
+                shutil.copytree(src, target_source, dirs_exist_ok=True)
+
         _save_state(rid, {
             "url": url,
             "ref": ref,
             "step": "cloned",
+            "structure_dataset_path": dataset_path,
         })
         return _ok(
             f"Session {rid} created",
             run_id=rid,
             workspace=str(ws),
             source=str(src),
+            **structure,
         )
+
+    @mcp.tool()
+    def session_init_structure(
+        run_id: str,
+        dataset_path: Optional[str] = None,
+    ) -> str:
+        """Build (or repair) the canonical session directory skeleton.
+
+        Normally invoked automatically by ``session_create``; exposed as a
+        standalone tool so callers can re-run it idempotently — e.g. to attach
+        a ``dataset_path`` symlink after the fact, or to restore directories
+        removed via ``session_remove_path``.
+
+        Directory layout created (existing paths/files are left untouched)::
+
+            baseline/source/, baseline/scripts/{compile.sh,run.sh}
+            annotated/source/, annotated/scripts/{compile.sh,run.sh},
+                      annotated/traces/{raw,compact}/, annotated/analysis-diagnostics/
+            artifacts/
+            tmp/
+            dataset/            ← symlink to dataset_path if given, else empty dir
+            session_report.md   ← skeleton header, not overwritten if present
+
+        ``opt<n>/`` run directories are intentionally not pre-created — they
+        are created lazily by the optimization loop using the same
+        ``source/patches/scripts/traces/{raw,compact}`` sub-layout as ``annotated/``.
+
+        Args:
+            run_id: Session identifier returned by ``session_create``.
+            dataset_path: Optional absolute path to symlink as ``dataset/``.
+                Ignored if ``dataset/`` already exists (file, dir, or symlink).
+
+        Returns:
+            JSON string with keys: ``status``, ``message``, ``baseline``,
+            ``annotated``, ``artifacts``, ``tmp``, ``dataset``, ``dataset_kind``,
+            ``session_report``.
+        """
+        ws = _ws(run_id)
+        structure = _init_structure(ws, dataset_path)
+        _save_state(run_id, {"structure_dataset_path": dataset_path})
+        return _ok(f"Session structure ready for {run_id}", **structure)
 
     @mcp.tool()
     def session_detect(run_id: str) -> str:
@@ -1096,7 +1257,10 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         Raises:
             Returns ``{"status": "error"}`` when the file does not exist.
         """
-        p = _ws(run_id) / subfolder / filepath
+        try:
+            p = _safe_session_path(_ws(run_id), f"{subfolder}/{filepath}")
+        except ValueError as exc:
+            return _err(str(exc))
         if not p.exists():
             return _err(f"File not found: {subfolder}/{filepath}")
         content = p.read_text(errors="replace")[:max_bytes]
@@ -1146,10 +1310,79 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
                 * ``status`` (``"ok"``).
                 * ``message`` — ``"Wrote <N> bytes to <subfolder>/<filepath>"``.
         """
-        p = _ws(run_id) / subfolder / filepath
+        try:
+            p = _safe_session_path(_ws(run_id), f"{subfolder}/{filepath}")
+        except ValueError as exc:
+            return _err(str(exc))
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
         return _ok(f"Wrote {len(content)} bytes to {subfolder}/{filepath}")
+
+    @mcp.tool()
+    def session_remove_path(
+        run_id: str,
+        relpath: str,
+        recursive: bool = False,
+    ) -> str:
+        """Remove a file, directory, or symlink inside the session workspace.
+
+        Strictly sandboxed to the calling session's workspace: *relpath* is
+        resolved and validated with :func:`_safe_session_path`, which rejects
+        ``..``-traversal, absolute-path injection, and any resolved path that
+        falls outside ``<workspace>/``.  The workspace root itself and
+        ``session.json`` can never be removed through this tool.
+
+        Symlinks (e.g. the ``dataset`` link created by ``session_init_structure``)
+        are unlinked directly — the link node is removed, its target is never
+        followed or touched.
+
+        Args:
+            run_id: Session identifier returned by ``session_create``.
+            relpath: Path to remove, relative to the session workspace root
+                (e.g. ``"tmp/scratch.bin"`` or ``"opt3"``).
+            recursive: Must be ``True`` to remove a non-empty directory.
+                Defaults to ``False`` as a safety guard against accidental
+                large deletions.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"`` or ``"error"``).
+                * ``message`` — human-readable summary.
+                * ``removed`` — resolved path that was removed (on success).
+                * ``kind`` — one of ``"file"``, ``"dir"``, ``"symlink"``.
+
+        Raises:
+            Returns ``{"status": "error"}`` when *relpath* escapes the
+            workspace, targets the workspace root or ``session.json``, does
+            not exist, or is a non-empty directory with ``recursive=False``.
+        """
+        ws = _ws(run_id)
+        try:
+            p = _safe_session_path(ws, relpath)
+        except ValueError as exc:
+            return _err(str(exc))
+
+        if p.name == "session.json" and p.parent == ws.resolve():
+            return _err("refusing to remove session.json")
+
+        if not p.exists() and not p.is_symlink():
+            return _err(f"path does not exist: {relpath}")
+
+        if p.is_symlink():
+            p.unlink()
+            return _ok(f"Removed symlink {relpath}", removed=str(p), kind="symlink")
+
+        if p.is_dir():
+            if any(p.iterdir()) and not recursive:
+                return _err(
+                    f"{relpath} is a non-empty directory — pass recursive=True to remove it",
+                    removed=str(p),
+                )
+            shutil.rmtree(p)
+            return _ok(f"Removed directory {relpath}", removed=str(p), kind="dir")
+
+        p.unlink()
+        return _ok(f"Removed file {relpath}", removed=str(p), kind="file")
 
     @mcp.tool()
     def session_configure(
