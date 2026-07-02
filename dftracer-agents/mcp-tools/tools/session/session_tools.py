@@ -597,6 +597,90 @@ def _session_split_traces_impl(
     return _err("dftracer_split failed", **r)
 
 
+def _session_validate_traces_impl(
+    run_id: str,
+    run_name: str = "baseline",
+    traces_dir: Optional[str] = None,
+) -> str:
+    """Standalone implementation of session_validate_traces.
+
+    Validates ``.pfw``/``.pfw.gz`` trace files using dftracer-utils' own
+    indexing/parsing pipeline (``dftracer_event_count``), rather than any
+    ad hoc JSON check: a file that fails to parse or index is reported by
+    the tool itself as ``failed`` in its ``indexed=.. skipped=.. failed=..``
+    summary line, so this reuses the exact mechanism dftracer-utils uses to
+    detect truncated/corrupted trace files (e.g. a worker killed mid-write).
+    """
+    ws = _ws(run_id)
+    if not ws.exists():
+        return _err(f"Session {run_id} not found")
+
+    if traces_dir is not None:
+        d = Path(traces_dir)
+    else:
+        compact = _run_traces_compact(ws, run_name)
+        raw = _run_traces_raw(ws, run_name)
+        has_compact = any(compact.glob("*.pfw*"))
+        d = compact if has_compact else raw
+
+    if not d.exists():
+        return _err(f"Traces directory not found: {d}")
+
+    trace_files = list(d.glob("*.pfw")) + list(d.glob("*.pfw.gz"))
+    if not trace_files:
+        return _err(f"No .pfw or .pfw.gz files found in {d}")
+
+    # Use a run-scoped index dir so --force always rebuilds the index fresh
+    # (a shared/default index-dir would let cached results from a prior,
+    # possibly corrupted, run mask the summary line this parses below).
+    index_dir = _run_dir(ws, run_name) / "tmp" / "validate_index"
+    index_dir.mkdir(parents=True, exist_ok=True)
+    r = _run(
+        ["dftracer_event_count", "--directory", str(d),
+         "--index-dir", str(index_dir), "--force"],
+        timeout=300,
+    )
+    if not r["success"]:
+        return _err("dftracer_event_count failed", **r)
+
+    log = r["stderr"] + "\n" + r["stdout"]
+    m = re.search(
+        r"indexed=(\d+)\s+skipped=(\d+)\s+failed=(\d+)", log
+    )
+    indexed = skipped = failed = None
+    if m:
+        indexed, skipped, failed = (int(g) for g in m.groups())
+
+    valid_events = None
+    stdout_lines = [l.strip() for l in r["stdout"].splitlines() if l.strip()]
+    if stdout_lines and stdout_lines[-1].isdigit():
+        valid_events = int(stdout_lines[-1])
+
+    result = {
+        "directory": str(d),
+        "trace_file_count": len(trace_files),
+        "indexed": indexed,
+        "skipped": skipped,
+        "failed": failed,
+        "valid_events": valid_events,
+        "stderr_tail": r["stderr"][-2000:],
+    }
+    _save_state(run_id, {"step": f"traces_validated_{run_name}", "validate_result": result})
+    _write_artifact_log(ws, 12, "session_validate_traces", result, run_id)
+
+    if failed is not None and failed > 0:
+        return _err(
+            f"{failed} of {indexed + skipped + failed} trace file(s) failed "
+            f"dftracer_event_count validation (corrupted/truncated)",
+            **result,
+        )
+    return _ok(
+        f"All {trace_files and (indexed if indexed is not None else len(trace_files))} "
+        f"trace file(s) validated cleanly ({valid_events if valid_events is not None else '?'} valid events)",
+        **result,
+    )
+
+
 def _session_collect_system_info_impl(run_id: str) -> str:
     """Standalone implementation of session_collect_system_info."""
     import json as _json

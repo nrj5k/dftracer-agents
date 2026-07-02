@@ -31,7 +31,7 @@ from typing import List, Optional
 from fastmcp import FastMCP
 
 from ...mcp_service_factory import MCPService
-from ..session.session_tools import _session_split_traces_impl
+from ..session.session_tools import _session_split_traces_impl, _session_validate_traces_impl
 
 
 # ── shared / default helpers ───────────────────────────────────────────
@@ -1409,6 +1409,44 @@ class DftracerUtilsService(MCPService):
                 *run_name*) to query the compacted output.
             """
             return _session_split_traces_impl(run_id=run_id, app_name=app_name, run_name=run_name)
+
+        @self.session_subservice.tool()
+        def session_validate_traces(
+            run_id: str,
+            run_name: str = "baseline",
+            traces_dir: Optional[str] = None,
+        ) -> str:
+            """Validate trace files via dftracer-utils' own indexing/parsing pipeline.
+
+            Runs ``dftracer_event_count --directory <dir> --force`` over the
+            session's trace files. This forces dftracer-utils to fully parse
+            and index every ``.pfw``/``.pfw.gz`` file, so a file that is
+            truncated or contains malformed JSON (e.g. a worker killed
+            mid-write) is surfaced by the tool's own
+            ``indexed=.. skipped=.. failed=..`` summary rather than by any
+            separate ad hoc content check.
+
+            By default validates ``<workspace>/<run_name>/traces/compact/``
+            if it has trace files, else ``<workspace>/<run_name>/traces/raw/``.
+            Pass ``traces_dir`` to validate an arbitrary directory instead
+            (e.g. a per-iteration optimization-loop trace directory).
+
+            Args:
+                run_id:     Session identifier returned by ``session_create``.
+                run_name:   Run label (e.g. ``"baseline"``, ``"opt1"``).
+                    Ignored when ``traces_dir`` is given.
+                traces_dir: Explicit directory to validate, overriding the
+                    ``run_name``-derived default.
+
+            Returns:
+                JSON string with ``status``, ``message``, ``directory``,
+                ``trace_file_count``, ``indexed``, ``skipped``, ``failed``,
+                and ``valid_events``. ``status`` is ``"error"`` when any file
+                fails validation (``failed > 0``).
+            """
+            return _session_validate_traces_impl(
+                run_id=run_id, run_name=run_name, traces_dir=traces_dir
+            )
 
     # ── Execute / name (abstract contract) ────────────────────────────
 
