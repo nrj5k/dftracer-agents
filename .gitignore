@@ -4,12 +4,7 @@ venv/
 # Workspace directories
 workspaces/*
 !workspaces/.gitkeep
-dftracer-agents.egg-info
-dftracer_agents.egg-info/dependency_links.txt
-dftracer_agents.egg-info/PKG-INFO
-dftracer_agents.egg-info/requires.txt
-dftracer_agents.egg-info/SOURCES.txt
-dftracer_agents.egg-info/top_level.txt
+*.egg-info/
 /__pycache__/
 *.pyc
 */.dftindex/*
@@ -22,7 +17,6 @@ node_modules
 package.json
 build
 venv-test
-dftracer-agents/.agents
 test/data/dftracer-sample
 package-lock.json
 workspaces/
