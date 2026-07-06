@@ -18,6 +18,10 @@
       "Write(/root/*)"
     ],
     "allow": [
+      "Edit(.claude/commands/*)",
+      "Write(.claude/commands/*)",
+      "Bash(git add .claude/commands/*)",
+      "Bash(git commit *)",
       "Bash(ls workspaces/*)",
       "Bash(mkdir -p workspaces/*)",
       "Bash(cp * workspaces/*)",

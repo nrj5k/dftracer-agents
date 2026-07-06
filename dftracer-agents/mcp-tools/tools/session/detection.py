@@ -752,6 +752,206 @@ def _detect_system_hwloc() -> bool:
     return any(Path(p).exists() for p in _HWLOC_HEADER_SEARCH)
 
 
+def _read_rocm_version(rocm_path: str) -> Optional[str]:
+    """Read ROCm version from .info/version file under rocm_path."""
+    for vfile in (".info/version", "version", "lib/rocm_version.h"):
+        p = Path(rocm_path) / vfile
+        if p.exists():
+            try:
+                text = p.read_text(errors="ignore").strip()
+                m = re.search(r"(\d+\.\d+[\.\d]*)", text)
+                if m:
+                    return m.group(1)
+            except OSError:
+                pass
+    return None
+
+
+def _detect_rocm_from_scripts(source_dir: Path) -> Dict[str, Any]:
+    """Scan app install/job scripts for 'module load rocm/X.Y.Z' patterns.
+
+    Covers HPC systems (like Tuolumne) where ROCm is environment-module managed
+    and not present at standard /opt/rocm paths until the module is loaded.
+    Looks in *.sh, *.job, *.slurm, *.lsf, *.bsub files under the source tree.
+
+    Returns dict with keys: found, path, version, source
+    """
+    script_extensions = {".sh", ".job", ".slurm", ".lsf", ".bsub"}
+    # ml / module load rocm/X.Y.Z
+    rocm_module_re = re.compile(
+        r"\bml\b.*\brocm/([\d]+\.[\d]+\.[\d]+)\b"
+        r"|\bmodule\s+load\b.*\brocm/([\d]+\.[\d]+\.[\d]+)\b",
+        re.I,
+    )
+    # Also match bare rocm/X.Y.Z anywhere in a line (e.g. job submission comments)
+    rocm_version_re = re.compile(r"\brocm/([\d]+\.[\d]+\.[\d]+)\b", re.I)
+
+    best_version: Optional[str] = None
+    best_source: Optional[str] = None
+
+    script_files = [
+        f for f in source_dir.rglob("*")
+        if f.is_file() and f.suffix.lower() in script_extensions
+    ]
+    # Also look one level up (repo root scripts/ dir)
+    for f in script_files:
+        try:
+            text = f.read_text(errors="ignore")
+        except OSError:
+            continue
+        # Prefer explicit module-load lines
+        m = rocm_module_re.search(text)
+        if m:
+            version = m.group(1) or m.group(2)
+            best_version = version
+            best_source = f"script:{f.name}"
+            break
+        # Fall back to any rocm/X.Y.Z mention
+        m2 = rocm_version_re.search(text)
+        if m2 and not best_version:
+            best_version = m2.group(1)
+            best_source = f"script:{f.name}"
+
+    if not best_version:
+        return {"found": False, "path": None, "version": None, "source": None}
+
+    # Build the expected /opt/rocm-X.Y.Z path and check if it exists
+    candidate_path = f"/opt/rocm-{best_version}"
+    rocm_path = candidate_path if Path(candidate_path).exists() else None
+    # If versioned path missing, try plain /opt/rocm
+    if not rocm_path and Path("/opt/rocm").exists():
+        rocm_path = "/opt/rocm"
+
+    return {
+        "found": True,
+        "path": rocm_path,
+        "version": best_version,
+        "source": best_source,
+    }
+
+
+def _detect_rocm(source_dir: Optional[Path] = None) -> Dict[str, Any]:
+    """Detect ROCm (AMD GPU) stack on the system.
+
+    Checks (in order):
+    1. App install/job scripts for 'module load rocm/X.Y.Z' (HPC module systems)
+    2. ROCM_PATH / ROCM_HOME / HIP_PATH environment variables
+    3. /opt/rocm-X.Y.Z and /opt/rocm directory existence
+    4. hipcc compiler on PATH
+    5. rocm-smi / rocminfo tool on PATH
+
+    Pass source_dir to enable script scanning (step 1), which is the most
+    reliable strategy on HPC systems like Tuolumne where ROCm is module-managed.
+
+    Returns dict with keys:
+        found (bool), path (str or None), version (str or None), source (str or None)
+    """
+    import os as _os
+
+    # 1. App scripts (most reliable on HPC module-managed systems)
+    if source_dir is not None:
+        script_result = _detect_rocm_from_scripts(source_dir)
+        if script_result["found"]:
+            return script_result
+
+    # 2. Environment variables
+    for env_var in ("ROCM_PATH", "ROCM_HOME", "HIP_PATH"):
+        val = _os.environ.get(env_var)
+        if val and Path(val).exists():
+            version = _read_rocm_version(val)
+            return {"found": True, "path": val, "version": version, "source": f"env:{env_var}"}
+
+    # 3. Versioned and default /opt/rocm paths
+    rocm_candidates = ["/opt/rocm"]
+    # Also scan /opt/ for any rocm-X.Y.Z directories
+    opt = Path("/opt")
+    if opt.exists():
+        rocm_candidates += sorted(
+            str(p) for p in opt.iterdir()
+            if p.is_dir() and p.name.startswith("rocm-")
+        )
+    for candidate in rocm_candidates:
+        if Path(candidate).exists():
+            version = _read_rocm_version(candidate)
+            return {"found": True, "path": candidate, "version": version, "source": f"path:{candidate}"}
+
+    # 4. hipcc on PATH
+    hipcc = shutil.which("hipcc")
+    if hipcc:
+        rocm_root = str(Path(hipcc).parent.parent)
+        version = _read_rocm_version(rocm_root)
+        return {"found": True, "path": rocm_root, "version": version, "source": "hipcc"}
+
+    # 5. rocm-smi / rocminfo
+    if shutil.which("rocm-smi") or shutil.which("rocminfo"):
+        return {"found": True, "path": None, "version": None, "source": "rocm-smi"}
+
+    return {"found": False, "path": None, "version": None, "source": None}
+
+
+def _detect_ml_frameworks(all_text: str) -> Dict[str, Any]:
+    """Detect ML/AI frameworks from source text patterns.
+
+    Returns dict with bool flag per framework and a list of detected frameworks.
+    """
+    frameworks: List[str] = []
+    details: Dict[str, bool] = {}
+
+    patterns = [
+        ("pytorch",     r"import torch\b|from torch\b|torch\.nn|torch\.optim|torch\.cuda|torch\.distributed"),
+        ("tensorflow",  r"import tensorflow|from tensorflow|tf\.keras|tf\.data|tf\.distribute"),
+        ("jax",         r"import jax\b|from jax\b|jax\.numpy|jax\.grad|jax\.jit"),
+        ("keras",       r"import keras\b|from keras\b|keras\.layers|keras\.Model"),
+        ("flax",        r"import flax\b|from flax\b|flax\.linen"),
+        ("mxnet",       r"import mxnet|from mxnet\b|mx\.nd\b"),
+        ("horovod",     r"import horovod|from horovod\b|hvd\.init\(\)"),
+        ("deepspeed",   r"import deepspeed\b|from deepspeed\b|deepspeed\.initialize"),
+        ("megatron",    r"import megatron|from megatron\b"),
+        ("fsdp",        r"FullyShardedDataParallel|from torch\.distributed\.fsdp"),
+        ("dali",        r"nvidia\.dali|from nvidia\.dali\b"),
+        ("dlio",        r"from dlio_benchmark|import dlio_benchmark|dlio_benchmark"),
+        ("lightning",   r"import lightning|from lightning\b|pytorch_lightning|from pytorch_lightning"),
+    ]
+
+    for name, pattern in patterns:
+        found = bool(re.search(pattern, all_text, re.I | re.MULTILINE))
+        details[name] = found
+        if found:
+            frameworks.append(name)
+
+    return {"frameworks": frameworks, "details": details}
+
+
+#: ML/DL framework names that indicate a deep-learning training workload.
+#: When any of these are detected, dfanalyzer should use ``analyzer/preset=dlio``
+#: instead of the generic ``posix`` preset.  The ``dlio`` preset understands
+#: epoch/fetch_data/data_loader/checkpoint/compute layers natively and produces
+#: semantically richer bottleneck labels for DL workloads.
+_DL_FRAMEWORK_NAMES = frozenset({
+    "pytorch", "tensorflow", "jax", "keras", "flax", "mxnet",
+    "horovod", "deepspeed", "megatron", "fsdp", "dali", "dlio", "lightning",
+})
+
+
+def _detect_analyzer_preset(detect_info: Dict[str, Any]) -> str:
+    """Return the dfanalyzer preset name appropriate for the detected workload.
+
+    Uses the ML framework list from ``_detect_info`` output.  If any known
+    deep-learning framework is present the ``dlio`` preset is returned;
+    otherwise ``posix`` is returned for generic POSIX I/O workloads.
+
+    Args:
+        detect_info: Dict returned by :func:`_detect_info`.
+
+    Returns:
+        ``"dlio"`` for deep-learning workloads, ``"posix"`` otherwise.
+    """
+    frameworks = set(detect_info.get("ml_frameworks_list", []))
+    if frameworks & _DL_FRAMEWORK_NAMES:
+        return "dlio"
+    return "posix"
+
+
 def _detect_info(source_dir: Path) -> Dict[str, Any]:
     """Scan a source tree and return a comprehensive analysis dict.
 
@@ -866,6 +1066,17 @@ def _detect_info(source_dir: Path) -> Dict[str, Any]:
         "openmp":   bool(re.search(r"omp\.h|#pragma omp|import openmp", all_text, re.I)),
     }
 
+    # Detect ROCm: scan app scripts first (HPC module-managed), then system paths
+    rocm_info = _detect_rocm(source_dir=source_dir)
+    ml_frameworks = _detect_ml_frameworks(all_text)
+
+    # HIP tracing: enable when either HIP source code patterns found OR ROCm stack present
+    hip_tracing_needed = features["hip"] or rocm_info["found"]
+    features["rocm"] = rocm_info
+    features["ml_frameworks"] = ml_frameworks["frameworks"]
+    features["ml_framework_details"] = ml_frameworks["details"]
+    features["hip_tracing_needed"] = hip_tracing_needed
+
     # Detect MPI implementation via compiled C probe so we get the exact
     # vendor string and can pass explicit cmake compiler hints.
     mpi_impl_info: Dict[str, Any] = {}
@@ -911,7 +1122,7 @@ def _detect_info(source_dir: Path) -> Dict[str, Any]:
         if hdf5_root:
             dftracer_pip_env["HDF5_ROOT"] = hdf5_root
             dftracer_pip_env["HDF5_DIR"] = hdf5_root
-    if features["hip"]:
+    if hip_tracing_needed:
         dftracer_pip_env["DFTRACER_ENABLE_HIP_TRACING"] = "ON"
     if hwloc_found:
         dftracer_pip_env["DFTRACER_DISABLE_HWLOC"] = "OFF"
@@ -930,7 +1141,7 @@ def _detect_info(source_dir: Path) -> Dict[str, Any]:
         cmake_args_parts.append("-DDFTRACER_ENABLE_HDF5=ON")
         if hdf5_root:
             cmake_args_parts.append(f"-DHDF5_ROOT={hdf5_root}")
-    if features["hip"]:
+    if hip_tracing_needed:
         cmake_args_parts.append("-DDFTRACER_ENABLE_HIP_TRACING=ON")
     if hwloc_found:
         cmake_args_parts.append("-DDFTRACER_DISABLE_HWLOC=OFF")
@@ -972,4 +1183,7 @@ def _detect_info(source_dir: Path) -> Dict[str, Any]:
         "dftracer_cmake_flags": dftracer_cmake_flags,
         "key_files": key_files,
         "readme_excerpt": readme_content,
+        "rocm_info": rocm_info,
+        "ml_frameworks_list": ml_frameworks["frameworks"],
+        "hip_tracing_needed": hip_tracing_needed,
     }

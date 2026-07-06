@@ -3,6 +3,53 @@ name: dftracer-io-optimization
 description: Key literature, bottleneck-to-optimization mappings, and strategies for the dftracer I/O optimization pipeline
 ---
 
+## MANDATORY: Datasets Must Live on Lustre, Never NFS
+
+Application datasets (training data, fractals/checkpoints/runs, any file the
+app reads/writes repeatedly during a run) **must be placed on Lustre**
+(`/p/lustre5/$USER/...`), never on NFS-backed paths (e.g. `/usr/WS*`,
+`/g/g*`, `/collab/...`). NFS is a single-server filesystem with no striping
+— it hard-caps aggregate bandwidth/IOPS regardless of how well the
+application layer (num_workers, prefetch_factor, persistent_workers) is
+tuned. This was confirmed directly on Tuolumne: a ScaFFold fractal dataset
+sitting on NFS (`cz-ws2-nfs-new.llnl.gov`) showed critical `posix_*_ops_slope`
+bottlenecks and only ~41% compute/I-O overlap even with L1-optimal
+DataLoader settings; moving the same dataset to Lustre with matched striping
+removed the ceiling entirely without any app-level code change.
+
+**Before running any benchmark/training job**, check where the dataset
+directory actually lives:
+```bash
+stat -f <dataset_dir>          # look for "Type: nfs" vs "Type: lustre"
+df -T <dataset_dir>             # filesystem type column
+```
+If it's NFS, copy it to Lustre and repoint the app's data-dir argument —
+do not proceed with performance analysis on an NFS-resident dataset, since
+any I/O bottleneck found there may just be "wrong filesystem," not a real
+app/library issue.
+
+### Set Lustre striping to match the access pattern
+
+Striping must be sized to the **actual per-file size and per-I/O transfer
+size observed in the trace**, not applied blindly:
+
+| Access pattern (from trace)                          | Stripe count            | Stripe size                          |
+|--------------------------------------------------------|--------------------------|----------------------------------------|
+| Many small files, each < stripe size (e.g. ML per-sample files, KB–few MB) | `1` — striping a tiny file across multiple OSTs adds overhead with no parallelism benefit; parallelism instead comes from many *files* being spread across the directory/filesystem | leave at filesystem default |
+| Few large shared files (checkpoints, HDF5, single big dataset file) read/written by many ranks concurrently | OST count, capped 8 for < 1 GB files, 16+ for very large files | 1–4 MB, aligned to the app's read/write transfer size (see `dftracer_info`/diagnose `*_avg_transfer_size`) |
+| Sequential large writes (checkpoints) | 4–8 | 4 MB (matches ROMIO `cb_buffer_size` default of 64 MB / 16 aggregators) |
+
+Apply with `lfs setstripe -c <count> -S <size> <dir>` **before** any file is
+created in that directory (striping is set at file-creation time and cannot
+be changed retroactively without rewriting the file). For a directory of
+many small per-sample files (the common ML dataset case), the correct call
+is simply `lfs setstripe -c 1 <dataset_dir>` — do NOT default to a high
+stripe count "for safety"; it actively hurts small-file access.
+
+Verify after copying data in: `lfs getstripe -c <dataset_dir>` should report
+the value you set, and `lfs getstripe <sample_file>` should show a single
+OST for small-file datasets.
+
 ## Related Skills
 
 Software-specific strategies are also available in dedicated skills:
@@ -103,7 +150,16 @@ Use this when the agent must suggest which metric to optimize:
 
 ## Built-in Citations
 
-These two references are always available and must be used when their coverage matches the bottleneck being addressed.
+These references are always available and must be used when their coverage matches the bottleneck being addressed.
+
+### GLANCED-IO (Sinurat et al., HPDC 2026)
+
+- **Authors:** Sinurat et al. (Argonne, U. Chicago, LLNL)
+- **Title:** "GLANCED-IO: Taming I/O Optimization for Deep Learning at Scale"
+- **Venue:** HPDC '26
+- **Local PDF:** `resources/papers/HPDC26_GLANCED_IO.pdf` (search via `session_search_local_papers`)
+- **Covers:** compute/IO overlap verification, num_workers → prefetch_factor → dataset_access_pattern → PFS_striping → transfer_size (portable-to-hard parameter ordering), cross-layer siloed-optimization pitfalls
+- **Key rule (OVERLAP-1):** verify dataloader and compute events actually overlap in the dftracer timeline — sequential load→compute→load (low overlap %) signals a pipeline stall even when num_workers/prefetch_factor look correctly configured; the root cause is often a lower layer (small-I/O access pattern, wrong filesystem, unmatched striping), not the app-level DataLoader knobs
 
 ### WisIO (Yildirim et al., ICS 2025)
 

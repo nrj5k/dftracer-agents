@@ -1,0 +1,1718 @@
+diff --git a/ScaFFold/benchmark.py b/ScaFFold/benchmark.py
+index d0f6ad8..9326bd0 100644
+--- a/ScaFFold/benchmark.py
++++ b/ScaFFold/benchmark.py
+@@ -23,8 +23,11 @@ from mpi4py import MPI
+ from ScaFFold import worker
+ from ScaFFold.utils.distributed import get_world_rank
+ from ScaFFold.utils.perf_measure import adiak_init, adiak_value
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("benchmark")
+ 
+ 
++@_dlp.log
+ def create_run_directory(base_dir, combination_index, num_runs):
+     """
+     Create new directory for current run, named using unique combination_index
+@@ -36,6 +39,7 @@ def create_run_directory(base_dir, combination_index, num_runs):
+     return run_dir
+ 
+ 
++@_dlp.log
+ def write_run_config(run_dir, iter, keys, combination):
+     """
+     Write run config to a yaml file, and create optional override yaml
+@@ -51,6 +55,7 @@ def write_run_config(run_dir, iter, keys, combination):
+     return run_config_path
+ 
+ 
++@dft_ai
+ def main(kwargs_dict: dict = {}):
+     args = Namespace(**kwargs_dict)
+ 
+diff --git a/ScaFFold/cli.py b/ScaFFold/cli.py
+index 9249aac..579a5b4 100644
+--- a/ScaFFold/cli.py
++++ b/ScaFFold/cli.py
+@@ -26,8 +26,11 @@ from ScaFFold.utils import config_utils
+ from ScaFFold.utils.collect_scheduler_info import collect_scheduler_metadata
+ from ScaFFold.utils.create_restart_script import create_restart_script
+ from ScaFFold.utils.utils import customlog
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("cli")
+ 
+ 
++@dft_ai
+ def main():
+     """
+     Command line interface for ScaFFold.
+diff --git a/ScaFFold/datagen/IteratedFunctionSystem.py b/ScaFFold/datagen/IteratedFunctionSystem.py
+index aded2f2..1bf2470 100644
+--- a/ScaFFold/datagen/IteratedFunctionSystem.py
++++ b/ScaFFold/datagen/IteratedFunctionSystem.py
+@@ -13,9 +13,12 @@
+ # SPDX-License-Identifier: (Apache-2.0)
+ 
+ import numpy as np
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("IteratedFunctionSystem")
+ 
+ 
+ class ifs_function:
++    @_dlp.log_init
+     def __init__(self):
+         self.prev_x, self.prev_y, self.prev_z = 0.0, 0.0, 0.0
+         self.function = []
+@@ -23,6 +26,7 @@ class ifs_function:
+         self.select_function = []
+         self.temp_proba = 0.0
+ 
++    @_dlp.log
+     def set_param(self, a, b, c, d, e, f, g, h, i, j, k, l, proba, **kwargs):  # noqa: E741
+         if "weight_a" in kwargs:
+             a *= kwargs["weight_a"]
+@@ -67,6 +71,7 @@ class ifs_function:
+         self.temp_proba += proba
+         self.select_function.append(self.temp_proba)
+ 
++    @_dlp.log
+     def calculate(self, iteration):
+         """Recursively calculate coordinates for args.iteration"""
+         rand = np.random.random(iteration)
+diff --git a/ScaFFold/datagen/category_search.py b/ScaFFold/datagen/category_search.py
+index 8b819e7..eaebfbd 100644
+--- a/ScaFFold/datagen/category_search.py
++++ b/ScaFFold/datagen/category_search.py
+@@ -27,6 +27,8 @@ from mpi4py import MPI
+ 
+ from ScaFFold.datagen.generate_fractal_points import generate_fractal_points
+ from ScaFFold.utils.config_utils import Config
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("category_search")
+ 
+ DEFAULT_NP_DTYPE = np.float64
+ 
+@@ -35,6 +37,7 @@ rank = None
+ size = None
+ 
+ 
++@_dlp.log
+ def generate_single_category(config: Config) -> tuple[bool, np.array, bool, bool, bool]:
+     """
+     Generate a single fractal category.
+@@ -118,6 +121,7 @@ def generate_single_category(config: Config) -> tuple[bool, np.array, bool, bool
+     )
+ 
+ 
++@_dlp.log
+ def generate_categories_batch(
+     config: Config, datagen_batch_size: int = 1
+ ) -> tuple[bool, np.array, int, int, int]:
+@@ -174,6 +178,7 @@ def generate_categories_batch(
+     )
+ 
+ 
++@dft_ai
+ def main(config: Config) -> None:
+     """
+     Generate fractal categories.
+diff --git a/ScaFFold/datagen/data_visualizer.py b/ScaFFold/datagen/data_visualizer.py
+index d7ff331..1c69b2c 100644
+--- a/ScaFFold/datagen/data_visualizer.py
++++ b/ScaFFold/datagen/data_visualizer.py
+@@ -16,8 +16,11 @@ import argparse
+ 
+ import numpy as np
+ from matplotlib import pyplot as plt
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("data_visualizer")
+ 
+ 
++@_dlp.log
+ def get_args():
+     parser = argparse.ArgumentParser()
+     parser.add_argument(
+diff --git a/ScaFFold/datagen/generate_fractal_points.py b/ScaFFold/datagen/generate_fractal_points.py
+index 29cb89f..469e27d 100644
+--- a/ScaFFold/datagen/generate_fractal_points.py
++++ b/ScaFFold/datagen/generate_fractal_points.py
+@@ -16,10 +16,10 @@ import numba
+ 
+ # -*- coding: utf-8 -*-
+ import numpy as np
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("generate_fractal_points")
+ 
+ DEFAULT_NP_DTYPE = np.float64
+-
+-
+ @numba.njit
+ def generate_fractal_points(params: np.array, numpoints: int):
+     """
+diff --git a/ScaFFold/datagen/get_dataset.py b/ScaFFold/datagen/get_dataset.py
+index c7ffaf9..0d7a893 100644
+--- a/ScaFFold/datagen/get_dataset.py
++++ b/ScaFFold/datagen/get_dataset.py
+@@ -27,6 +27,8 @@ import yaml
+ from mpi4py import MPI
+ 
+ from ScaFFold.datagen import volumegen
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("get_dataset")
+ 
+ META_FILENAME = "meta.yaml"
+ DATASET_FORMAT_VERSION = 2
+@@ -42,6 +44,7 @@ INCLUDE_KEYS = [
+ ]
+ 
+ 
++@_dlp.log
+ def canonicalize(input):
+     """
+     Sort dict keys, recursing on lists/dicts, for stable hashing.
+@@ -54,6 +57,7 @@ def canonicalize(input):
+         return input
+ 
+ 
++@_dlp.log
+ def _get_required_keys_dict(
+     config: Dict[str, Any], include_keys: list[str]
+ ) -> Dict[str, Any]:
+@@ -71,11 +75,13 @@ def _get_required_keys_dict(
+     return canonicalize(required)
+ 
+ 
++@_dlp.log
+ def _hash_volume_config(volume_config: Dict[str, Any]) -> str:
+     s = json.dumps(volume_config, separators=(",", ":"), sort_keys=True).encode()
+     return hashlib.sha256(s).hexdigest()[:12]
+ 
+ 
++@_dlp.log
+ def _git_commit_short() -> str:
+     try:
+         return (
+@@ -98,6 +104,7 @@ def _git_commit_short() -> str:
+         return "no-commit-id"
+ 
+ 
++@_dlp.log
+ def get_dataset(
+     config: Namespace,
+     require_commit: bool = False,  # default: ignore commit mismatches for reuse
+diff --git a/ScaFFold/datagen/instance.py b/ScaFFold/datagen/instance.py
+index a14c2fb..e6b8c40 100644
+--- a/ScaFFold/datagen/instance.py
++++ b/ScaFFold/datagen/instance.py
+@@ -29,6 +29,8 @@ from mpi4py import MPI
+ 
+ from ScaFFold.datagen.generate_fractal_points import generate_fractal_points
+ from ScaFFold.utils.config_utils import Config
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("instance")
+ 
+ DEFAULT_NP_DTYPE = np.float64
+ 
+@@ -37,6 +39,7 @@ rank = None
+ size = None
+ 
+ 
++@_dlp.log
+ def generate_single_instance(pointcloud_point_num: int, params: np.array) -> np.array:
+     """
+     Generate a single fractal instance.
+@@ -56,6 +59,7 @@ def generate_single_instance(pointcloud_point_num: int, params: np.array) -> np.
+     return points
+ 
+ 
++@dft_ai
+ def main(config: Config):
+     """
+     Generate fractal instances.
+diff --git a/ScaFFold/datagen/mask_detection.py b/ScaFFold/datagen/mask_detection.py
+index 807e001..2a8428c 100644
+--- a/ScaFFold/datagen/mask_detection.py
++++ b/ScaFFold/datagen/mask_detection.py
+@@ -23,8 +23,11 @@ from pathlib import Path
+ 
+ import numpy as np
+ from tqdm import tqdm
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("mask_detection")
+ 
+ 
++@_dlp.log
+ def get_args():
+     parser = argparse.ArgumentParser()
+     parser.add_argument(
+@@ -45,6 +48,7 @@ def get_args():
+     return args
+ 
+ 
++@_dlp.log
+ def unique_mask_values(idx, directory):
+     mask_file = list(directory.glob(idx + ".*"))[0]
+     with open(mask_file, "rb") as f:
+@@ -55,6 +59,7 @@ def unique_mask_values(idx, directory):
+     return np.unique(mask)
+ 
+ 
++@dft_ai
+ def main():
+     args = get_args()
+     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+diff --git a/ScaFFold/datagen/volumegen.py b/ScaFFold/datagen/volumegen.py
+index b268aa7..c583366 100644
+--- a/ScaFFold/datagen/volumegen.py
++++ b/ScaFFold/datagen/volumegen.py
+@@ -27,8 +27,11 @@ from mpi4py import MPI
+ 
+ from ScaFFold.utils.config_utils import Config
+ from ScaFFold.utils.data_types import DEFAULT_NP_DTYPE, MASK_DTYPE, VOLUME_DTYPE
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("volumegen")
+ 
+ 
++@_dlp.log
+ def load_np_ptcloud(path: str) -> np.ndarray:
+     """
+     Read a .npy file and return an (N,3) array of dtype float64.
+@@ -37,6 +40,7 @@ def load_np_ptcloud(path: str) -> np.ndarray:
+     return pts.astype(DEFAULT_NP_DTYPE, copy=False)
+ 
+ 
++@_dlp.log
+ def points_to_voxelgrid(
+     points: np.ndarray, grid_size: int, eps: float = 1e-6
+ ) -> np.ndarray:
+@@ -65,6 +69,7 @@ def points_to_voxelgrid(
+     return grid
+ 
+ 
++@dft_ai
+ def main(config: Dict):
+     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+ 
+diff --git a/ScaFFold/generate_fractals.py b/ScaFFold/generate_fractals.py
+index 99448dc..9881509 100644
+--- a/ScaFFold/generate_fractals.py
++++ b/ScaFFold/generate_fractals.py
+@@ -17,8 +17,11 @@ from argparse import Namespace
+ from mpi4py import MPI
+ 
+ from ScaFFold.datagen import category_search, instance
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("generate_fractals")
+ 
+ 
++@dft_ai
+ def main(kwargs_dict: dict = {}):
+     args = Namespace(**kwargs_dict)
+     comm = MPI.COMM_WORLD
+diff --git a/ScaFFold/paths.py b/ScaFFold/paths.py
+index dc54587..43da85f 100644
+--- a/ScaFFold/paths.py
++++ b/ScaFFold/paths.py
+@@ -13,8 +13,11 @@
+ # SPDX-License-Identifier: (Apache-2.0)
+ 
+ import pathlib
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("paths")
+ 
+ 
++@_dlp.log
+ def _source_location() -> pathlib.Path:
+     """Return the location of the project source files directory."""
+     path_to_this_file = __file__
+diff --git a/ScaFFold/unet/unet_model.py b/ScaFFold/unet/unet_model.py
+index 41ff4f8..a376b76 100644
+--- a/ScaFFold/unet/unet_model.py
++++ b/ScaFFold/unet/unet_model.py
+@@ -20,6 +20,8 @@ import torch.nn as nn
+ from ScaFFold.utils.perf_measure import annotate
+ 
+ from .unet_parts import DoubleConv, Down, OutConv, Up
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("unet_model")
+ 
+ _unet_annotate = annotate(fmt="UNet.{}")
+ 
+@@ -40,6 +42,7 @@ class UNet(nn.Module):
+     self.outc = (OutConv(64, n_classes))
+     """
+ 
++    @_dlp.log_init
+     @_unet_annotate
+     def __init__(
+         self,
+@@ -118,6 +121,7 @@ class UNet(nn.Module):
+     return logits
+     """
+ 
++    @dft_ai.compute.forward
+     @_unet_annotate
+     def forward(self, x):
+         results = []
+@@ -150,6 +154,7 @@ class UNet(nn.Module):
+     self.outc = torch.utils.checkpoint(self.outc)
+     """
+ 
++    @_dlp.log
+     def use_checkpointing(self):
+         for i in range(len(self.down_list)):
+             self.down_list[i] = torch.utils.checkpoint(self.down_list[i])
+diff --git a/ScaFFold/unet/unet_parts.py b/ScaFFold/unet/unet_parts.py
+index bd44cee..7b198bf 100644
+--- a/ScaFFold/unet/unet_parts.py
++++ b/ScaFFold/unet/unet_parts.py
+@@ -19,6 +19,8 @@ import torch.nn as nn
+ import torch.nn.functional as F
+ 
+ from ScaFFold.utils.perf_measure import annotate
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("unet_parts")
+ 
+ _doubleconv_annotate = annotate(fmt="DoubleConv.{}")
+ _down_annotate = annotate(fmt="Down.{}")
+@@ -26,6 +28,7 @@ _up_annotate = annotate(fmt="Up.{}")
+ _outconv_annotate = annotate(fmt="OutConv.{}")
+ 
+ 
++@_dlp.log
+ def _group_norm(num_groups, num_channels):
+     if num_channels % num_groups != 0:
+         raise ValueError(
+@@ -37,6 +40,7 @@ def _group_norm(num_groups, num_channels):
+ class DoubleConv(nn.Module):
+     """(convolution => GroupNorm => ReLU) * 2"""
+ 
++    @_dlp.log_init
+     def __init__(self, in_channels, out_channels, group_norm_groups, mid_channels=None):
+         super().__init__()
+         if not mid_channels:
+@@ -50,6 +54,7 @@ class DoubleConv(nn.Module):
+             nn.ReLU(inplace=True),
+         )
+ 
++    @dft_ai.compute.forward
+     @_doubleconv_annotate
+     def forward(self, x):
+         return self.double_conv(x)
+@@ -58,6 +63,7 @@ class DoubleConv(nn.Module):
+ class Down(nn.Module):
+     """Downscaling with maxpool then double conv"""
+ 
++    @_dlp.log_init
+     def __init__(self, in_channels, out_channels, group_norm_groups):
+         super().__init__()
+         self.maxpool_conv = nn.Sequential(
+@@ -65,6 +71,7 @@ class Down(nn.Module):
+             DoubleConv(in_channels, out_channels, group_norm_groups),
+         )
+ 
++    @dft_ai.compute.forward
+     @_down_annotate
+     def forward(self, x):
+         return self.maxpool_conv(x)
+@@ -73,6 +80,7 @@ class Down(nn.Module):
+ class Up(nn.Module):
+     """Upscaling then double conv"""
+ 
++    @_dlp.log_init
+     def __init__(self, in_channels, out_channels, group_norm_groups, trilinear=True):
+         super().__init__()
+ 
+@@ -91,6 +99,7 @@ class Up(nn.Module):
+             )
+             self.conv = DoubleConv(in_channels, out_channels, group_norm_groups)
+ 
++    @dft_ai.compute.forward
+     @_up_annotate
+     def forward(self, x1, x2):
+         x1 = self.up(x1)
+@@ -118,10 +127,12 @@ class Up(nn.Module):
+ 
+ 
+ class OutConv(nn.Module):
++    @_dlp.log_init
+     def __init__(self, in_channels, out_channels):
+         super(OutConv, self).__init__()
+         self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=1)
+ 
++    @dft_ai.compute.forward
+     @_outconv_annotate
+     def forward(self, x):
+         return self.conv(x)
+diff --git a/ScaFFold/utils/checkpoint_validators.py b/ScaFFold/utils/checkpoint_validators.py
+index c2212b6..8269bc2 100644
+--- a/ScaFFold/utils/checkpoint_validators.py
++++ b/ScaFFold/utils/checkpoint_validators.py
+@@ -13,6 +13,8 @@
+ # SPDX-License-Identifier: (Apache-2.0)
+ 
+ import os
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("checkpoint_validators")
+ 
+ # import pdb
+ 
+@@ -24,7 +26,9 @@ else:
+ import torch
+ 
+ 
++@_dlp.log
+ def compare_state_dicts(quantity: str, dict1, dict2):
++    @_dlp.log
+     def _compare(dict1, dict2, prefix=""):
+         equal = True
+         if dict1.keys() != dict2.keys():
+@@ -65,6 +69,7 @@ def compare_state_dicts(quantity: str, dict1, dict2):
+     return _compare(dict1, dict2)
+ 
+ 
++@_dlp.log
+ def compare_state_dicts2(*dicts):
+     keys = dicts[0].keys()
+     for key in keys:
+@@ -82,10 +87,12 @@ def compare_state_dicts2(*dicts):
+     return True
+ 
+ 
++@_dlp.log
+ def compare_tensors(tensor1, tensor2):
+     return torch.all(torch.eq(tensor1, tensor2))
+ 
+ 
++@_dlp.log
+ def compare_items(item1, item2):
+     if isinstance(item1, torch.Tensor) and isinstance(item2, torch.Tensor):
+         return compare_tensors(item1, item2)
+@@ -95,6 +102,7 @@ def compare_items(item1, item2):
+         return item1 == item2
+ 
+ 
++@_dlp.log
+ def compare_dicts3(dict1, dict2):
+     if dict1.keys() != dict2.keys():
+         return False
+diff --git a/ScaFFold/utils/checkpointing.py b/ScaFFold/utils/checkpointing.py
+index 2a06a3c..e86bb86 100644
+--- a/ScaFFold/utils/checkpointing.py
++++ b/ScaFFold/utils/checkpointing.py
+@@ -22,6 +22,8 @@ from typing import Any, Dict, Optional
+ import numpy as np
+ import torch
+ import torch.distributed as dist
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("checkpointing")
+ 
+ 
+ class CheckpointManager:
+@@ -34,6 +36,7 @@ class CheckpointManager:
+                            Requires sufficient CPU RAM to hold a full model copy.
+     """
+ 
++    @_dlp.log_init
+     def __init__(
+         self,
+         *,
+@@ -74,6 +77,7 @@ class CheckpointManager:
+         if self.world_rank == 0:
+             self.base_dir.mkdir(parents=True, exist_ok=True)
+ 
++    @_dlp.log
+     def cleanup(self, train_from_scratch: bool) -> None:
+         """Clear existing checkpoints if training from scratch."""
+         # Ensure any pending async saves are finished before deleting
+@@ -93,6 +97,7 @@ class CheckpointManager:
+                         self._log(f"Failed to remove {p}: {e}")
+         self._barrier()
+ 
++    @_dlp.log
+     def wait_for_save(self):
+         """Blocks until the background save (if any) is complete."""
+         if self.future is not None:
+@@ -105,6 +110,7 @@ class CheckpointManager:
+                 self._log(f"Background save failed with error: {e}")
+             self.future = None
+ 
++    @_dlp.log
+     def snapshot_training_state(self) -> Dict[str, Any]:
+         """Capture mutable in-memory training state without writing a checkpoint."""
+         model_ref = self.model.module if hasattr(self.model, "module") else self.model
+@@ -125,6 +131,7 @@ class CheckpointManager:
+             **self._get_rng_snapshot(),
+         }
+ 
++    @_dlp.log
+     def restore_training_state(self, snapshot: Dict[str, Any]) -> None:
+         """Restore an in-memory training snapshot."""
+         model_ref = self.model.module if hasattr(self.model, "module") else self.model
+@@ -145,6 +152,7 @@ class CheckpointManager:
+         if self.optimizer:
+             self.optimizer.zero_grad(set_to_none=True)
+ 
++    @_dlp.log
+     def load_from_checkpoint(self) -> int:
+         """Load the latest checkpoint. Returns start_epoch (default 1)."""
+         self.wait_for_save()  # Safety: don't load while writing
+@@ -212,6 +220,7 @@ class CheckpointManager:
+         self._barrier()
+         return start_epoch
+ 
++    @dft_ai.checkpoint.capture
+     def save_checkpoint(
+         self, epoch: int, val_loss_avg: float, extras: Optional[Dict[str, Any]] = None
+     ) -> bool:
+@@ -292,6 +301,7 @@ class CheckpointManager:
+         return is_best
+ 
+     @staticmethod
++    @_dlp.log_static
+     def _write_to_disk(state_dict, last_path, best_path, is_best):
+         """Worker function to perform actual disk I/O."""
+         # Save 'last'
+@@ -312,6 +322,7 @@ class CheckpointManager:
+                     print("Saving checkpoint failed. Continuing...")
+                     print(e)
+ 
++    @_dlp.log
+     def _transfer_dict_to_cpu(self, obj):
+         """Recursively move tensors to CPU."""
+         if torch.is_tensor(obj):
+@@ -325,6 +336,7 @@ class CheckpointManager:
+         else:
+             return obj
+ 
++    @_dlp.log
+     def _clone_state_dict(self, obj):
+         """Recursively clone tensors so in-memory snapshots are isolated."""
+         if torch.is_tensor(obj):
+@@ -338,10 +350,12 @@ class CheckpointManager:
+         else:
+             return obj
+ 
++    @_dlp.log
+     def _barrier(self):
+         if self.dist_enabled:
+             dist.barrier()
+ 
++    @_dlp.log
+     def _broadcast_obj(self, obj):
+         if self.dist_enabled:
+             objs = [obj]
+@@ -349,12 +363,14 @@ class CheckpointManager:
+             return objs[0]
+         return obj
+ 
++    @_dlp.log
+     def _log(self, msg):
+         if self.log:
+             self.log.info(msg)
+         elif self.world_rank == 0:
+             print(msg)
+ 
++    @_dlp.log
+     def _get_rng_snapshot(self) -> Dict[str, Any]:
+         snap = {"rng_state_pytorch": torch.get_rng_state()}
+         if torch.cuda.is_available():
+@@ -369,6 +385,7 @@ class CheckpointManager:
+             pass
+         return snap
+ 
++    @_dlp.log
+     def _restore_rng(self, snap: Dict[str, Any]):
+         try:
+             if "rng_state_pytorch" in snap:
+diff --git a/ScaFFold/utils/collect_scheduler_info.py b/ScaFFold/utils/collect_scheduler_info.py
+index c963829..ab31aa1 100644
+--- a/ScaFFold/utils/collect_scheduler_info.py
++++ b/ScaFFold/utils/collect_scheduler_info.py
+@@ -13,8 +13,11 @@
+ # SPDX-License-Identifier: (Apache-2.0)
+ 
+ import os
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("collect_scheduler_info")
+ 
+ 
++@_dlp.log
+ def detect_scheduler():
+     """Detects which scheduler is being used based on environment variables."""
+     if "FLUX_JOB_ID" in os.environ or "FLUX_JOB_NNODES" in os.environ:
+@@ -25,6 +28,7 @@ def detect_scheduler():
+         return "unknown"
+ 
+ 
++@_dlp.log
+ def collect_flux_metadata():
+     """Collects metadata from Flux environment variables."""
+     metadata = {
+@@ -42,6 +46,7 @@ def collect_flux_metadata():
+     return metadata
+ 
+ 
++@_dlp.log
+ def collect_slurm_metadata():
+     """Collects metadata from Slurm environment variables."""
+     metadata = {
+@@ -61,6 +66,7 @@ def collect_slurm_metadata():
+     return metadata
+ 
+ 
++@_dlp.log
+ def collect_scheduler_metadata():
+     """Detects scheduler and collects the relevant metadata."""
+     scheduler = detect_scheduler()
+diff --git a/ScaFFold/utils/config_utils.py b/ScaFFold/utils/config_utils.py
+index 9cb632c..f43c1ec 100644
+--- a/ScaFFold/utils/config_utils.py
++++ b/ScaFFold/utils/config_utils.py
+@@ -19,6 +19,8 @@ from pathlib import Path
+ import yaml
+ 
+ import ScaFFold.paths
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("config_utils")
+ 
+ 
+ class Config:
+@@ -26,6 +28,7 @@ class Config:
+     A class for storing configuration settings for a specific run.
+     """
+ 
++    @_dlp.log_init
+     def __init__(self, config_dict):
+         self.library_root = str(ScaFFold.paths.scaffold_root).rstrip("/") + "/ScaFFold/"
+         self.base_run_dir = str(Path(config_dict["base_run_dir"]).resolve())
+@@ -83,6 +86,9 @@ class Config:
+         ]
+         self.target_dice = config_dict["target_dice"]
+         self.checkpoint_interval = config_dict["checkpoint_interval"]
++        # Offload checkpoint disk I/O to a background thread on rank 0 so the
++        # write overlaps the next epoch's compute (opt-in; default off).
++        self.async_save = bool(config_dict.get("async_save", False))
+         self.dc_num_shards = config_dict["dc_num_shards"]
+         self.dc_shard_dims = config_dict["dc_shard_dims"]
+         self.dc_total_shards = math.prod(self.dc_num_shards)
+@@ -95,6 +101,7 @@ class Config:
+ 
+ 
+ class RunConfig(Config):
++    @_dlp.log_init
+     def __init__(self, config_dict):
+         super().__init__(config_dict)
+ 
+@@ -102,6 +109,7 @@ class RunConfig(Config):
+         self.run_iter = config_dict["run_iter"]
+ 
+ 
++@_dlp.log
+ def load_config(file_path: str, config_type: str):
+     """
+     Load run config from yaml file
+diff --git a/ScaFFold/utils/create_restart_script.py b/ScaFFold/utils/create_restart_script.py
+index 206eae7..a3d798b 100644
+--- a/ScaFFold/utils/create_restart_script.py
++++ b/ScaFFold/utils/create_restart_script.py
+@@ -23,11 +23,14 @@ from pathlib import Path
+ from typing import List, Literal, Union
+ 
+ import torch
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("create_restart_script")
+ 
+ # We now primarily rely on torchrun-hpc, but might still detect scheduler for sizing
+ Sched = Literal["flux", "slurm", "local"]
+ 
+ 
++@_dlp.log
+ def _rewrite_config_and_add_restart(cli_args: List[str]) -> List[str]:
+     """
+     Rewrite args for restart:
+@@ -78,6 +81,7 @@ def _rewrite_config_and_add_restart(cli_args: List[str]) -> List[str]:
+     return new_args
+ 
+ 
++@_dlp.log
+ def _bash_array(var_name: str, argv: List[str], var_subs: dict[str, str]) -> str:
+     """Render a Bash array declaration VAR=( ... ), safely quoted, with simple placeholder substitution."""
+     parts = []
+@@ -89,6 +93,7 @@ def _bash_array(var_name: str, argv: List[str], var_subs: dict[str, str]) -> str
+     return f"{var_name}=( " + " ".join(parts) + " )"
+ 
+ 
++@_dlp.log
+ def _get_env_setup() -> str:
+     """Return the bash block that sets up the environment based on your stable configuration."""
+     # Dynamically determine the current virtualenv path to reuse the active one
+@@ -118,6 +123,7 @@ export PROFILE_TORCH=ON
+ """
+ 
+ 
++@_dlp.log
+ def _render_torchrun_hpc_restart(
+     py_array_decl: str,
+     captured_nodes: Union[str, int],
+@@ -170,6 +176,7 @@ exec torchrun-hpc "${{LAUNCHER_ARGS[@]}}" "${{PY[@]}}"
+ """
+ 
+ 
++@_dlp.log
+ def _render_local_restart(py_array_decl: str, env_setup: str) -> str:
+     """Fallback for local restarts without torchrun-hpc."""
+     return f"""#!/usr/bin/env bash
+@@ -190,6 +197,7 @@ exec "${{PY[@]}}"
+ """
+ 
+ 
++@_dlp.log
+ def create_restart_script(run_dir: str | Path) -> Path:
+     """
+     Create run_dir/restart.sh using torchrun-hpc.
+diff --git a/ScaFFold/utils/data_loading.py b/ScaFFold/utils/data_loading.py
+index 688f329..01130b5 100644
+--- a/ScaFFold/utils/data_loading.py
++++ b/ScaFFold/utils/data_loading.py
+@@ -12,6 +12,8 @@
+ #
+ # SPDX-License-Identifier: (Apache-2.0)
+ 
++import json
++import os
+ import pickle
+ from dataclasses import dataclass
+ from os import listdir
+@@ -26,6 +28,8 @@ from torch.utils.data import Dataset
+ 
+ from ScaFFold.utils.data_types import MASK_DTYPE, VOLUME_DTYPE
+ from ScaFFold.utils.utils import customlog
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("data_loading")
+ 
+ DATASET_FORMAT_VERSION = 2
+ LEGACY_DATASET_FORMAT_VERSION = 1
+@@ -40,6 +44,7 @@ class SpatialShardSpec:
+     num_shards: Tuple[int, ...]
+     shard_indices: Tuple[int, ...]
+ 
++    @_dlp.log
+     def __post_init__(self):
+         if not (
+             len(self.shard_dims) == len(self.num_shards) == len(self.shard_indices)
+@@ -66,6 +71,7 @@ class SpatialShardSpec:
+                 )
+ 
+     @staticmethod
++    @_dlp.log_static
+     def _chunk_slice(size: int, num_shards: int, shard_index: int) -> slice:
+         """Match torch.chunk-style uneven shard boundaries."""
+ 
+@@ -78,6 +84,7 @@ class SpatialShardSpec:
+         stop = min(size, start + chunk_size)
+         return slice(start, stop)
+ 
++    @_dlp.log
+     def slice_array(
+         self, array: np.ndarray, axis_map: Dict[int, int], array_label: str
+     ) -> np.ndarray:
+@@ -103,6 +110,7 @@ class SpatialShardSpec:
+ 
+ 
+ class BasicDataset(Dataset):
++    @_dlp.log_init
+     def __init__(
+         self,
+         images_dir: str,
+@@ -118,16 +126,29 @@ class BasicDataset(Dataset):
+         self.dataset_root = self.images_dir.parents[1]
+         self.dataset_format_version = self._load_dataset_format_version()
+ 
+-        self.ids = [
+-            splitext(file)[0]
+-            for file in listdir(images_dir)
+-            if isfile(join(images_dir, file)) and not file.startswith(".")
+-        ]
++        # Build id->path maps ONCE from a single directory scan per dir, so
++        # __getitem__ never has to glob the (Lustre) directory per sample.
++        # A glob per item issues a readdir+stat storm that dominates metadata
++        # cost when 32 ranks x N workers each fetch large volumes.
++        self._img_paths = {}
++        for file in listdir(images_dir):
++            if file.startswith(".") or not isfile(join(images_dir, file)):
++                continue
++            self._img_paths[splitext(file)[0]] = join(images_dir, file)
++        self._mask_paths = {}
++        for file in listdir(mask_dir):
++            if file.startswith(".") or not isfile(join(mask_dir, file)):
++                continue
++            self._mask_paths[splitext(file)[0]] = join(mask_dir, file)
++
++        self.ids = sorted(self._img_paths.keys())
+         if not self.ids:
+             raise RuntimeError(
+                 f"No input file found in {images_dir}, make sure you put your images there"
+             )
+ 
++        # mask_values (unique mask values) are persisted at dataset-build time;
++        # just load the small pickle (already cached, no per-run recompute).
+         customlog(
+             f"Creating dataset with {len(self.ids)} examples. Loading from {data_dir}"
+         )
+@@ -137,13 +158,82 @@ class BasicDataset(Dataset):
+         customlog(f"Unique mask values: {self.mask_values}")
+         customlog(f"Dataset format version: {self.dataset_format_version}")
+ 
++        # --- packed sharded-archive fast path (opt-in via DFT_PACKED=1) ---
++        # Consolidates the per-sample 25 MB .npy volumes into one stacked,
++        # memory-mapped archive per split so each worker opens the archive ONCE
++        # (page cache shared across forked workers) and slices per sample,
++        # instead of one open() per sample. Falls back to per-file transparently.
++        # NOTE: A/B-tested and found to REGRESS this workload (random-shuffled
++        # access to a large memmap) — left disabled by default.
++        self._packed = False
++        self._img_mm = None
++        self._mask_mm = None
++        if os.environ.get("DFT_PACKED", "0") == "1":
++            split = Path(images_dir).name
++            packed_dir = self.dataset_root / "packed"
++            img_arch = packed_dir / f"images_{split}.npy"
++            mask_arch = packed_dir / f"masks_{split}.npy"
++            order_file = packed_dir / f"order_{split}.json"
++            if img_arch.exists() and mask_arch.exists() and order_file.exists():
++                with open(order_file) as _f:
++                    self.ids = json.load(_f)
++                self._img_mm = np.load(img_arch, mmap_mode="r")
++                self._mask_mm = np.load(mask_arch, mmap_mode="r")
++                self._packed = True
++                customlog(
++                    f"Using packed dataset archive {img_arch} "
++                    f"({len(self.ids)} samples, one memmap open per worker)"
++                )
++
++    @staticmethod
++    def pack_split(images_dir, mask_dir, mask_suffix, out_dir, split):
++        """Consolidate per-sample volumes for one split into stacked memmaps.
++
++        Writes ``images_<split>.npy`` (N, ...img), ``masks_<split>.npy``
++        (N, ...mask) and ``order_<split>.json`` (row-ordered ids) under
++        *out_dir*. Uses ``open_memmap`` so peak memory stays at one sample.
++        """
++        from numpy.lib.format import open_memmap
++
++        os.makedirs(out_dir, exist_ok=True)
++        images_dir = Path(images_dir)
++        mask_dir = Path(mask_dir)
++        ids = sorted(
++            splitext(f)[0]
++            for f in listdir(images_dir)
++            if isfile(join(images_dir, f)) and not f.startswith(".")
++        )
++        img0 = np.load(images_dir / f"{ids[0]}.npy", mmap_mode="r")
++        m0_matches = list(mask_dir.glob(ids[0] + mask_suffix + ".*"))
++        mask0 = np.load(m0_matches[0], mmap_mode="r")
++        n = len(ids)
++        img_out = open_memmap(
++            os.path.join(out_dir, f"images_{split}.npy"),
++            mode="w+", dtype=img0.dtype, shape=(n,) + img0.shape,
++        )
++        mask_out = open_memmap(
++            os.path.join(out_dir, f"masks_{split}.npy"),
++            mode="w+", dtype=mask0.dtype, shape=(n,) + mask0.shape,
++        )
++        for i, sid in enumerate(ids):
++            img_out[i] = np.load(images_dir / f"{sid}.npy")
++            mmatch = list(mask_dir.glob(sid + mask_suffix + ".*"))
++            mask_out[i] = np.load(mmatch[0])
++        img_out.flush()
++        mask_out.flush()
++        with open(os.path.join(out_dir, f"order_{split}.json"), "w") as f:
++            json.dump(ids, f)
++        return n
++
+     def __len__(self):
+         return len(self.ids)
+ 
+     @staticmethod
++    @_dlp.log_static
+     def _load_numpy_array(path, mmap_mode=None):
+         return np.load(path, allow_pickle=False, mmap_mode=mmap_mode)
+ 
++    @_dlp.log
+     def _load_dataset_format_version(self):
+         meta_path = self.dataset_root / META_FILENAME
+         if not meta_path.exists():
+@@ -161,10 +251,12 @@ class BasicDataset(Dataset):
+         return int(meta.get("dataset_format_version", LEGACY_DATASET_FORMAT_VERSION))
+ 
+     @staticmethod
++    @_dlp.log_static
+     def _prepare_legacy_image(img):
+         return np.ascontiguousarray(img.transpose((3, 0, 1, 2)), dtype=VOLUME_DTYPE)
+ 
+     @staticmethod
++    @_dlp.log_static
+     def _prepare_legacy_mask(mask_values, mask):
+         remapped = np.zeros(
+             (mask.shape[0], mask.shape[1], mask.shape[2]), dtype=MASK_DTYPE
+@@ -178,13 +270,16 @@ class BasicDataset(Dataset):
+         return remapped
+ 
+     @staticmethod
++    @_dlp.log_static
+     def _prepare_optimized_image(img):
+         return np.array(img, dtype=VOLUME_DTYPE, copy=True, order="C")
+ 
+     @staticmethod
++    @_dlp.log_static
+     def _prepare_optimized_mask(mask):
+         return np.array(mask, dtype=MASK_DTYPE, copy=True, order="C")
+ 
++    @_dlp.log
+     def _slice_image_array(self, img):
+         if self.spatial_shard_spec is None:
+             return img
+@@ -195,6 +290,7 @@ class BasicDataset(Dataset):
+             axis_map = {2: 0, 3: 1, 4: 2}
+         return self.spatial_shard_spec.slice_array(img, axis_map, "image")
+ 
++    @_dlp.log
+     def _slice_mask_array(self, mask):
+         if self.spatial_shard_spec is None:
+             return mask
+@@ -202,22 +298,41 @@ class BasicDataset(Dataset):
+         axis_map = {2: 0, 3: 1, 4: 2}
+         return self.spatial_shard_spec.slice_array(mask, axis_map, "mask")
+ 
++    @dft_ai.data.item
+     def __getitem__(self, idx):
+-        name = self.ids[idx]
+-        mask_file = list(self.mask_dir.glob(name + self.mask_suffix + ".*"))
+-        img_file = list(self.images_dir.glob(name + ".*"))
++        if self._packed:
++            # One shared memmap per worker; slicing a row lazily faults in only
++            # this sample's pages (and only its shard after _slice_* below).
++            img = self._img_mm[idx]
++            mask = self._mask_mm[idx]
++        elif os.environ.get("DFT_USE_GLOB", "0") == "1":
++            # A/B baseline only: original per-item directory glob (metadata-heavy).
++            name = self.ids[idx]
++            img_file = list(self.images_dir.glob(name + ".*"))
++            mask_file = list(self.mask_dir.glob(name + self.mask_suffix + ".*"))
++            assert len(img_file) == 1 and len(mask_file) == 1, (
++                f"glob resolution failed for {name}"
++            )
++            mmap_mode = "r" if self.spatial_shard_spec is not None else None
++            mask = self._load_numpy_array(mask_file[0], mmap_mode=mmap_mode)
++            img = self._load_numpy_array(img_file[0], mmap_mode=mmap_mode)
++        else:
++            name = self.ids[idx]
++            # Direct dict lookup instead of a per-item directory glob (see __init__).
++            img_path = self._img_paths.get(name)
++            mask_path = self._mask_paths.get(name + self.mask_suffix)
+ 
+-        assert len(img_file) == 1, (
+-            f"Either no image or multiple images found for the ID {name}: {img_file}"
+-        )
+-        assert len(mask_file) == 1, (
+-            f"Either no mask or multiple masks found for the ID {name}: {mask_file}"
+-        )
+-        mmap_mode = "r" if self.spatial_shard_spec is not None else None
+-        # Memmap lets each rank slice out just its local shard without eagerly
+-        # reading the full sample into process memory first.
+-        mask = self._load_numpy_array(mask_file[0], mmap_mode=mmap_mode)
+-        img = self._load_numpy_array(img_file[0], mmap_mode=mmap_mode)
++            assert img_path is not None, (
++                f"No image found for the ID {name} in {self.images_dir}"
++            )
++            assert mask_path is not None, (
++                f"No mask found for the ID {name}{self.mask_suffix} in {self.mask_dir}"
++            )
++            mmap_mode = "r" if self.spatial_shard_spec is not None else None
++            # Memmap lets each rank slice out just its local shard without eagerly
++            # reading the full sample into process memory first.
++            mask = self._load_numpy_array(mask_path, mmap_mode=mmap_mode)
++            img = self._load_numpy_array(img_path, mmap_mode=mmap_mode)
+         mask = self._slice_mask_array(mask)
+         img = self._slice_image_array(img)
+ 
+@@ -235,6 +350,7 @@ class BasicDataset(Dataset):
+ 
+ 
+ class FractalDataset(BasicDataset):
++    @_dlp.log_init
+     def __init__(
+         self,
+         images_dir,
+diff --git a/ScaFFold/utils/dice_score.py b/ScaFFold/utils/dice_score.py
+index ed60fd4..18dd4a9 100644
+--- a/ScaFFold/utils/dice_score.py
++++ b/ScaFFold/utils/dice_score.py
+@@ -17,8 +17,11 @@ import torch.distributed as dist
+ from torch import Tensor
+ 
+ from ScaFFold.utils.perf_measure import annotate
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("dice_score")
+ 
+ 
++@_dlp.log
+ def dice_coeff(
+     input: Tensor,
+     target: Tensor,
+@@ -43,6 +46,7 @@ def dice_coeff(
+     return dice.mean()
+ 
+ 
++@_dlp.log
+ def multiclass_dice_coeff(
+     input: Tensor,
+     target: Tensor,
+@@ -55,6 +59,7 @@ def multiclass_dice_coeff(
+     )
+ 
+ 
++@_dlp.log
+ @annotate()
+ def dice_loss(input: Tensor, target: Tensor, multiclass: bool = False):
+     # Dice loss (objective to minimize) between 0 and 1
+@@ -64,6 +69,7 @@ def dice_loss(input: Tensor, target: Tensor, multiclass: bool = False):
+ 
+ class SpatialAllReduce(torch.autograd.Function):
+     @staticmethod
++    @_dlp.log_static
+     def forward(ctx, input, spatial_mesh):
+         output = input.clone()
+         for mesh_dim in range(spatial_mesh.ndim):
+@@ -72,10 +78,12 @@ class SpatialAllReduce(torch.autograd.Function):
+         return output
+ 
+     @staticmethod
++    @_dlp.log_static
+     def backward(ctx, grad_output):
+         return grad_output, None
+ 
+ 
++@_dlp.log
+ @annotate()
+ def compute_sharded_dice(
+     preds: torch.Tensor,
+diff --git a/ScaFFold/utils/distributed.py b/ScaFFold/utils/distributed.py
+index 5e1f92e..85f7e98 100644
+--- a/ScaFFold/utils/distributed.py
++++ b/ScaFFold/utils/distributed.py
+@@ -20,13 +20,17 @@ from typing import Literal, Optional
+ 
+ import torch
+ import torch.distributed
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("distributed")
+ 
+ 
++@_dlp.log
+ def get_num_gpus() -> int:
+     """Return the number of GPUs on this node."""
+     return torch.cuda.device_count()
+ 
+ 
++@_dlp.log
+ def get_local_rank(required: bool = False) -> int:
+     """Return the local MPI rank."""
+     if "LOCAL_RANK" in os.environ:
+@@ -44,6 +48,7 @@ def get_local_rank(required: bool = False) -> int:
+     return 0
+ 
+ 
++@_dlp.log
+ def get_local_size(required: bool = False) -> int:
+     """Return the number of local MPI ranks."""
+     if "MV2_COMM_WORLD_LOCAL_SIZE" in os.environ:
+@@ -61,6 +66,7 @@ def get_local_size(required: bool = False) -> int:
+     return 1
+ 
+ 
++@_dlp.log
+ def get_world_rank(required: bool = False) -> int:
+     """Return the global MPI rank.."""
+     if "MV2_COMM_WORLD_RANK" in os.environ:
+@@ -76,6 +82,7 @@ def get_world_rank(required: bool = False) -> int:
+     return 0
+ 
+ 
++@_dlp.log
+ def get_world_size(required: bool = False) -> int:
+     """Return the number of MPI ranks."""
+     if "MV2_COMM_WORLD_SIZE" in os.environ:
+@@ -91,6 +98,7 @@ def get_world_size(required: bool = False) -> int:
+     return 1
+ 
+ 
++@_dlp.log
+ def force_cuda_visible_devices(force: bool = False) -> None:
+     """Set CUDA_VISIBLE_DEVICES.
+ 
+@@ -101,6 +109,7 @@ def force_cuda_visible_devices(force: bool = False) -> None:
+     print("force_cuda_visible_devices is deprecated. Skipping...")
+ 
+ 
++@_dlp.log
+ def get_device() -> torch.device:
+     if torch.cuda.is_available():
+         torch.cuda.init()
+@@ -131,6 +140,7 @@ def get_device() -> torch.device:
+         return torch.device("cpu")
+ 
+ 
++@_dlp.log
+ def get_job_id() -> Optional[str]:
+     """Return a generated job ID if possible."""
+     if "SLURM_JOBID" in os.environ:
+@@ -142,6 +152,7 @@ def get_job_id() -> Optional[str]:
+     return None
+ 
+ 
++@_dlp.log
+ def initialize_dist(
+     init_file: Optional[str] = None, rendezvous: Literal["env", "tcp", "file"] = "env"
+ ) -> None:
+diff --git a/ScaFFold/utils/evaluate.py b/ScaFFold/utils/evaluate.py
+index 6b23b15..e01666f 100644
+--- a/ScaFFold/utils/evaluate.py
++++ b/ScaFFold/utils/evaluate.py
+@@ -21,8 +21,11 @@ from ScaFFold.utils.data_types import AMP_DTYPE
+ from ScaFFold.utils.dice_score import compute_sharded_dice
+ from ScaFFold.utils.losses import compute_sharded_cross_entropy_loss
+ from ScaFFold.utils.perf_measure import annotate
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("evaluate")
+ 
+ 
++@dft_ai.pipeline.evaluate
+ @annotate()
+ @torch.inference_mode()
+ def evaluate(
+@@ -36,6 +39,7 @@ def evaluate(
+     parallel_strategy,
+     max_batches=None,
+ ):
++    @_dlp.log
+     def foreground_dice_stats(dice_scores):
+         if dice_scores.size(1) > 1:
+             per_sample_scores = dice_scores[:, 1:].mean(dim=1)
+diff --git a/ScaFFold/utils/losses.py b/ScaFFold/utils/losses.py
+index 3869b8b..655bb45 100644
+--- a/ScaFFold/utils/losses.py
++++ b/ScaFFold/utils/losses.py
+@@ -12,15 +12,20 @@
+ #
+ # SPDX-License-Identifier: (Apache-2.0)
+ 
++import hashlib
+ import math
++import os
+ 
+ import torch
+ import torch.distributed as dist
+ import torch.nn.functional as F
+ 
+ from ScaFFold.utils.dice_score import SpatialAllReduce
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("losses")
+ 
+ 
++@_dlp.log
+ def _sample_ce_weight_indices(n_train, sample_fraction):
+     """Pick a small, deterministic subset of masks to estimate CE weights."""
+     if n_train <= 0:
+@@ -39,6 +44,7 @@ def _sample_ce_weight_indices(n_train, sample_fraction):
+     return torch.linspace(0, n_train - 1, steps=sample_count).long().tolist()
+ 
+ 
++@_dlp.log
+ def _compute_ce_class_weights(
+     train_set,
+     n_train,
+@@ -48,6 +54,7 @@ def _compute_ce_class_weights(
+     dist_enabled=False,
+     world_rank=0,
+     log=None,
++    cache_dir=None,
+ ):
+     """
+     Estimate background vs foreground CE weights from a few training masks.
+@@ -55,6 +62,12 @@ def _compute_ce_class_weights(
+     Background keeps its own inverse-frequency weight, and every non-zero
+     fractal class shares the foreground weight derived from the aggregate
+     non-empty voxel count.
++
++    The estimate is a small deterministic function of (dataset, n_train,
++    n_categories, sample_fraction), but computing it re-reads ~sample_fraction
++    of the training masks from the PFS (25 MB volumes each) on every run. When
++    ``cache_dir`` is provided the resulting weight vector is memoised to disk so
++    subsequent runs skip that I/O entirely.
+     """
+ 
+     num_classes = n_categories + 1
+@@ -67,6 +80,27 @@ def _compute_ce_class_weights(
+             )
+         return class_weights
+ 
++    # --- disk cache: skip the mask-loading I/O if we've computed these before ---
++    cache_path = None
++    if cache_dir is not None:
++        key = f"{cache_dir}|{n_train}|{n_categories}|{sample_fraction}|{num_classes}"
++        digest = hashlib.sha1(key.encode()).hexdigest()[:16]
++        cache_path = os.path.join(cache_dir, f"ce_class_weights_{digest}.pt")
++        if os.path.exists(cache_path):
++            try:
++                cached = torch.load(cache_path, map_location=device).to(
++                    device=device, dtype=torch.float32
++                )
++                if cached.numel() == num_classes:
++                    if log is not None and (not dist_enabled or world_rank == 0):
++                        log.info(f"Loaded cached CE class weights from {cache_path}")
++                    return cached
++            except Exception as exc:  # noqa: BLE001
++                if log is not None and world_rank == 0:
++                    log.warning(
++                        f"Failed to load cached CE weights ({cache_path}): {exc}. Recomputing."
++                    )
++
+     sample_indices = _sample_ce_weight_indices(n_train, sample_fraction)
+     sampled_class_counts = torch.zeros(num_classes, dtype=torch.long)
+ 
+@@ -101,9 +135,23 @@ def _compute_ce_class_weights(
+             f"weights={class_weights.detach().cpu().tolist()}"
+         )
+ 
++    # Persist for future runs (rank 0 only writes; the vector is tiny).
++    if cache_path is not None and (not dist_enabled or world_rank == 0):
++        try:
++            os.makedirs(cache_dir, exist_ok=True)
++            tmp_path = f"{cache_path}.tmp.{os.getpid()}"
++            torch.save(class_weights.detach().cpu(), tmp_path)
++            os.replace(tmp_path, cache_path)
++            if log is not None:
++                log.info(f"Cached CE class weights to {cache_path}")
++        except Exception as exc:  # noqa: BLE001
++            if log is not None:
++                log.warning(f"Failed to cache CE weights ({cache_path}): {exc}")
++
+     return class_weights
+ 
+ 
++@_dlp.log
+ def compute_sharded_cross_entropy_loss(
+     local_preds,
+     local_labels,
+diff --git a/ScaFFold/utils/perf_measure.py b/ScaFFold/utils/perf_measure.py
+index 5af8d5b..c0057d2 100644
+--- a/ScaFFold/utils/perf_measure.py
++++ b/ScaFFold/utils/perf_measure.py
+@@ -14,6 +14,8 @@
+ 
+ import os
+ from contextlib import nullcontext
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("perf_measure")
+ 
+ CALI_PERF_ENV_VAR = "CALI_CONFIG"
+ TORCH_PERF_ENV_VAR = "PROFILE_TORCH"
+@@ -43,8 +45,6 @@ elif (
+         print(
+             "User requested PyTorch profiling, but could not import the PyTorch profiler"
+         )
+-
+-
+ def annotate(name=None, fmt=None):
+     def inner_decorator(func):
+         if not _CALI_PERF_ENABLED:
+@@ -58,38 +58,29 @@ def annotate(name=None, fmt=None):
+             return annotate_function(name=real_name)(func)
+ 
+     return inner_decorator
+-
+-
+ def begin_code_region(name):
+     if _CALI_PERF_ENABLED:
+         begin_region(name)
+         return
+-
+-
+ def end_code_region(name):
+     if _CALI_PERF_ENABLED:
+         end_region(name)
+         return
+-
+-
+ def adiak_init(comm):
+     if _CALI_PERF_ENABLED:
+         init(comm)
+         return
+-
+-
+ def adiak_value(name, val):
+     if _CALI_PERF_ENABLED:
+         value(name, val)
+         return
+-
+-
+ def adiak_fini():
+     if _CALI_PERF_ENABLED:
+         fini()
+         return
+ 
+ 
++@_dlp.log
+ def get_torch_context(ranks_per_node, rank):
+     if TORCH_PERF_ENABLED:
+         TORCH_PERF_LOCAL = TORCH_PERF_ENABLED and (rank % ranks_per_node == 0)
+diff --git a/ScaFFold/utils/trainer.py b/ScaFFold/utils/trainer.py
+index fc5af6e..7110b22 100644
+--- a/ScaFFold/utils/trainer.py
++++ b/ScaFFold/utils/trainer.py
+@@ -43,6 +43,29 @@ from ScaFFold.utils.losses import (
+ )
+ from ScaFFold.utils.perf_measure import adiak_value, begin_code_region, end_code_region
+ from ScaFFold.utils.utils import gather_and_print_mem
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("trainer")
++
++# --- dftracer PyTorch Profiler integration (ML-R28) ---
++# Enable by setting DFT_TORCH_PROFILER=1 in the environment. Routes PyTorch
++# CPU/ROCm kernel events into the dftracer trace under category "PP".
++_DFT_TORCH_PROFILER = os.environ.get("DFT_TORCH_PROFILER", "0") == "1"
++if _DFT_TORCH_PROFILER:
++    from torch.profiler import profile as _dft_tprofile, schedule as _dft_tschedule, ProfilerActivity as _DFTActivity
++    from dftracer.python.torch import trace_handler as _dft_torch_trace_handler
++    _dft_prof_schedule = _dft_tschedule(wait=1, warmup=1, active=3, repeat=1)
++
++
++def _dft_make_profiler():
++    if not _DFT_TORCH_PROFILER:
++        return None
++    return _dft_tprofile(
++        activities=[_DFTActivity.CPU, _DFTActivity.CUDA],
++        schedule=_dft_prof_schedule,
++        on_trace_ready=_dft_torch_trace_handler,
++        record_shapes=True,
++        with_stack=False,
++    )
+ 
+ 
+ class BaseTrainer:
+@@ -50,6 +73,7 @@ class BaseTrainer:
+     A class that encapsulates some basic functionality for training our model.
+     """
+ 
++    @_dlp.log_init
+     def __init__(self, model, config, device, log):
+         self.model = model
+         self.config = config
+@@ -103,6 +127,7 @@ class BaseTrainer:
+         # Get initial mem state
+         gather_and_print_mem(self.log, "after_trainer_setup")
+ 
++    @_dlp.log
+     def create_dataset(self):
+         """Create train and validation datasets."""
+         dataset_dir = Path(self.config.dataset_dir)
+@@ -138,6 +163,7 @@ class BaseTrainer:
+             f"Datasets created with n_train={self.n_train}, n_val={self.n_val}"
+         )
+ 
++    @_dlp.log
+     def create_sampler(self):
+         """Create DistributedSamplers for train and validation datasets."""
+         if self.config.dist:
+@@ -156,6 +182,7 @@ class BaseTrainer:
+             self.train_sampler = torch.utils.data.RandomSampler(self.train_set)
+             self.val_sampler = torch.utils.data.SequentialSampler(self.val_set)
+ 
++    @_dlp.log
+     def create_dataloaders(self):
+         """Create dataloaders for training and validation."""
+         self.create_dataset()
+@@ -169,7 +196,11 @@ class BaseTrainer:
+         )
+         if num_workers > 0:
+             loader_args["persistent_workers"] = True
+-            loader_args["prefetch_factor"] = 2
++            # Deeper prefetch pipeline improves compute/IO overlap for large
++            # per-sample volumes (configurable; default 4). GLANCED-IO L1-ML-2.
++            loader_args["prefetch_factor"] = int(
++                getattr(self.config, "dataloader_prefetch_factor", 4)
++            )
+         self.log.debug(
+             f"dataloader num_workers={loader_args['num_workers']}, prefetch_factor={loader_args.get('prefetch_factor')}, persistent_workers={loader_args.get('persistent_workers', False)}, os.cpu_count()={os.cpu_count()}, self.world_size={self.world_size} "
+         )
+@@ -187,6 +218,7 @@ class BaseTrainer:
+                 "Reduce batch_size or adjust validation sharding."
+             )
+ 
++    @_dlp.log
+     def setup_training_components(self):
+         """Set up the optimizer, scheduler, gradient scaler, and loss function."""
+         # Set up optimizer
+@@ -234,6 +266,7 @@ class BaseTrainer:
+                 dist_enabled=self.config.dist,
+                 world_rank=self.world_rank,
+                 log=self.log,
++                cache_dir=str(self.config.dataset_dir),
+             )
+             self.criterion = nn.CrossEntropyLoss(weight=ce_class_weights).to(
+                 self.device
+@@ -247,6 +280,7 @@ class BaseTrainer:
+             f"Optimizer: {self.optimizer}, Scheduler: {self.scheduler}, AMP dtype: {self.amp_dtype}, Gradient Scaler Enabled: {self.use_grad_scaler}"
+         )
+ 
++    @_dlp.log
+     def _autocast_kwargs(self, enabled=None):
+         if enabled is None:
+             enabled = self.config.torch_amp
+@@ -257,12 +291,14 @@ class BaseTrainer:
+         return kwargs
+ 
+     @staticmethod
++    @_dlp.log_static
+     def _foreground_dice_mean(dice_scores):
+         """Match optimization to the reported validation metric by excluding background."""
+         if dice_scores.size(1) > 1:
+             return dice_scores[:, 1:].mean()
+         return dice_scores.mean()
+ 
++    @_dlp.log
+     def _current_learning_rate(self):
+         if self.optimizer is None or not self.optimizer.param_groups:
+             return self.config.starting_learning_rate
+@@ -274,6 +310,7 @@ class PyTorchTrainer(BaseTrainer):
+     A class for training our model with PyTorch.
+     """
+ 
++    @_dlp.log_init
+     def __init__(self, model, config, device, log):
+         super().__init__(model, config, device, log)
+ 
+@@ -292,6 +329,7 @@ class PyTorchTrainer(BaseTrainer):
+             async_save=getattr(self.config, "async_save", False),
+         )
+ 
++    @_dlp.log
+     def cleanup_or_resume(self):
+         """
+         Clean up existing train stats and checkpoints,
+@@ -350,6 +388,7 @@ class PyTorchTrainer(BaseTrainer):
+             with open(self.outfile_path, "a", newline="") as outfile:
+                 outfile.write(",".join(headers) + "\n")
+ 
++    @_dlp.log
+     def _truncate_stats_file(self, start_epoch, path=None):
+         """
+         Scans the stats file and truncates it at the first occurrence of
+@@ -404,6 +443,7 @@ class PyTorchTrainer(BaseTrainer):
+         except Exception as e:
+             self.log.warning(f"Failed to truncate stats file {path}: {e}")
+ 
++    @_dlp.log
+     def _get_memsize(self, tensor, tensor_label: str, verbosity: int = 0):
+         """Log size of tensor in memory"""
+ 
+@@ -413,6 +453,7 @@ class PyTorchTrainer(BaseTrainer):
+         tensor_memory_gb = tensor_memory_bytes / (1024**3)
+         self.log.info(f"{tensor_label} size on GPU: {tensor_memory_gb:.2f} GB")
+ 
++    @_dlp.log
+     def _run_training_batch(
+         self,
+         batch,
+@@ -544,6 +585,7 @@ class PyTorchTrainer(BaseTrainer):
+ 
+         return batch_size, detached_loss, batch_dice_score
+ 
++    @_dlp.log
+     def _sync_gather_minibatch_timer(self, minibatch_events):
+         minibatch_events[-1][1].synchronize()
+         local_minibatch_times = torch.tensor(
+@@ -567,6 +609,7 @@ class PyTorchTrainer(BaseTrainer):
+         minibatch_time_s = statistics.median(minibatch_times.cpu().tolist())
+         return minibatch_time_s
+ 
++    @_dlp.log
+     def warmup(self):
+         """Run warmup iterations before the main training loop."""
+         warmup_batches = self.config.warmup_batches
+@@ -590,7 +633,7 @@ class PyTorchTrainer(BaseTrainer):
+         self.optimizer.zero_grad(set_to_none=False)
+ 
+         try:
+-            for batch_idx, batch in enumerate(self.train_loader):
++            for batch_idx, batch in dft_ai.dataloader.fetch.iter(enumerate(self.train_loader)):
+                 if batch_idx >= max_batches:
+                     break
+ 
+@@ -627,6 +670,7 @@ class PyTorchTrainer(BaseTrainer):
+             torch.distributed.barrier()
+         self.log.info(f"Done warmup. Took {int(time.time() - start_warmup)}s")
+ 
++    @dft_ai.pipeline.train
+     def train(self):
+         """
+         Execute model training
+@@ -671,7 +715,10 @@ class PyTorchTrainer(BaseTrainer):
+                     disable=True if self.world_rank != 0 else False,
+                 ) as pbar:
+                     begin_code_region("batch_loop")
+-                    for batch_idx, batch in enumerate(self.train_loader):
++                    _dft_prof = _dft_make_profiler()
++                    if _dft_prof is not None:
++                        _dft_prof.start()
++                    for batch_idx, batch in dft_ai.dataloader.fetch.iter(enumerate(self.train_loader)):
+                         # We don't want to time partial batches, i.e. last batch (time will be lower than expected).
+                         time_minibatch = (
+                             batch_idx
+@@ -706,7 +753,11 @@ class PyTorchTrainer(BaseTrainer):
+ 
+                         if time_minibatch:
+                             minibatch_end_event.record()
++                        if _dft_prof is not None:
++                            _dft_prof.step()
+                     end_code_region("batch_loop")
++                    if _dft_prof is not None:
++                        _dft_prof.stop()
+ 
+                 # Calculate overall loss as average of per-batch loss
+                 overall_loss = epoch_loss.item() / len(self.train_loader)
+diff --git a/ScaFFold/utils/utils.py b/ScaFFold/utils/utils.py
+index c79b3de..144d57a 100644
+--- a/ScaFFold/utils/utils.py
++++ b/ScaFFold/utils/utils.py
+@@ -22,12 +22,15 @@ import torch
+ import torch.distributed as dist
+ 
+ from ScaFFold.utils.distributed import get_world_rank
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("utils")
+ 
+ logging.basicConfig(
+     level=logging.INFO, format="%(levelname)s(%(filename)s): %(message)s"
+ )
+ 
+ 
++@_dlp.log
+ def plot_img_and_mask(img, mask):
+     classes = mask.max() + 1
+     fig, ax = plt.subplots(1, classes + 1)
+@@ -40,6 +43,7 @@ def plot_img_and_mask(img, mask):
+     plt.show()
+ 
+ 
++@_dlp.log
+ def set_seeds(seed_value=42):
+     """Set seeds for reproducibility."""
+     random.seed(seed_value)  # Python
+@@ -48,6 +52,7 @@ def set_seeds(seed_value=42):
+     torch.cuda.manual_seed_all(seed_value)  # PyTorch for GPUs
+ 
+ 
++@_dlp.log
+ def customlog(msg: str, ranks=[0], allranks=False, level=0, verbose=0):
+     rank = get_world_rank()
+     if (rank in ranks or allranks) and level <= verbose:
+@@ -55,10 +60,12 @@ def customlog(msg: str, ranks=[0], allranks=False, level=0, verbose=0):
+ 
+ 
+ class MPIRankFilter(logging.Filter):
++    @_dlp.log_init
+     def __init__(self, ranks: set[int] or None = None):
+         super().__init__()
+         self.allowed_ranks = ranks
+ 
++    @_dlp.log
+     def filter(self, record: logging.LogRecord) -> bool:
+         record.mpi_rank = get_world_rank()
+         # If no allowed ranks specified, only rank 0 logs
+@@ -68,6 +75,7 @@ class MPIRankFilter(logging.Filter):
+         return record.mpi_rank in self.allowed_ranks
+ 
+ 
++@_dlp.log
+ def setup_mpi_logger(
+     name: str, verbosity: int, ranks: set[int] or None = None
+ ) -> logging.Logger:
+@@ -97,6 +105,7 @@ def setup_mpi_logger(
+     return logger
+ 
+ 
++@_dlp.log
+ def mem_stats():
+     dev = torch.cuda.current_device()
+     free, total = torch.cuda.mem_get_info()  # device-level (driver) view
+@@ -117,6 +126,7 @@ def mem_stats():
+     }
+ 
+ 
++@_dlp.log
+ def gather_and_print_mem(log, tag=""):
+     if log.getEffectiveLevel() > 10:  # 10 -> DEBUG
+         return
+diff --git a/ScaFFold/viz/standard_viz.py b/ScaFFold/viz/standard_viz.py
+index 18ff103..1b4004e 100644
+--- a/ScaFFold/viz/standard_viz.py
++++ b/ScaFFold/viz/standard_viz.py
+@@ -18,8 +18,11 @@ from pathlib import Path
+ import matplotlib.pyplot as plt
+ 
+ from ScaFFold.utils.config_utils import RunConfig
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("standard_viz")
+ 
+ 
++@dft_ai
+ def main(config: RunConfig):
+     figures_path = Path(config.run_dir) / "figures"
+     figures_path.mkdir()
+diff --git a/ScaFFold/worker.py b/ScaFFold/worker.py
+index f0223d1..3bd4ae0 100644
+--- a/ScaFFold/worker.py
++++ b/ScaFFold/worker.py
+@@ -47,6 +47,9 @@ from ScaFFold.utils.perf_measure import (
+ from ScaFFold.utils.trainer import PyTorchTrainer
+ from ScaFFold.utils.utils import set_seeds, setup_mpi_logger
+ from ScaFFold.viz import standard_viz
++from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
++_dlp = DFTracerFn("worker")
++_dft_log = dftracer.initialize_log(logfile=None, data_dir=None, process_id=-1)
+ 
+ if hasattr(os, "sched_getaffinity"):
+     _orig_affinity = os.sched_getaffinity(0)
+@@ -54,6 +57,7 @@ else:
+     _orig_affinity = None
+ 
+ 
++@_dlp.log
+ def check_resource_utilization(log, rank, world_size):
+     """Check that we are properly utilizing resources"""
+ 
+@@ -84,6 +88,7 @@ def check_resource_utilization(log, rank, world_size):
+         log.debug(f"  Device Properties: {torch.cuda.get_device_properties(this_gpu)}")
+ 
+ 
++@_dlp.log
+ def override_config(config) -> None:
+     """Override base run config if additional configs are provided."""
+     if "--config" in sys.argv:
+@@ -104,6 +109,7 @@ def override_config(config) -> None:
+                 setattr(config, k, v)
+ 
+ 
++@dft_ai
+ @annotate()
+ def main(kwargs_dict: dict = {}):
+     #
+@@ -313,4 +319,5 @@ def main(kwargs_dict: dict = {}):
+     dist.barrier()
+     dist.destroy_process_group()
+ 
++    _dft_log.finalize()
+     return 0

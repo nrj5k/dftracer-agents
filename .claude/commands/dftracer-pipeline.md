@@ -40,7 +40,113 @@ ALWAYS annotate using MCP clang tools. NEVER do manual annotation.
   error): diagnose the tool error, do NOT switch to manual annotation.
   Report the tool failure to the user and stop.
 
+PYTHON AI/ML ANNOTATION — FUNCTIONS TO NEVER ANNOTATE:
+
+  The following Python patterns must not receive dftracer decorators.
+  Remove any auto-placed decorators from them before running:
+
+  ✗ @staticmethod functions — dftracer's wrapper passes self as the first
+    positional arg via *args, causing "multiple values for argument" errors
+    when the static method has keyword parameters.  Remove @_dlp.log_static
+    from any @staticmethod, leaving the @staticmethod decorator in place.
+
+  ✗ @numba.njit / @numba.jit / @cuda.jit compiled kernels — numba CPUDispatcher
+    objects do not support inspect.getfullargspec; dftracer's log decorator fails
+    at decoration time with "TypeError: unsupported callable".
+
+  ✗ @torch.jit.script decorated functions — same reason as numba.
+
+  ✗ __len__ on Dataset subclasses — DataLoader calls __len__ O(10000+) times
+    per epoch; annotating it overflows dftracer's C-level event buffer and
+    causes SIGABRT in DataLoader workers.  Leave __len__ unannotated.
+
+  DataLoader worker segfault on cleanup: annotating `__len__` on Dataset
+  subclasses causes dftracer's C-level event buffer to overflow (DataLoader
+  calls __len__ O(10000+) times per epoch to build sampler state). The overflow
+  corrupts memory and causes SIGSEGV in worker processes during teardown after
+  training is otherwise complete. The fix is to NEVER annotate __len__ — simply
+  omit @_dlp.log from it. The function still works normally; its callers capture
+  the timing context. Do NOT attempt to fix this by disabling dftracer in workers.
+
+  DataLoader worker segfault during dftracer finalize (flockfile/BufferManager):
+  Root cause confirmed on Tuolumne with DFTRACER_ENABLE_HIP_TRACING=ON.
+  When dftracer initializes with HIP tracing in the parent process and PyTorch
+  forks DataLoader workers, the forked children inherit open FILE* handles.
+  On worker exit, dftracer's C++ destructor calls DFTracerCore::finalize() →
+  BufferManager::finalize() → flockfile_wrapper() on the inherited FILE*.
+  The file's internal mutex is in an inconsistent state (locked in parent thread
+  that no longer exists in child), causing a C++ exception during _Unwind_Resume
+  which itself SIGSEGV's. Fix: dftracer bugfix/reinitializelogfile branch adds
+  fork detection via getpid()/getppid() so finalize() safely no-ops in forked
+  children that haven't re-initialized. To rebuild dftracer from that branch,
+  see the manual cmake procedure below.
+
+  HOW TO DEBUG DataLoader worker crashes:
+  1. Enable core dumps on Lustre (NOT NFS — NFS truncates to 16K):
+       ulimit -c unlimited
+       COREDIR=/p/lustre5/$USER/workspaces/<session>/cores
+       mkdir -p ${COREDIR} && cd ${COREDIR}
+     Then launch Python from that directory so workers write cores there.
+  2. Add libSegFault.so for C-level backtrace (survives Python teardown):
+       export LD_PRELOAD=/usr/lib64/libSegFault.so:${LD_PRELOAD}
+       export SEGFAULT_SIGNALS=all
+     NOTE: Python faulthandler CANNOT catch crashes that happen after
+     Py_Finalize() (C++ destructors run post-Python). Use libSegFault instead.
+  3. After crash, run gdb on the full core (redirect stderr to suppress warnings):
+       CORE=/p/lustre5/$USER/workspaces/<session>/cores/<node>-<proc>-<pid>.core
+       PYTHON=<ws>/install/bin/python3.13
+       gdb -batch -ex "bt 20" -ex "info threads" $PYTHON $CORE 2>/dev/null
+     Key: look for frames from libdftracer_core.so to identify dftracer source.
+  4. Check whether crash is triggered by a specific env var (bisect):
+     Run once with DFTRACER_ENABLE_HIP_TRACING=ON and once without. If the
+     no-HIP run completes cleanly, the crash is in librocprofiler-sdk state
+     inherited across fork.
+
+  For any of these, simply skip the decorator; the function will still be
+  called normally and its callers (which ARE annotated) will capture the timing.
+
+DFANALYZER PRESET SELECTION — DLIO vs POSIX:
+
+  dfanalyzer supports two analysis presets:
+    • posix  — generic POSIX I/O workload (default for C/C++/Fortran HPC apps)
+    • dlio   — deep learning workload (understands epoch/fetch_data/data_loader/
+               checkpoint/compute layers; use for PyTorch/TF/JAX/DALI/horovod apps)
+
+  The pipeline auto-detects the preset via _detect_analyzer_preset():
+    • If source code imports any of: torch, tensorflow, jax, keras, flax, mxnet,
+      horovod, deepspeed, megatron, FSDP, dali, dlio_benchmark, lightning
+      → preset is automatically set to dlio
+    • Otherwise → posix
+
+  When calling mcp__dftracer__analyze manually, always pass the correct preset:
+    • DL workload:   analyzer/preset=dlio
+    • Generic HPC:   analyzer/preset=posix
+
+  The dlio preset produces semantically richer bottleneck names (e.g.
+  reader_posix_read_ops_slope instead of posix_read_ops_slope for DataLoader
+  workers) and understands training-phase patterns that posix does not.
+
 ══════════════════════════════════════════════════════════════════════
+
+SESSION HYGIENE — SKILL UPDATES AND CONTEXT MANAGEMENT:
+
+  While waiting for long-running jobs (smoke test, dftracer run, optimization
+  iteration), always use the idle time to update skill files with lessons
+  learned so far in the session. Do not wait until the end — capture pitfalls
+  as soon as they are resolved so they are not lost to context compaction.
+
+  Protocol:
+    1. After any bug fix or new pitfall discovered, immediately update the
+       relevant skill file (.claude/commands/*.md) with the lesson.
+    2. While a flux job is running and output has not yet appeared, update skills.
+    3. If conversation context exceeds ~60%, update all relevant skill files
+       with current lessons, then run /compact to free context before continuing.
+    4. After /compact, re-read the task list and resume from where you left off.
+
+  Skill files to update when relevant:
+    • dftracer-ml-annotate.md  — new Python annotation pitfalls
+    • dftracer-pipeline.md     — new pipeline protocol rules
+    • flux-alloc.md            — new Flux job management lessons
 
 ══════════════════════════════════════════════════════════════════════
 STEP 1 — GATHER INPUTS  (if not supplied via arguments)
@@ -64,6 +170,12 @@ use those directly. Otherwise ask one question at a time and wait:
 If a run_id was supplied skip Q1–Q4 and jump to Step 3.
 
 Print: "Starting pipeline for <APP_URL> @ <REF>"
+
+Note: every MCP tool call that runs a pipeline step returns timing fields
+``started_at``, ``ended_at``, and ``duration_s`` in its result.  Collect
+these into a running ``STEP_TIMINGS`` list as steps complete:
+
+    STEP_TIMINGS = []   # append {step, started_at, ended_at, duration_s} after each step
 
 
 ══════════════════════════════════════════════════════════════════════
@@ -100,6 +212,12 @@ STEP 2 — SESSION SETUP  (MCP tools)
     session_install_dftracer(run_id=RUN_ID)
 
     On failure → print the cmake/pip error and stop.
+
+    IMPORTANT for Python/AI/ML apps: dftracer and the app MUST share the
+    same venv (``ws/install/``).  ``session_install_dftracer`` enforces this
+    automatically for ``build_tool=python`` projects — it installs dftracer
+    into ``ws/install/`` and never creates a separate ``ws/venv/``.
+    If the app venv does not exist yet, it is created by this step.
 
 2d. Copy source to annotated/ workspace:
 
@@ -220,32 +338,23 @@ Print per-file status: ✓ <file>  (<n> functions annotated, lint PASSED)
 STEP 5 — BUILD ANNOTATED VERSION  (MCP tools)
 ══════════════════════════════════════════════════════════════════════
 
-5a. Detect explicit INIT usage to determine DFTRACER_INIT mode:
+5a. Set DFTRACER_INIT mode:
 
-    INIT_COUNT=$(grep -r "DFTRACER_C_INIT\|DFTRACER_CPP_INIT\|DFTracer.initialize_log" \
-      <WS>/annotated/ 2>/dev/null | wc -l)
-    FINI_COUNT=$(grep -r "DFTRACER_C_FINI\|DFTRACER_CPP_FINI\|dftracer.finalize_log" \
-      <WS>/annotated/ 2>/dev/null | wc -l)
+    Primary (always try first):
+      DFTRACER_INIT_ENV = {"DFTRACER_INIT": "FUNCTION"}
 
-    INIT_COUNT > 0 AND FINI_COUNT > 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "FUNCTION"}
-      (source has both INIT and FINI: use FUNCTION mode — function-level profiling,
-       no LD_PRELOAD needed)
+    FUNCTION mode works for both C/C++ and Python:
+    - C/C++: DFTRACER_C_INIT / DFTRACER_C_FINI macros in source
+    - Python: dftracer.initialize_log() / _dft_log.finalize() + decorators
 
-    INIT_COUNT > 0 AND FINI_COUNT == 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "PRELOAD"}
-      (missing FINI — FUNCTION/HYBRID would leave traces open; fall back to preload-only)
+    Fallback (only if FUNCTION produces an empty trace or crashes):
+      dftracer_lib=$(python -c "import dftracer; import os; print(os.path.join(os.path.dirname(dftracer.__file__), 'lib', 'libdftracer_preload.so'))")
+      DFTRACER_INIT_ENV = {"DFTRACER_INIT": "HYBRID",
+                           "LD_PRELOAD": "<dftracer_lib>"}
 
-    INIT_COUNT == 0 → DFTRACER_INIT_ENV = {"DFTRACER_INIT": "PRELOAD"}
-      (no annotations — preload-only transparent I/O interception)
+    PRELOAD-only mode is never used — annotations must always be present.
 
-    HYBRID mode is NOT the default for annotated code. Use HYBRID only when the
-    user explicitly requests BOTH function-level profiling AND I/O interception
-    via LD_PRELOAD on top of annotated source that has both INIT and FINI.
-
-    Important: NEVER set DFTRACER_INIT=0 — it disables POSIX-level
-    tracing. Valid values: FUNCTION (annotated source with both INIT+FINI,
-    default for annotated apps), PRELOAD (transparent I/O only, no annotations
-    or missing FINI), HYBRID (annotated source with both INIT+FINI AND
-    LD_PRELOAD for I/O interception, only on explicit user request).
+    Important: NEVER set DFTRACER_INIT=0 — it disables POSIX-level tracing.
     All values are CASE-SENSITIVE uppercase strings.
 
 5b. Build and install annotated version:
@@ -270,6 +379,12 @@ STEP 5 — BUILD ANNOTATED VERSION  (MCP tools)
     MPI/OpenMPI as root? Add env:
       OMPI_ALLOW_RUN_AS_ROOT=1, OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
 
+    Flux proxy systems (Tuolumne, etc.): if SMOKE_CMD contains ``flux proxy``,
+    the MCP tool automatically wraps the payload in a script under
+    ``<ws>/tmp/run_smoke_test.sh`` that sources lmod init and then runs the
+    command.  Never pass inline ``bash -c "module load ..."`` to flux proxy —
+    it fails to propagate module state into subprocesses.
+
     On failure: if DFTRACER symbols in error → re-annotate + retry.
     Otherwise ask: "Smoke test failed (non-annotation issue). Continue? [yes/stop]"
 
@@ -288,7 +403,23 @@ Print:
   │  comp:  io=<n>  comm=<n>  mem=<n>  cpu=<n>             │
   │  Build: PASSED   Smoke test: PASSED                     │
   │  Annotated source: workspaces/<RUN_ID>/annotated/       │
+  ├─────────────────────────────────────────────────────────┤
+  │  STEP TIMINGS (phase 1)                                 │
+  │  Step                         Duration                  │
+  │  step_1_clone                 N.NNNs                    │
+  │  step_2_detect                N.NNNs                    │
+  │  step_3_configure             N.NNNs                    │
+  │  step_4_build_install         N.NNNs                    │
+  │  step_5_smoke_test            N.NNNs                    │
+  │  step_6_copy_annotated        N.NNNs                    │
+  │  step_7_patch_build           N.NNNs                    │
+  │  step_8_annotate              N.NNNs                    │
+  │  Timing file: workspaces/<RUN_ID>/step_timings.json     │
   └─────────────────────────────────────────────────────────┘
+
+  Read timing data from the ``step_timings`` field in the tool result
+  (or from ``workspaces/<RUN_ID>/step_timings.json`` after the pipeline
+  completes) and append each entry to STEP_TIMINGS.
 
 Ask: "Proceed with dftracer trace run? [yes / no / fix <file> <feedback>]"
 
@@ -304,11 +435,17 @@ Ask: "Proceed with dftracer trace run? [yes / no / fix <file> <feedback>]"
 STEP 7 — TRACE COLLECTION + ANALYSIS  (MCP tools)
 ══════════════════════════════════════════════════════════════════════
 
-7a. Create the trace output subdirectory before running:
+7a. Create the trace output directory before running:
 
-    mkdir -p <WS>/traces/<app_name>
+    On LLNL systems (Tuolumne, Lassen, etc.) all trace output MUST go to
+    Lustre, not NFS.  ``session_run_with_dftracer`` auto-routes to Lustre
+    when ``/p/lustre5/$USER/workspaces/`` exists.  Verify before running:
 
-    (where app_name = first component of RUN_ID before "/")
+        mkdir -p /p/lustre5/$USER/workspaces/<app>/{traces,fractals,datasets,runs}
+
+    ``session_run_with_dftracer`` writes ``DFTRACER_LOG_FILE`` to the Lustre
+    path and creates a symlink at ``<WS>/traces/`` for downstream tools.
+    If Lustre is unavailable (containers, non-LLNL), traces land in ``<WS>/traces/``.
 
 7b. Run with dftracer:
 
@@ -323,6 +460,39 @@ STEP 7 — TRACE COLLECTION + ANALYSIS  (MCP tools)
     Always set DFTRACER_INC_METADATA=1 so UPDATE_STR/UPDATE_INT metadata
     (comp=, filename=, count=) is captured in the trace events.
     Always set DFTRACER_ENABLE=1 to ensure trace files are written.
+
+    AFTER the run — check trace file sizes BEFORE splitting:
+
+        ls -lh <WS>/traces/
+
+    EMPTY TRACES DIAGNOSIS (0-byte .pfw.gz files despite DFTRACER_ENABLE=1):
+
+    If dftracer printed "DFTracerCore::initialize" but trace files are 0 bytes,
+    dftracer initialized but never finalized.  Diagnose by layer:
+
+    Layer 1 — Main function annotations not appearing:
+      The app crashed or exited before reaching finalize().  Common causes:
+      - finalize() is called after MPI_Finalize / mpi4py atexit (mpi4py registers
+        an atexit that calls MPI_Finalize; dftracer's finalize then tries MPI
+        rank queries and crashes).
+        FIX: wrap the benchmark call in try/finally and call finalize() inside
+        the finally block, before any MPI teardown.
+      - An unhandled exception in the benchmark exits the process before finalize().
+        FIX: same try/finally wrapping.
+      - PyTorch destroy_process_group() or torchrun-hpc teardown runs before
+        finalize() is reached.
+        FIX: call finalize() immediately after benchmark.main() returns, still
+        inside the try block, before any dist.destroy_process_group() in callers.
+
+    Layer 2 — Main annotations appear but DataLoader I/O is absent:
+      PyTorch DataLoader workers are forked subprocesses.  In FUNCTION mode,
+      dftracer initializes in each worker on fork and finalizes when the worker
+      exits cleanly — so worker I/O WILL appear under normal conditions.
+      If worker I/O is missing, the workers exited uncleanly (SIGKILL, OOM,
+      uncaught exception).  Look for signal or OOM messages in stderr.
+      FIX: reduce num_workers, increase memory limits, or check for exceptions
+      in worker processes.  Do NOT switch to HYBRID mode just for this — FUNCTION
+      mode is correct and sufficient when workers exit cleanly.
 
 7c. Copy trace files up to the parent traces/ dir if needed
     (run_id subdirectory layout):
@@ -355,6 +525,20 @@ If yes:
     searches arXiv/Semantic Scholar for papers relevant to each bottleneck.
     Repeat for each optimization iteration.
 
+    COMPONENT ORDER: bottlenecks are always addressed in the order
+    I/O -> communication -> memory -> compute. Severity only breaks ties
+    within a component — a critical compute bottleneck is never optimized
+    ahead of a medium-severity I/O bottleneck, since I/O fixes are cheaper
+    and higher-leverage for most HPC/DL workloads. This is independent of
+    the L1/L2/L3 application/middleware/filesystem layering below.
+
+    DEEP-LEARNING WORKLOADS: two additional dimensions are always evaluated
+    every iteration, regardless of severity ranking:
+      1. Application dataloader / epoch-time performance (fetch_pressure,
+         epoch_straggler) — cited against Mohan et al. (VLDB 2021).
+      2. Filesystem bandwidth/utilization for the storage the run is on
+         (fs_bw) — cited against Lockwood et al. (SC 2018).
+
 8b. Generate citation-backed proposals from the iteration results:
 
     session_generate_optimization_proposals(run_id=RUN_ID, iteration=-1)
@@ -376,13 +560,20 @@ If yes:
 
       bottleneck_score (0–50):
         How directly does the paper address the specific bottleneck metric?
-        • 50 — paper directly studies this metric or the exact I/O pattern
-                (e.g., paper on "POSIX close latency in HDF5 timestep writes")
-        • 35 — paper addresses the broader I/O category
-                (e.g., "collective metadata performance in parallel I/O")
+        First classify the bottleneck's component (I/O, communication,
+        memory, or compute) and require the paper to match that component:
+        • 50 — paper directly studies this metric within its component
+                (e.g., "POSIX close latency in HDF5 timestep writes" for I/O;
+                "all-reduce overlap with backward pass" for communication;
+                "STREAM memory bandwidth of a kernel" for memory;
+                "roofline arithmetic intensity" for compute)
+        • 35 — paper addresses the broader component category
+                (e.g., "collective metadata performance in parallel I/O",
+                "MPI collective algorithm selection", "NUMA-aware memory
+                placement", "SIMD vectorization of compute kernels")
         • 20 — paper addresses an adjacent technique that indirectly applies
                 (e.g., "MPI-IO collective buffering" for a metadata bottleneck)
-        •  0 — paper is topically unrelated to the bottleneck
+        •  0 — paper is topically unrelated to the bottleneck or its component
 
       system_score (0–30):
         How well does the paper match the target system/software stack?
@@ -502,6 +693,14 @@ If yes:
         proposals using the format in 8c. Skip bottlenecks that were
         already fully addressed in a prior iteration (no new proposals
         means no proposal box for that bottleneck).
+
+        NOTE: session_optimization_iteration already reads Tier-2 project
+        memory (session_memory_retrieve) before issuing a live arXiv query
+        for each bottleneck, and auto-reflects (session_memory_write via
+        session_memory_reflect) on the previous iteration's outcome once
+        this iteration's delta is known — see 'memory_reflection' in its
+        return value. Use session_memory_stats() to inspect what the loop
+        has learned across all sessions on this system.
 
     8d-v. Update the loop state table and print a one-line delta summary
         derived from the comparator output:
@@ -641,15 +840,41 @@ For each pitfall encountered, include a sub-section:
 
 ---
 
+## Step Timings
+
+| Step | Started at | Ended at | Duration (s) |
+| ---- | ---------- | -------- | ------------ |
+| step_1_clone | ... | ... | ... |
+| step_2_detect | ... | ... | ... |
+| step_3_configure | ... | ... | ... |
+| step_4_build_install | ... | ... | ... |
+| step_5_smoke_test | ... | ... | ... |
+| step_6_copy_annotated | ... | ... | ... |
+| step_7_patch_build | ... | ... | ... |
+| step_8_annotate | ... | ... | ... |
+| step_8_5_install_dftracer | ... | ... | ... |
+| step_9_10_build_and_run | ... | ... | ... |
+| step_11_split_traces | ... | ... | ... |
+| step_12_analyze_traces | ... | ... | ... |
+| step_13_diagnose | ... | ... | ... |
+
+Fill this table from ``STEP_TIMINGS`` (collected throughout the pipeline)
+or read ``workspaces/<RUN_ID>/step_timings.json`` which is written at the
+end of ``session_run_pipeline``.  The JSON file is the authoritative source
+for post-session analysis.
+
+---
+
 ## Artifacts
 
 | Artifact | Path |
 |---|---|
-| Annotated source | workspaces/<RUN_ID>/annotated/ |
-| Annotated build | workspaces/<RUN_ID>/build_ann/ |
-| Trace files | workspaces/<RUN_ID>/traces/ |
-| Split traces | workspaces/<RUN_ID>/traces_split/ |
-| Session report | workspaces/<RUN_ID>/session_report.md |
+| Annotated source | workspaces/RUN_ID/annotated/ |
+| Annotated build | workspaces/RUN_ID/build_ann/ |
+| Trace files | workspaces/RUN_ID/traces/ |
+| Split traces | workspaces/RUN_ID/traces_split/ |
+| Step timings | workspaces/RUN_ID/step_timings.json |
+| Session report | workspaces/RUN_ID/session_report.md |
 
 ---
 

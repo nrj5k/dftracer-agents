@@ -1,0 +1,200 @@
+# 16 May 2026
+
+Preliminaries
+=============
+
+Directory structure:
+
+    ln -s /p/vast1/${USER} ${HOME}/v
+    mkdir -p ~/v/repos ~/v/machines
+    for m in tuolumne tioga matrix corona cztb; do
+        for d in "build/llama.cpp" "install/llama.cpp"; do
+            mkdir -p ~/v/machines/${m}/${d}
+        done
+    done
+
+    git clone git@github.com:ggml-org/llama.cpp.git ~/v/repos
+
+    # Tuolumne
+    ssh -t tuolumne '
+        module load rocm/7.2.1
+        && cmake -S ~/v/repos/llama.cpp -B ~/v/machines/tuolumne/build/llama.cpp
+            -DAMDGPU_TARGETS=gfx942 -DGGML_VULKAN=off -DCMAKE_BUILD_TYPE=Release
+            -DBUILD_SHARED_LIBS=ON -DLLAMA_BUILD_TESTS=OFF -DGGML_HIP=ON
+            -DGGML_OPENMP=OFF -DGGML_CUDA_FORCE_CUBLAS=OFF -DGGML_HIP_ROCWMMA_FATTN=OFF
+            -DLLAMA_CURL=OFF -DGGML_NATIVE=OFF -DGGML_STATIC=OFF
+        && cmake -B ~/v/machines/tuolumne/build/llama.cpp --config Release -j 8 '
+
+
+# 15 May 2026
+
+Discussions with Aniruddha on how to get Claude Code terminal, gemma 4 and llama.cpp
+running on matrix.
+
+Matrix:
+sinfo:  same as flux resource list, does not show free GPU
+        Be sure to read news job.lim.matrix
+mshare
+jsalloc -n 1 -G 1 -t 2:00:00 -A guests
+salloc -n 1 -G 1 -t 59:00 -A guests -ppdebug
+
+
+Discussion with Aniruddua, same except tuolumne.
+curl http://127.0.0.1:8080/v1/messages -H "Content-Type: application/json" -H "Authorization: Bearer dummy" -d '{ "model": "gemma4", "max_tokens": 128, "messages": [ {"role": "user", "content": "Say hello from llama.cpp"} ] }'
+
+/collab/usr/global/tools/sandbox/claude-binaries/claude-2.1.141 --model gemma4
+Note that a local .claude.json file is required and must be populated with {}
+# Needed for llama-server
+export LD_LIBRARY_PATH=/p/vast1/rountree/machines/tuolumne/gemma/build/bin:$LD_LIBRARY_PATH
+
+# Needed for aider+gemma
+export OPENAI_API_KEY="unused"
+
+# Needed for Claude Code
+#export ANTHROPIC_BASE_URL="http://localhost:8080/v1/messages"
+export ANTHROPIC_BASE_URL="http://localhost:8080"
+#unset ANTHROPIC_API_KEY                                                        #="dummy"
+export ANTHROPIC_AUTH_TOKEN="dummy"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="gemma4"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="gemma4"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="gemma4"
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1"
+export CLAUDE_CODE_ATTRIBUTION_HEADER="0"
+export ANTHROPIC_MODEL="gemma4"
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gemma4"
+export CLAUDE_CONFIG_DIR="."
+
+# 14 May 2026
+
+A recipe to run a local (free!) instance of gemma 4 + llama.cpp + aider on tuolumne.
+
+1. Install aider.
+    pip install --upgrade pip
+    pip install pipx
+    pipx install aider
+
+2. Install llama.cpp
+    git clone git@github.com:ggml-org/llama.cpp.git
+    mkdir ./build
+    cmake -S ./llama.cpp -B ./build -DAMDGPU_TARGETS=gfx942 -DGGML_VULKAN=off \
+        -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DLLAMA_BUILD_TESTS=OFF \
+        -DGGML_HIP=ON -DGGML_OPENMP=OFF -DGGML_CUDA_FORCE_CUBLAS=OFF \
+        -DGGML_HIP_ROCWMMA_FATTN=OFF -DLLAMA_CURL=OFF -DGGML_NATIVE=OFF -DGGML_STATIC=OFF
+    cmake --build build --config Release -- -j 8
+
+(Aniruddha suggests changing to -DGGML_HIP_ROCWMMA_FATTN=ON, then use --flash-attn on when loading the model.)
+
+3. Create a sandbox directory.
+
+4. In the directory above the sandbox, create a sandbox-config.yaml file.
+    Here's an example (change the last two lines).
+
+mounts:
+    paths:
+        # msr-safe work
+        - "ro:/lib/modules"
+        - "ro:/usr/src"
+        # gemma models
+        - "ro:/usr/workspace/lc-user/mapp/sandbox/models"
+        # llama.cpp build
+        - "ro:/p/vast1/rountree/machines/tuolumne/gemma/build/bin"
+        # Aider
+        - "ro:/g/g24/rountree/.local/share/pipx/venvs/aider-chat"
+
+5. In the sandbox directory, create an environment file.  Change entries
+    as needed.  An example:
+
+# Needed for llama-server
+export LD_LIBRARY_PATH=/p/vast1/rountree/machines/tuolumne/gemma/build/bin:$LD_LIBRARY_PATH
+
+# Needed for aider+gemma
+export OPENAI_API_KEY="unused"
+
+6. Grab a node on tuolumne.  --exclusive is required.
+    flux resource list      # see what's available
+    flux alloc --queue=pbatch --time-limit=4h --nodes=1 --exclusive
+
+7. cd ./sandbox
+
+8. source environment
+
+9. Climb into the sandbox and pull the lid over you.
+
+    /collab/usr/global/tools/sandbox/blackhole --config ../sandbox-config.yaml --device hsmp --device dri --device kfd
+
+10. Load the model.  This will take some time.  Change to uses your llama-server.
+    When you see "srv  update_slots: all slots are idle", it's done loading.
+
+    /p/vast1/rountree/machines/tuolumne/gemma/build/bin/llama-server \
+        --model /usr/workspace/lc-user/mapp/sandbox/models/gemma-4-31B-it-gguf/gemma-4-31B-it-BF16-00001-of-00002.gguf \
+        --api-key "dummy" --alias "gemma4" -c 65532 -n 4096 --split-mode tensor > gemma.logs 2>&1 &
+
+11. Using another terminal, clone a repo into the sandbox that you'd like gemma to work on.
+    cd into that directory before running the next step.
+
+12. Run aider Change to use your aider.
+
+    /g/g24/rountree/.local/share/pipx/venvs/aider-chat/bin/aider --no-show-model-warnings \
+        --openai-api-base http://localhost:8080/v1/messages --model openai/gemma
+
+Notes:
+
+People who build models don't have much incentive to make their agents work
+well on local installations running somebody else's models.  So they don't.
+I've not be able to get Claude Code or Gemini running locally.
+
+Aider has a dreadful user interface, but it does work.
+################################################################################
+21-April-2026
+
+This is provisional documentation.
+
+1. Get an API key.
+2. Put the API key into ~/.livai-api-key.txt
+3. Create a sandbox directory and cd into it.
+4. Create a sandbox-config.yaml file in your sandbox directory.
+    Populate it as follows:
+
+mounts:
+    paths:
+        - "ro:/lib/modules"
+        - "ro:/usr/src"
+
+(The last two lines are for compiling msr-safe.)
+This needs to be in the directory from which you invoke the
+claude sandbox script.  That's normally going to be inside
+of a repo.  If you'd rather not add the file there, you can
+specify its location as follows.
+
+SANDBOX_FLAGS=--config=../sandbox-config.yaml /collab/usr/global/tools/sandbox/claude-sandbox
+
+5. Create both a ~/.claude.json file and a ~/.claude directory
+    with a settings.json file.  Both of these files should look
+    like the text below.  Be sure to add your key.
+
+{
+  "env": {
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": 1,
+    "ANTHROPIC_BASE_URL": "https://livai-api.llnl.gov",
+    "ANTHROPIC_AUTH_TOKEN": "PUT YOUR KEY HERE"
+  },
+  "model": "claude-sonnet-4.5"
+}
+
+6. Allocate a compute node.
+
+7. Clone your repo of interest into the sandbox.
+
+8. In the repo under the sandbox directory, run:
+    /collab/usr/global/tools/sandbox/claude-sandbox
+        or
+    /collab/usr/global/tools/sandbox/codex-sandbox
+
+9. To resume a Claude or Codex session, pass the --resume parameter
+    to the *-sandbox command.  You'll need to be in the same directory
+    as the one where the session was started.
+
+
+View your API usage spend:
+https://livai-tools.llnl.gov/usage/
+

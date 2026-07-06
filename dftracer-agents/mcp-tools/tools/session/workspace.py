@@ -258,6 +258,32 @@ def _save_state(run_id: str, updates: Dict[str, Any]) -> None:
     p.write_text(json.dumps(state, indent=2))
 
 
+def _safe_session_path(ws: Path, relpath: str) -> Path:
+    """Resolve *relpath* under *ws*, raising if it would escape the session workspace.
+
+    Guards against ``..``-traversal and absolute-path injection (``Path(base) /
+    "/abs/path"`` silently resets to the absolute path in ``pathlib``) by
+    resolving both sides and requiring the result to remain inside *ws*.
+
+    Args:
+        ws: Session workspace root (absolute ``Path``), typically ``_ws(run_id)``.
+        relpath: Caller-supplied path, expected to be relative to *ws*.
+
+    Returns:
+        Path: The resolved absolute path, guaranteed to be inside *ws*.
+
+    Raises:
+        ValueError: If the resolved path is outside *ws*, or equals *ws* itself.
+    """
+    ws_resolved = ws.resolve()
+    candidate = (ws / relpath).resolve()
+    if not candidate.is_relative_to(ws_resolved):
+        raise ValueError(f"path escapes session workspace: {relpath}")
+    if candidate == ws_resolved:
+        raise ValueError("refusing to operate on the session workspace root itself")
+    return candidate
+
+
 def _write_artifact_log(
     ws: Path,
     step_num: int,

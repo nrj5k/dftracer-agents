@@ -7,6 +7,8 @@ import difflib
 import json
 import shutil
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -16,7 +18,7 @@ from .workspace import (
     _ws, _load_state, _save_state, _write_artifact_log,
     _ok, _err, _new_run_id, _create_run, _run, _workspaces_root, _derive_app_name,
 )
-from .detection import _detect_info
+from .detection import _detect_info, _detect_analyzer_preset
 from .annotation import (
     _annotate_c_source, _annotate_python_source,
     _fix_dftracer_annotation_errors,
@@ -31,6 +33,29 @@ from .build import (
 from .install import (
     _ensure_session_venv, _install_dftracer_pip_direct, _dftracer_utils_split,
 )
+
+
+def _timed_step(label: str) -> Dict[str, Any]:
+    """Return a mutable dict pre-populated with timing metadata for a step.
+
+    Callers should store the returned dict, populate it with step results, and
+    then call ``_finish_step(d)`` when the step is done so that ``ended_at``
+    and ``duration_s`` are recorded.
+    """
+    return {
+        "step_label": label,
+        "started_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        "_start_mono": time.monotonic(),
+    }
+
+
+def _finish_step(d: Dict[str, Any]) -> Dict[str, Any]:
+    """Stamp ``ended_at`` and ``duration_s`` onto a step dict started with ``_timed_step``."""
+    mono_start = d.pop("_start_mono", None)
+    d["ended_at"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    if mono_start is not None:
+        d["duration_s"] = round(time.monotonic() - mono_start, 3)
+    return d
 
 
 def register_pipeline_tools(mcp: FastMCP) -> None:
@@ -91,6 +116,7 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
             dftracer_ref:         dftracer git tag/branch to install (default: v2.0.3).
         """
         report: Dict[str, Any] = {}
+        step_timings: List[Dict[str, Any]] = []
 
         # ── Normal path (steps 1–8): clone, build, annotate, then PAUSE ───────
         if not (annotation_confirmed and run_id):
@@ -99,6 +125,7 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
             src.mkdir(exist_ok=True)
 
             # Step 1: clone
+            _t1 = _timed_step("step_1_clone")
             clone_r = _run(
                 ["git", "clone", "--depth", "1", "--branch", ref, url, str(src)],
                 timeout=300,
@@ -110,25 +137,32 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                 if not clone_r["success"]:
                     return _err("Step 1 failed: git clone", step=1, **clone_r)
                 _run(["git", "checkout", ref], cwd=src)
-            report["step_1_clone"] = {"status": "ok", "run_id": rid}
+            _finish_step(_t1)
+            step_timings.append(_t1)
+            report["step_1_clone"] = {"status": "ok", "run_id": rid, **{k: v for k, v in _t1.items() if k != "step_label"}}
             _write_artifact_log(ws, 1, "session_create",
                                 {"clone": clone_r, "run_id": rid, "url": url, "ref": ref}, rid)
 
             # Step 2: detect
+            _t2 = _timed_step("step_2_detect")
             info = _detect_info(src)
             bt = info["build_tool"]
             _save_state(rid, {"run_id": rid, "url": url, "ref": ref,
                                "workspace": str(ws), "detection": info})
+            _finish_step(_t2)
+            step_timings.append(_t2)
             report["step_2_detect"] = {
                 "status": "ok",
                 "languages": info["languages"],
                 "build_tool": bt,
                 "features": info["features"],
                 "dftracer_cmake_flags": info["dftracer_cmake_flags"],
+                **{k: v for k, v in _t2.items() if k != "step_label"},
             }
             _write_artifact_log(ws, 2, "session_detect", report["step_2_detect"], rid)
 
             # Step 3: configure
+            _t3 = _timed_step("step_3_configure")
             build = ws / "build"
             install = ws / "install"
             build.mkdir(exist_ok=True)
@@ -154,29 +188,40 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                 cfg_r = {"success": False, "returncode": -1,
                           "stdout": "", "stderr": f"Unknown build tool: {bt}"}
 
-            report["step_3_configure"] = cfg_r
+            _finish_step(_t3)
+            step_timings.append(_t3)
+            report["step_3_configure"] = {**cfg_r, **{k: v for k, v in _t3.items() if k != "step_label"}}
             _write_artifact_log(ws, 3, "session_configure",
                                 {"configure": cfg_r, "build_tool": bt}, rid)
             if not cfg_r["success"]:
                 return _err("Step 3 failed: configure", step=3, report=report)
 
             # Step 4: build + install
+            _t4 = _timed_step("step_4_build_install")
             if bt in {"cmake", "autotools", "make"}:
                 bld_r = _run(["make", f"-j{jobs}"], cwd=build, timeout=600)
                 report["step_4_build"] = bld_r
                 if not bld_r["success"]:
+                    _finish_step(_t4)
+                    step_timings.append(_t4)
                     return _err("Step 4 failed: make", step=4, report=report)
                 ins_r = _run(["make", "install"], cwd=build, timeout=300)
                 report["step_4_install"] = ins_r
                 if not ins_r["success"]:
+                    _finish_step(_t4)
+                    step_timings.append(_t4)
                     return _err("Step 4 failed: make install", step=4, report=report)
             else:
                 report["step_4_build"] = {"status": "skipped (python)"}
+            _finish_step(_t4)
+            step_timings.append(_t4)
+            report["step_4_timing"] = {k: v for k, v in _t4.items() if k != "step_label"}
             _write_artifact_log(ws, 4, "session_build_install", {
                 k: v for k, v in report.items() if k.startswith("step_4")
             }, rid)
 
             # Step 5: original smoke test
+            _t5 = _timed_step("step_5_smoke_test")
             smoke_cmd = smoke_test_command or _guess_smoke_test(src, bt, install)
             if smoke_cmd:
                 sm_r = _run(["/bin/sh", "-c", smoke_cmd], cwd=build, timeout=300)
@@ -187,6 +232,9 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                     )
             else:
                 report["step_5_smoke_test"] = {"status": "no smoke test detected"}
+            _finish_step(_t5)
+            step_timings.append(_t5)
+            report["step_5_smoke_test"].update({k: v for k, v in _t5.items() if k != "step_label"})
             _write_artifact_log(ws, 5, "session_run_smoke_test",
                                 report["step_5_smoke_test"], rid)
             _save_state(rid, {"step": "original_build_done", "detection": info})
@@ -198,15 +246,19 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                 )
 
             # Step 6: copy to annotated/
+            _t6 = _timed_step("step_6_copy_annotated")
             ann = ws / "annotated"
             if ann.exists():
                 shutil.rmtree(ann)
             shutil.copytree(src, ann)
-            report["step_6_copy_annotated"] = {"status": "ok", "path": str(ann)}
+            _finish_step(_t6)
+            step_timings.append(_t6)
+            report["step_6_copy_annotated"] = {"status": "ok", "path": str(ann), **{k: v for k, v in _t6.items() if k != "step_label"}}
             _write_artifact_log(ws, 6, "session_copy_annotated",
                                 report["step_6_copy_annotated"], rid)
 
             # Step 7: patch build system
+            _t7 = _timed_step("step_7_patch_build")
             patched: List[str] = []
             if bt == "cmake":
                 cml = ann / "CMakeLists.txt"
@@ -224,11 +276,14 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                     if pp.exists():
                         pp.write_text(pfn(pp))
                         patched.append(pname)
-            report["step_7_patch_build"] = {"status": "ok", "patched": patched}
+            _finish_step(_t7)
+            step_timings.append(_t7)
+            report["step_7_patch_build"] = {"status": "ok", "patched": patched, **{k: v for k, v in _t7.items() if k != "step_label"}}
             _write_artifact_log(ws, 7, "session_patch_build",
                                 report["step_7_patch_build"], rid)
 
             # Step 8: auto-annotate source
+            _t8 = _timed_step("step_8_annotate")
             c_entries = {str(p) for p in _find_c_entry_points(ann)}
             py_entries = {str(p) for p in _find_python_entry_points(ann)}
             annotated: List[str] = []
@@ -270,15 +325,18 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                     )))
             ann_patch.write_text("".join(ann_patch_chunks))
 
+            _finish_step(_t8)
+            step_timings.append(_t8)
             report["step_8_annotate"] = {
                 "status": "ok",
                 "files_annotated": len(annotated),
                 "annotated": annotated,
                 "patch_file": str(ann_patch),
+                **{k: v for k, v in _t8.items() if k != "step_label"},
             }
             _write_artifact_log(ws, 8, "session_annotate_source",
                                 report["step_8_annotate"], rid)
-            _save_state(rid, {"step": "annotation_done"})
+            _save_state(rid, {"step": "annotation_done", "step_timings_phase1": step_timings})
 
             # ── PAUSE: show coverage report and ask user to confirm ────────────
             ann_report = _generate_annotation_report(ws, rid)
@@ -300,6 +358,7 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                 run_id=rid,
                 workspace=str(ws),
                 step_reports=report,
+                step_timings=step_timings,
             )
         # ── end of normal path (always returns above) ─────────────────────────
 
@@ -320,8 +379,10 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                 run_id=rid,
             )
         report["resumed_from"] = "step_8_5"
+        step_timings = list(_load_state(run_id).get("step_timings_phase1", []))
 
         # --- Step 8.5: create session venv + install dftracer ---
+        _t85 = _timed_step("step_8_5_install_dftracer")
         build_ann = ws / "build_ann"
         install_ann = ws / "install_ann"
         build_ann.mkdir(exist_ok=True)
@@ -332,6 +393,7 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         try:
             venv_python = _ensure_session_venv(ws)
         except RuntimeError as exc:
+            _finish_step(_t85)
             return _err(f"Step 8.5 failed: session venv creation: {exc}",
                         step="8.5", report=report)
         _save_state(rid, {"session_venv_python": str(venv_python)})
@@ -342,11 +404,14 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
             python_exe=str(venv_python),
             jobs=jobs,
         )
+        _finish_step(_t85)
+        step_timings.append(_t85)
         report["step_8_5_install_dftracer"] = {
             "ref": dftracer_ref,
             "venv": str(ws / "venv"),
             "steps": dft_r["steps"],
             "success": dft_r["success"],
+            **{k: v for k, v in _t85.items() if k != "step_label"},
         }
         _write_artifact_log(ws, 9, "session_install_dftracer", report["step_8_5_install_dftracer"], rid)
         if not dft_r["success"]:
@@ -358,6 +423,7 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         # --- Steps 9-10: build annotated + run with dftracer (retry loop) ---
         # Automatically fixes dftracer annotation errors and retries up to
         # MAX_ANNOTATION_RETRIES times before giving up.
+        _t910 = _timed_step("step_9_10_build_and_run")
         traces_dir = ws / "traces"
         traces_dir.mkdir(exist_ok=True)
         dftracer_env = {
@@ -513,6 +579,9 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                 base = "step_9_build_ann" if "step_9" in k else "step_10_smoke_with_dftracer"
                 report.setdefault(base, report[k])
 
+        _finish_step(_t910)
+        step_timings.append(_t910)
+
         _save_state(rid, {"step": "annotated_built"})
         # Write final canonical logs with fixed step numbers
         _write_artifact_log(ws, 10, "session_build_annotated",
@@ -521,6 +590,7 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                              report.get("step_10_smoke_with_dftracer", {}), rid)
 
         # --- Step 11: split traces (via dftracer-utils MCP service) ---
+        _t11 = _timed_step("step_11_split_traces")
         traces_split = ws / "traces_split"
         traces_split.mkdir(exist_ok=True)
         trace_files = list(traces_dir.glob("*.pfw")) + list(traces_dir.glob("*.pfw.gz"))
@@ -537,9 +607,13 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         else:
             report["step_11_split"] = {"status": "no trace files found"}
             traces_split = traces_dir  # fall back
+        _finish_step(_t11)
+        step_timings.append(_t11)
+        report["step_11_split"].update({k: v for k, v in _t11.items() if k != "step_label"})
         _write_artifact_log(ws, 12, "session_split_traces", report["step_11_split"], rid)
 
         # --- Step 12: analyze traces ---
+        _t12 = _timed_step("step_12_analyze_traces")
         idx_dir = traces_split / "idx"
         idx_dir.mkdir(exist_ok=True)
         an_r = _run(
@@ -551,10 +625,13 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
             ],
             timeout=600,
         )
-        report["step_12_analyze"] = an_r
+        _finish_step(_t12)
+        step_timings.append(_t12)
+        report["step_12_analyze"] = {**an_r, **{k: v for k, v in _t12.items() if k != "step_label"}}
         _write_artifact_log(ws, 13, "session_analyze_traces", an_r, rid)
 
         # --- Step 13: diagnose bottlenecks (dfanalyzer checkpoint → dfdiagnoser) ---
+        _t13 = _timed_step("step_13_diagnose")
         checkpoint_dir = ws / "dfanalyzer_checkpoint"
         diagnosis_dir  = ws / "diagnosis"
         scored_dir     = diagnosis_dir / "scored"
@@ -564,6 +641,9 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
 
         diag_phases: Dict[str, Any] = {}
 
+        # Choose dfanalyzer preset: dlio for deep-learning workloads, posix otherwise.
+        analyzer_preset = _detect_analyzer_preset(info)
+
         # Phase 13a: dfanalyzer with checkpoint output
         ana13_r = _run(
             [
@@ -571,7 +651,7 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                 f"trace_path={traces_split}",
                 "analyzer.checkpoint=True",
                 f"analyzer.checkpoint_dir={checkpoint_dir}",
-                "analyzer/preset=posix",
+                f"analyzer/preset={analyzer_preset}",
                 "view_types=[time_range]",
             ],
             timeout=600,
@@ -688,10 +768,22 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                     "severity_counts":      severity_counts,
                 }, rid)
 
+        _finish_step(_t13)
+        step_timings.append(_t13)
+        if "step_13_diagnose" in report:
+            report["step_13_diagnose"].update({k: v for k, v in _t13.items() if k != "step_label"})
+
+        # Build a compact timing summary and persist it
+        timing_summary = [
+            {"step": t["step_label"], "started_at": t.get("started_at"), "ended_at": t.get("ended_at"), "duration_s": t.get("duration_s")}
+            for t in step_timings
+        ]
+        (ws / "step_timings.json").write_text(json.dumps(timing_summary, indent=2))
         _save_state(rid, {
             "step": "pipeline_complete",
             "traces": str(traces_dir),
             "traces_split": str(traces_split),
+            "step_timings": timing_summary,
         })
 
         return _ok(
@@ -699,6 +791,7 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
             run_id=rid,
             workspace=str(ws),
             report=report,
+            step_timings=timing_summary,
         )
 
 

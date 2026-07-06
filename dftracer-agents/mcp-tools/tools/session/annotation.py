@@ -830,60 +830,95 @@ def _find_annotated_c_functions(path: Path) -> Set[str]:
 
 
 def _find_all_py_functions(path: Path) -> List[str]:
-    """Return top-level function names defined in a Python source file.
+    """Return function and method names defined in a Python source file.
 
-    Scans for lines matching ``^def <name>`` (column 0), which captures
-    module-level function definitions but excludes methods, nested functions,
-    and async definitions at non-zero indentation.
+    Scans for ``def`` and ``async def`` at any indentation level, capturing
+    both module-level functions and class methods.  Dunder names are included
+    (e.g. ``__getitem__``) because they may carry dftracer annotations.
+    Duplicate names (same name in multiple classes) appear once each in the
+    returned list, in first-seen order.
 
     Args:
         path: Absolute path to the Python source file to scan.
 
     Returns:
-        A list of top-level function names in source order.  Returns an
-        empty list if the file cannot be read or contains no top-level
-        ``def`` statements.
+        A list of unique function/method names in source order.  Returns an
+        empty list if the file cannot be read or contains no ``def`` statements.
     """
     try:
         lines = path.read_text(errors="ignore").splitlines()
     except OSError:
         return []
-    return [
-        re.match(r'^def\s+(\w+)', ln).group(1)
-        for ln in lines
-        if re.match(r'^def\s+(\w+)', ln)
-    ]
+    seen: set = set()
+    result: List[str] = []
+    for ln in lines:
+        m = re.match(r'^\s*(?:async\s+)?def\s+(\w+)', ln)
+        if m:
+            name = m.group(1)
+            if name not in seen:
+                seen.add(name)
+                result.append(name)
+    return result
 
 
 def _find_annotated_py_functions(path: Path) -> Set[str]:
-    """Return names of top-level Python functions decorated with ``@dft_fn``.
+    """Return names of Python functions annotated with any dftracer decorator or API call.
 
-    Iterates through the file line by line with a one-line look-behind: when
-    the current line is exactly :data:`_DFTRACER_PY_DEC` (``@dft_fn``), the
-    next ``def`` statement's name is captured.
+    Detects three annotation styles:
+
+    1. ``@dft_fn`` decorator (low-level function tracing)
+    2. ``@dft_ai`` / ``@dft_ai.<sub>`` decorators (AI/ML pipeline API)
+    3. ``dft_ai.<anything>`` call inside a method/function body (e.g.
+       ``dft_ai.initialize_log()``, ``dft_ai.compute.step.start()``,
+       ``dft_ai.update()``) — the enclosing ``def`` is considered annotated.
 
     Args:
         path: Absolute path to the annotated Python source file to inspect.
 
     Returns:
-        A set of top-level function names that are decorated with ``@dft_fn``.
+        A set of function/method names that carry any dftracer annotation.
         Returns an empty set if the file cannot be read.
     """
+    # Patterns for decorator-based annotations
+    _DEC_PAT = re.compile(r'^@(dft_fn|dft_ai(\.\w+)*)\s*$')
+    # Pattern for dft_ai API calls inside a body (any dft_ai.* usage)
+    _CALL_PAT = re.compile(r'\bdft_ai\.')
+    # Pattern to capture def name (handles indented methods too)
+    _DEF_PAT = re.compile(r'^\s*def\s+(\w+)')
+
     try:
         lines = path.read_text(errors="ignore").splitlines()
     except OSError:
         return set()
+
     annotated: Set[str] = set()
-    prev_dft = False
+    prev_dft_dec = False
+    current_func: str | None = None
+
     for ln in lines:
-        if ln.strip() == _DFTRACER_PY_DEC:
-            prev_dft = True
+        stripped = ln.strip()
+
+        # Decorator check — set flag, keep it sticky through stacked decorators
+        if _DEC_PAT.match(stripped):
+            prev_dft_dec = True
             continue
-        if prev_dft:
-            m = re.match(r'^def\s+(\w+)', ln)
-            if m:
-                annotated.add(m.group(1))
-        prev_dft = False
+
+        m_def = _DEF_PAT.match(ln)
+        if m_def:
+            current_func = m_def.group(1)
+            if prev_dft_dec:
+                annotated.add(current_func)
+            prev_dft_dec = False
+        elif stripped.startswith('@'):
+            # Another decorator on the same function — don't clear the flag
+            pass
+        else:
+            prev_dft_dec = False
+
+        # Body call check: any dft_ai.* usage annotates the enclosing function
+        if current_func and _CALL_PAT.search(ln):
+            annotated.add(current_func)
+
     return annotated
 
 

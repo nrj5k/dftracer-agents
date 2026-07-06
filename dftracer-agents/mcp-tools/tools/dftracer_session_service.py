@@ -57,6 +57,7 @@ from typing import Any, Dict, List, Optional
 from fastmcp import FastMCP
 
 from ...mcp_service_factory import MCPService, MCPServiceFactory
+from .session.session_tools import _session_split_traces_impl
 
 
 # ---------------------------------------------------------------------------
@@ -1999,71 +2000,47 @@ class DFTracerSessionService(MCPService):
         def session_split_traces(
             run_id: str,
             app_name: str = "app",
+            run_name: str = "baseline",
         ) -> str:
-            """
-            Compact raw dftracer traces via the dftracer-utils split MCP tool.
+            """Compact raw dftracer traces via the dftracer-utils split MCP tool.
 
-            Reads raw .pfw / .pfw.gz files from <workspace>/traces/ (the
-            dedicated trace directory written by session_run_with_dftracer)
-            and writes compacted chunks to <workspace>/traces_split/.
-
-            Uses DftracerUtilsService.split under the hood so that all
-            dftracer-utils error handling and output formatting is applied.
-            Falls back to calling the dftracer_split binary directly if the
-            service cannot be loaded.
-
-            Call session_install_dftracer_utils first to ensure the
-            develop-branch version of dftracer-utils is active.
+            Reads raw .pfw / .pfw.gz files from
+            <workspace>/<run_name>/traces/raw/ and writes compacted chunks to
+            <workspace>/<run_name>/traces/compact/.
 
             Args:
                 run_id:   Session identifier.
                 app_name: Prefix for output chunk files (default: "app").
+                run_name: Run label (e.g. "baseline", "opt1"). Defaults to "baseline".
             """
-            ws = _ws(run_id)
-            traces_in = ws / "traces"
-            traces_out = ws / "traces_split"
-            traces_out.mkdir(exist_ok=True)
-
-            if not traces_in.exists():
-                return _err(f"traces/ not found in session {run_id} — run session_run_with_dftracer first")
-
-            trace_files = list(traces_in.glob("*.pfw")) + list(traces_in.glob("*.pfw.gz"))
-            if not trace_files:
-                return _err(f"No .pfw or .pfw.gz files found in {traces_in}")
-
-            r = _dftracer_utils_split(
-                directory=str(traces_in),
-                output_dir=str(traces_out),
-                app_name=app_name,
-            )
-            _save_state(run_id, {"step": "traces_split", "split_result": r})
-            _write_artifact_log(ws, 12, "session_split_traces", r, run_id)
-            if r["success"]:
-                return _ok("Traces split successfully", output=str(traces_out), **r)
-            return _err("dftracer_split failed", **r)
+            return _session_split_traces_impl(run_id=run_id, app_name=app_name, run_name=run_name)
 
         @self.session_subservice.tool()
         def session_analyze_traces(
             run_id: str,
-            trace_subdir: str = "traces_split",
+            run_name: str = "baseline",
             query_type: str = "summary",
             index_dir: Optional[str] = None,
             extra_flags: str = "",
         ) -> str:
-            """
-            Summarise dftracer traces using dftracer_info (dfanalyzer).
+            """Summarise dftracer traces using dftracer_info (dfanalyzer).
 
             Args:
-                run_id:       Session identifier.
-                trace_subdir: Sub-folder containing split traces.
-                query_type:   dftracer_info --query value (default: summary).
-                index_dir:    Optional index directory; defaults to traces_subdir/idx.
-                extra_flags:  Additional flags for dftracer_info.
+                run_id:     Session identifier.
+                run_name:   Run label (e.g. "baseline", "opt1"). Reads from
+                            <workspace>/<run_name>/traces/compact/. Default: "baseline".
+                query_type: dftracer_info --query value (default: "summary").
+                index_dir:  Optional index directory; defaults to compact/idx.
+                extra_flags: Additional flags for dftracer_info.
             """
             ws = _ws(run_id)
-            traces = ws / trace_subdir
+            traces = ws / run_name / "traces" / "compact"
             if not traces.exists():
-                return _err(f"{trace_subdir}/ not found — run session_split_traces first")
+                legacy = ws / "traces_split"
+                if legacy.exists():
+                    traces = legacy
+                else:
+                    return _err(f"{run_name}/traces/compact/ not found — run session_split_traces first")
 
             idx = Path(index_dir) if index_dir else traces / "idx"
             idx.mkdir(parents=True, exist_ok=True)
@@ -2078,11 +2055,11 @@ class DFTracerSessionService(MCPService):
                 ] + flags,
                 timeout=600,
             )
-            _save_state(run_id, {"step": "traces_analyzed", "analysis_result": r})
-            _write_artifact_log(_ws(run_id), 13, "session_analyze_traces", r, run_id)
+            _save_state(run_id, {f"step_analyzed_{run_name}": True, "analysis_result": r})
+            _write_artifact_log(_ws(run_id), 13, "session_analyze_traces", {"run_name": run_name, **r}, run_id)
             if r["success"]:
-                return _ok("Analysis complete", **r)
-            return _err("dftracer_info failed", **r)
+                return _ok("Analysis complete", run_name=run_name, **r)
+            return _err("dftracer_info failed", run_name=run_name, **r)
 
         @self.session_subservice.tool()
         def session_status(run_id: str) -> str:

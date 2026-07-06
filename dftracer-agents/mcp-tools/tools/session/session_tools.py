@@ -62,7 +62,15 @@ make decisions, and recover from failures before proceeding.
         (annotation via goose recipe subagents using session_read_file + session_write_file)
         → session_annotation_report  [confirm coverage]
         → session_install_dftracer → session_build_annotated
-        → session_run_with_dftracer → session_split_traces → session_analyze_traces
+
+        Per-run (repeat for baseline / annotated / opt1 / opt2 / …):
+        → session_init_run            (create <run>/source,patches,scripts,traces/{raw,compact})
+        → session_snapshot_run_source (copy source into <run>/source/, diff → <run>/patches/)
+        → session_run_with_dftracer   (run with traces → <run>/traces/raw/)
+        → session_split_traces        (compact → <run>/traces/compact/)
+        → session_analyze_traces      (dftracer_info on <run>/traces/compact/)
+
+        Query helpers: session_list_runs, session_get_run_paths
 
     Persistent state for each session is stored in
     ``workspaces/<app>/<timestamp>/session.json`` and updated by ``_save_state``
@@ -83,6 +91,7 @@ from fastmcp import FastMCP
 from .workspace import (
     _ws, _load_state, _save_state, _write_artifact_log,
     _ok, _err, _new_run_id, _create_run, _run, _workspaces_root,
+    _safe_session_path,
 )
 from .detection import (
     _detect_info,
@@ -108,6 +117,97 @@ from .install import (
 )
 
 
+
+
+# ---------------------------------------------------------------------------
+# HPC environment helpers
+# ---------------------------------------------------------------------------
+
+def _extract_module_load_lines(source_dir: Path) -> List[str]:
+    """Scan install/job scripts for 'ml ...' / 'module load ...' lines.
+
+    Returns a deduplicated list of shell lines (preserving order) that load
+    modules, suitable for prepending to any run command so that the same
+    environment used by the app's own scripts is reproduced consistently.
+
+    Scans *.sh, *.job, *.slurm, *.lsf, *.bsub files under source_dir.
+    Skips comment lines.  Stops collecting once a non-module-load line that
+    is not a blank or comment is encountered (avoids pulling in benchmark
+    body commands).
+    """
+    script_extensions = {".sh", ".job", ".slurm", ".lsf", ".bsub"}
+    module_re = re.compile(
+        r"^\s*(ml\s+\S|module\s+load\s+\S|module\s+add\s+\S)", re.I
+    )
+    seen: set = set()
+    lines: List[str] = []
+
+    script_files = sorted(
+        f for f in source_dir.rglob("*")
+        if f.is_file() and f.suffix.lower() in script_extensions
+    )
+    for f in script_files:
+        try:
+            text = f.read_text(errors="ignore")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if module_re.match(stripped):
+                # Lines are often compound (e.g. "ml load python/3.13.2 &&
+                # python3 -m venv .venv && pip install ..."). Only keep the
+                # leading module-load segment(s); stop at the first "&&"
+                # segment that is not itself a module command, so we never
+                # prepend venv-creation / pip-install / activate commands
+                # into an unrelated run's preamble.
+                segments = [s.strip() for s in stripped.split("&&")]
+                kept = []
+                for seg in segments:
+                    if module_re.match(seg):
+                        kept.append(seg)
+                    else:
+                        break
+                module_only = " && ".join(kept)
+                if module_only and module_only not in seen:
+                    seen.add(module_only)
+                    lines.append(module_only)
+    return lines
+
+
+def _build_module_preamble(source_dir: Path) -> str:
+    """Return a shell snippet that loads modules extracted from app scripts.
+
+    Returns an empty string if no module-load lines are found.
+    The snippet initialises Lmod (sources /etc/profile.d/lmod.sh if present)
+    before issuing the module commands so the preamble works even in minimal
+    shell environments (e.g. inside flux run).
+    """
+    lines = _extract_module_load_lines(source_dir)
+    if not lines:
+        return ""
+    parts = [
+        "# Auto-detected module loads from app scripts",
+        "[ -f /etc/profile.d/lmod.sh ] && source /etc/profile.d/lmod.sh",
+    ] + lines
+    return "\n".join(parts) + "\n"
+
+
+def _has_mpi4py_dependency(source_dir: Path) -> bool:
+    """Return True if the project declares mpi4py as a dependency."""
+    import re as _re
+    for fname in ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"):
+        p = source_dir / fname
+        if not p.exists():
+            continue
+        try:
+            text = p.read_text(errors="ignore")
+        except OSError:
+            continue
+        if _re.search(r"\bmpi4py\b", text, _re.I):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +322,259 @@ def _session_build_annotated_impl(
     return _ok("Annotated build succeeded", build_tool=bt, steps=steps)
 
 
+def _ensure_flux_proxy_wrapper(command: str, ws: Path, script_name: str) -> str:
+    """If *command* uses ``flux proxy`` with inline shell, rewrite it as a wrapper script.
+
+    When a command matches ``flux proxy <JOBID> bash -c "..."`` or any form where
+    the payload after ``flux proxy <JOBID>`` is not already a path to an existing
+    ``.sh`` file, we write the payload into a wrapper script under ``<ws>/tmp/``
+    that sources lmod and exports environment variables, then rewrite the command
+    to ``flux proxy <JOBID> bash <wrapper_script>``.
+
+    This is necessary because ``flux proxy <JOBID> bash -c "..."`` does not
+    propagate ``module load`` / lmod state into subprocesses; a wrapper script
+    that sources ``/usr/share/lmod/lmod/init/bash`` is the only reliable method.
+    """
+    import re as _re
+    import shlex as _shlex
+
+    # Match: flux proxy <JOBID> <rest>
+    m = _re.match(r'^(flux\s+proxy\s+\S+)\s+(.+)$', command.strip(), _re.DOTALL)
+    if not m:
+        return command
+
+    proxy_prefix = m.group(1)   # e.g. "flux proxy f3GW7fbdvodR"
+    rest = m.group(2).strip()   # e.g. 'bash -c "module load ..."' or 'bash /path/to/script.sh'
+
+    # If rest already references an existing "bash <script.sh>" invocation
+    # anywhere in the string (e.g. "flux run ... bash wrapper.sh args..."),
+    # no wrapping is needed — the referenced script is expected to handle
+    # its own lmod/module initialisation internally.
+    bash_script_m = _re.search(r'\bbash\s+(\S+\.sh)\b', rest)
+    if bash_script_m:
+        script_path = bash_script_m.group(1)
+        if Path(script_path).exists():
+            return command  # already wrapped
+
+    # Otherwise, the rest is an inline command — write it to a wrapper script.
+    tmp_dir = ws / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    wrapper = tmp_dir / script_name
+    # Strip outer "bash -c '...'" or 'bash -c "..."' if present.
+    inner_m = _re.match(r'^bash\s+-c\s+[\'"](.+)[\'"]$', rest, _re.DOTALL)
+    payload = inner_m.group(1) if inner_m else rest
+    wrapper.write_text(
+        "#!/bin/bash\n"
+        "source /usr/share/lmod/lmod/init/bash\n"
+        f"{payload}\n"
+    )
+    wrapper.chmod(0o755)
+    return f"{proxy_prefix} bash {wrapper}"
+
+
+def _run_dir(ws: Path, run_name: str) -> Path:
+    """Return ``<ws>/<run_name>/`` creating it if needed.
+
+    The per-run directory layout is:
+
+    .. code-block:: text
+
+        <run_name>/
+          source/          ← snapshot of the source tree for this run
+          patches/         ← diffs vs previous run's source snapshot
+          scripts/         ← launch scripts used for this run
+          traces/
+            raw/           ← DFTRACER_LOG_FILE prefix; raw .pfw.gz files
+            compact/       ← compacted output from session_split_traces
+
+    *run_name* is one of: ``"baseline"`` (original, unannotated app),
+    ``"annotated"`` (dftracer-instrumented baseline), ``"opt1"`` / ``"opt2"``
+    / … (successive optimisation iterations).
+    """
+    d = ws / run_name
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _run_source_dir(ws: Path, run_name: str) -> Path:
+    """Return and create ``<ws>/<run_name>/source/``."""
+    d = _run_dir(ws, run_name) / "source"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _run_patches_dir(ws: Path, run_name: str) -> Path:
+    """Return and create ``<ws>/<run_name>/patches/``."""
+    d = _run_dir(ws, run_name) / "patches"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _run_traces_raw(ws: Path, run_name: str) -> Path:
+    """Return and create ``<ws>/<run_name>/traces/raw/``."""
+    d = _run_dir(ws, run_name) / "traces" / "raw"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _run_traces_compact(ws: Path, run_name: str) -> Path:
+    """Return and create ``<ws>/<run_name>/traces/compact/``."""
+    d = _run_dir(ws, run_name) / "traces" / "compact"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+_SCRIPT_STUB = "#!/usr/bin/env bash\n"
+
+
+def _ensure_script_stub(scripts_dir: Path, name: str) -> None:
+    """Create ``<scripts_dir>/<name>`` with an executable stub if it doesn't exist."""
+    p = scripts_dir / name
+    if not p.exists():
+        p.write_text(_SCRIPT_STUB)
+        p.chmod(0o755)
+
+
+def _init_structure(ws: Path, dataset_path: Optional[str] = None) -> Dict[str, Any]:
+    """Build the canonical session directory skeleton under *ws*, idempotently.
+
+    Layout created (existing paths/files are left untouched)::
+
+        baseline/source/, baseline/scripts/{compile.sh,run.sh}
+        annotated/source/, annotated/scripts/{compile.sh,run.sh},
+                  annotated/traces/{raw,compact}/, annotated/analysis-diagnostics/
+        artifacts/
+        tmp/
+        dataset/            ← symlink to dataset_path if given, else empty dir
+        session_report.md   ← skeleton header, not overwritten if present
+
+    ``opt<n>/`` run directories are intentionally *not* pre-created here — they
+    are created lazily and on-demand by ``_run_dir(ws, f"opt{n}")`` when the
+    optimization loop actually starts a new iteration, using the same
+    ``source/patches/scripts/traces/{raw,compact}`` sub-layout as ``annotated/``.
+
+    Args:
+        ws: Session workspace root (created if missing).
+        dataset_path: Absolute path to a dataset directory (typically on a
+            parallel filesystem such as Lustre) to symlink as ``dataset/``.
+            When omitted or when the symlink cannot be created, ``dataset/``
+            is created as a plain empty directory instead.
+
+    Returns:
+        Dict[str, Any]: Paths and flags describing what was created, suitable
+            for merging into an MCP tool's JSON response.
+    """
+    ws.mkdir(parents=True, exist_ok=True)
+
+    baseline_source = _run_source_dir(ws, "baseline")
+    baseline_scripts = _run_dir(ws, "baseline") / "scripts"
+    baseline_scripts.mkdir(parents=True, exist_ok=True)
+    _ensure_script_stub(baseline_scripts, "compile.sh")
+    _ensure_script_stub(baseline_scripts, "run.sh")
+
+    annotated_source = _run_source_dir(ws, "annotated")
+    annotated_scripts = _run_dir(ws, "annotated") / "scripts"
+    annotated_scripts.mkdir(parents=True, exist_ok=True)
+    _ensure_script_stub(annotated_scripts, "compile.sh")
+    _ensure_script_stub(annotated_scripts, "run.sh")
+    _run_traces_raw(ws, "annotated")
+    _run_traces_compact(ws, "annotated")
+    (_run_dir(ws, "annotated") / "analysis-diagnostics").mkdir(parents=True, exist_ok=True)
+
+    artifacts = ws / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+
+    tmp = ws / "tmp"
+    tmp.mkdir(exist_ok=True)
+
+    dataset = ws / "dataset"
+    dataset_kind = "none"
+    if dataset_path:
+        if dataset.is_symlink() or dataset.exists():
+            dataset_kind = "existing"
+        else:
+            try:
+                dataset.symlink_to(Path(dataset_path).resolve())
+                dataset_kind = "symlink"
+            except OSError:
+                dataset.mkdir(exist_ok=True)
+                dataset_kind = "dir_fallback"
+    elif not dataset.exists():
+        dataset.mkdir(exist_ok=True)
+        dataset_kind = "dir"
+    else:
+        dataset_kind = "existing"
+
+    report = ws / "session_report.md"
+    if not report.exists():
+        ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        report.write_text(f"# Session Report: {ws.name}\n\n_Generated {ts}_\n")
+
+    return {
+        "baseline": str(_run_dir(ws, "baseline")),
+        "annotated": str(_run_dir(ws, "annotated")),
+        "artifacts": str(artifacts),
+        "tmp": str(tmp),
+        "dataset": str(dataset),
+        "dataset_kind": dataset_kind,
+        "session_report": str(report),
+    }
+
+
+def _snapshot_source(src: Path, dest: Path) -> Dict[str, Any]:
+    """Copy *src* tree into *dest*, overwriting existing files.
+
+    Uses ``rsync`` when available for speed; falls back to ``shutil.copytree``
+    otherwise.  Returns a dict with ``file_count`` and ``success``.
+    """
+    import subprocess as _sp
+    dest.mkdir(parents=True, exist_ok=True)
+    try:
+        r = _sp.run(
+            ["rsync", "-a", "--delete", f"{src}/", f"{dest}/"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if r.returncode == 0:
+            count = sum(1 for _ in dest.rglob("*") if _.is_file())
+            return {"success": True, "file_count": count, "tool": "rsync"}
+    except (FileNotFoundError, _sp.TimeoutExpired):
+        pass
+    # Fallback: shutil
+    import shutil as _sh
+    _sh.rmtree(str(dest), ignore_errors=True)
+    _sh.copytree(str(src), str(dest))
+    count = sum(1 for _ in dest.rglob("*") if _.is_file())
+    return {"success": True, "file_count": count, "tool": "shutil"}
+
+
+def _generate_patch(from_dir: Path, to_dir: Path, patch_file: Path) -> str:
+    """Generate a unified diff between *from_dir* and *to_dir*, write to *patch_file*.
+
+    Excludes ``.git/`` metadata.  Returns ``"ok"`` on success, or an error string.
+    """
+    import subprocess as _sp
+    try:
+        patch_file.parent.mkdir(parents=True, exist_ok=True)
+        # Find changed files (excluding .git) then produce unified diff per file
+        changed = _sp.run(
+            ["diff", "-rq", "--exclude=.git", str(from_dir), str(to_dir)],
+            capture_output=True, text=True, timeout=30,
+        )
+        lines: list[str] = []
+        for line in changed.stdout.splitlines():
+            parts = line.split()
+            # "Files <f1> and <f2> differ" → two path tokens
+            if len(parts) >= 4 and parts[0] == "Files" and parts[2] == "and":
+                f1, f2 = parts[1], parts[3]
+                d = _sp.run(["diff", "-u", f1, f2], capture_output=True, text=True, timeout=10)
+                lines.append(d.stdout)
+        content = "".join(lines) if lines else "# no differences\n"
+        patch_file.write_text(content)
+        return "ok"
+    except Exception as e:
+        return str(e)
+
+
 def _session_run_with_dftracer_impl(
     run_id: str,
     command: str,
@@ -229,11 +582,25 @@ def _session_run_with_dftracer_impl(
     data_dir: str = "all",
     timeout: int = 600,
     env_extra: Optional[str] = None,
+    run_name: str = "baseline",
 ) -> str:
     """Standalone implementation of session_run_with_dftracer."""
     ws = _ws(run_id)
-    traces_dir = ws / "traces"
-    traces_dir.mkdir(exist_ok=True)
+
+    # Traces always go into the session workspace under <run_name>/traces/raw/.
+    # App I/O data (datasets, checkpoints, run outputs) goes to Lustre — traces
+    # do NOT go to Lustre because the MCP analysis tools (session_split_traces,
+    # session_analyze_traces, session_optimization_iteration) read from the
+    # workspace directory, not from Lustre.
+    #
+    # Clear any stale files left behind by a previous attempt for this same
+    # run_name (e.g. an orphaned flux job whose Python-side subprocess.run
+    # was killed by a timeout but which kept running on the cluster and wrote
+    # trace files after the fact) — otherwise a later, successful attempt
+    # would silently read a mix of old and new trace data.
+    import shutil as _sh_traces
+    _sh_traces.rmtree(str(_run_dir(ws, run_name) / "traces" / "raw"), ignore_errors=True)
+    traces_dir = _run_traces_raw(ws, run_name)
 
     cwd = ws / subfolder
     if not cwd.exists():
@@ -241,8 +608,14 @@ def _session_run_with_dftracer_impl(
     if not cwd.exists():
         cwd = ws / "source"
 
-    log_file_prefix = str(traces_dir / run_id)
-    Path(log_file_prefix).parent.mkdir(parents=True, exist_ok=True)
+    # Use <run_name>-<attempt> as the trace file prefix so files are named
+    # <run_name>-<attempt>-<hash>-.pfw.gz. The attempt suffix is unique per
+    # call (not just per run_name) so that an orphaned process from a killed
+    # attempt can never write into the same file prefix a later attempt uses,
+    # even if it isn't actually terminated by the timeout.
+    import uuid as _uuid_traces
+    attempt_suffix = _uuid_traces.uuid4().hex[:8]
+    log_file_prefix = str(traces_dir / f"{run_name}-{attempt_suffix}")
 
     env: Dict[str, str] = {
         "DFTRACER_ENABLE": "1",
@@ -254,35 +627,44 @@ def _session_run_with_dftracer_impl(
         import json as _json
         env.update(_json.loads(env_extra))
 
-    r = _run(["/bin/sh", "-c", command], cwd=cwd, env=env, timeout=timeout)
+    # For flux proxy commands, always use a wrapper script — inline bash -c
+    # does not propagate module loads reliably inside flux proxy subprocesses.
+    command = _ensure_flux_proxy_wrapper(command, ws, f"run_with_dftracer_{run_name}.sh")
+
+    # Prepend module-load preamble from the app's own scripts for ABI consistency.
+    preamble = _build_module_preamble(ws / "source")
+    run_command = (preamble + command) if preamble else command
+
+    r = _run(["/bin/bash", "-c", run_command], cwd=cwd, env=env, timeout=timeout)
     _save_state(run_id, {
         "step": "ran_with_dftracer",
-        "dftracer_run": {"command": command, **r},
+        "dftracer_run": {"command": command, "run_name": run_name, **r},
+        f"last_run_{run_name}": {"command": command, **r},
     })
-    _write_artifact_log(ws, 11, "session_run_with_dftracer", {"command": command, "result": r, "traces_dir": str(traces_dir)}, run_id)
+    _write_artifact_log(ws, 11, "session_run_with_dftracer", {"command": command, "run_name": run_name, "result": r, "traces_dir": str(traces_dir)}, run_id)
     if r["success"]:
-        return _ok("Command completed with dftracer", traces_dir=str(traces_dir), **r)
-    return _err("Command failed with dftracer", traces_dir=str(traces_dir), **r)
+        return _ok("Command completed with dftracer", run_name=run_name, traces_dir=str(traces_dir), **r)
+    return _err("Command failed with dftracer", run_name=run_name, traces_dir=str(traces_dir), **r)
 
 
 def _session_split_traces_impl(
     run_id: str,
     app_name: str = "app",
+    run_name: str = "baseline",
 ) -> str:
     """Standalone implementation of session_split_traces."""
     ws = _ws(run_id)
-    traces_in = ws / "traces"
-    traces_out = ws / "traces_split"
-    traces_out.mkdir(exist_ok=True)
+    traces_in = _run_traces_raw(ws, run_name)
+    traces_out = _run_traces_compact(ws, run_name)
 
     if not traces_in.exists():
-        return _err(f"traces/ not found in session {run_id} — run session_run_with_dftracer first")
+        return _err(f"{run_name}/traces/raw/ not found in session {run_id} — run session_run_with_dftracer first")
 
     trace_files = list(traces_in.rglob("*.pfw")) + list(traces_in.rglob("*.pfw.gz"))
     if not trace_files:
         return _err(f"No .pfw or .pfw.gz files found in {traces_in}")
 
-    _SPLIT_CHUNK_MB = 512
+    _SPLIT_CHUNK_MB = 512  # default chunk size — 512 MB balances index overhead vs granularity
     if len(trace_files) == 1:
         uncompressed = _dftracer_info_uncompressed_bytes(str(trace_files[0]))
         if uncompressed is not None and uncompressed <= _SPLIT_CHUNK_MB * 1024 * 1024:
@@ -293,23 +675,108 @@ def _session_split_traces_impl(
                  "stdout": (f"skipped split: single file {trace_files[0].name} "
                             f"uncompressed {uncompressed / (1024*1024):.1f} MB ≤ {_SPLIT_CHUNK_MB} MB chunk size"),
                  "stderr": ""}
-            _save_state(run_id, {"step": "traces_split", "split_result": r})
+            _save_state(run_id, {"step": f"traces_split_{run_name}", "split_result": r})
             _write_artifact_log(ws, 12, "session_split_traces", r, run_id)
             return _ok(
                 f"Traces copied without splitting (single file {uncompressed / (1024*1024):.1f} MB uncompressed ≤ {_SPLIT_CHUNK_MB} MB)",
-                output=str(traces_out), **r,
+                run_name=run_name, output=str(traces_out), **r,
             )
 
     r = _dftracer_utils_split(
         directory=str(traces_in),
         output_dir=str(traces_out),
         app_name=app_name,
+        chunk_size_mb=_SPLIT_CHUNK_MB,
     )
-    _save_state(run_id, {"step": "traces_split", "split_result": r})
+    _save_state(run_id, {"step": f"traces_split_{run_name}", "split_result": r})
     _write_artifact_log(ws, 12, "session_split_traces", r, run_id)
     if r["success"]:
-        return _ok("Traces split successfully", output=str(traces_out), **r)
+        return _ok("Traces split successfully", run_name=run_name, output=str(traces_out), **r)
     return _err("dftracer_split failed", **r)
+
+
+def _session_validate_traces_impl(
+    run_id: str,
+    run_name: str = "baseline",
+    traces_dir: Optional[str] = None,
+) -> str:
+    """Standalone implementation of session_validate_traces.
+
+    Validates ``.pfw``/``.pfw.gz`` trace files using dftracer-utils' own
+    indexing/parsing pipeline (``dftracer_event_count``), rather than any
+    ad hoc JSON check: a file that fails to parse or index is reported by
+    the tool itself as ``failed`` in its ``indexed=.. skipped=.. failed=..``
+    summary line, so this reuses the exact mechanism dftracer-utils uses to
+    detect truncated/corrupted trace files (e.g. a worker killed mid-write).
+    """
+    ws = _ws(run_id)
+    if not ws.exists():
+        return _err(f"Session {run_id} not found")
+
+    if traces_dir is not None:
+        d = Path(traces_dir)
+    else:
+        compact = _run_traces_compact(ws, run_name)
+        raw = _run_traces_raw(ws, run_name)
+        has_compact = any(compact.glob("*.pfw*"))
+        d = compact if has_compact else raw
+
+    if not d.exists():
+        return _err(f"Traces directory not found: {d}")
+
+    trace_files = list(d.glob("*.pfw")) + list(d.glob("*.pfw.gz"))
+    if not trace_files:
+        return _err(f"No .pfw or .pfw.gz files found in {d}")
+
+    # Use a run-scoped index dir so --force always rebuilds the index fresh
+    # (a shared/default index-dir would let cached results from a prior,
+    # possibly corrupted, run mask the summary line this parses below).
+    index_dir = _run_dir(ws, run_name) / "tmp" / "validate_index"
+    index_dir.mkdir(parents=True, exist_ok=True)
+    r = _run(
+        ["dftracer_event_count", "--directory", str(d),
+         "--index-dir", str(index_dir), "--force"],
+        timeout=300,
+    )
+    if not r["success"]:
+        return _err("dftracer_event_count failed", **r)
+
+    log = r["stderr"] + "\n" + r["stdout"]
+    m = re.search(
+        r"indexed=(\d+)\s+skipped=(\d+)\s+failed=(\d+)", log
+    )
+    indexed = skipped = failed = None
+    if m:
+        indexed, skipped, failed = (int(g) for g in m.groups())
+
+    valid_events = None
+    stdout_lines = [l.strip() for l in r["stdout"].splitlines() if l.strip()]
+    if stdout_lines and stdout_lines[-1].isdigit():
+        valid_events = int(stdout_lines[-1])
+
+    result = {
+        "directory": str(d),
+        "trace_file_count": len(trace_files),
+        "indexed": indexed,
+        "skipped": skipped,
+        "failed": failed,
+        "valid_events": valid_events,
+        "stderr_tail": r["stderr"][-2000:],
+    }
+    _save_state(run_id, {"step": f"traces_validated_{run_name}", "validate_result": result})
+    _write_artifact_log(ws, 12, "session_validate_traces", result, run_id)
+
+    if failed is not None and failed > 0:
+        return _err(
+            f"{failed} of {indexed + skipped + failed} trace file(s) failed "
+            f"dftracer_event_count validation (corrupted/truncated)",
+            **result,
+        )
+    return _ok(
+        f"All {trace_files and (indexed if indexed is not None else len(trace_files))} "
+        f"trace file(s) validated cleanly ({valid_events if valid_events is not None else '?'} valid events)",
+        **result,
+    )
 
 
 def _session_collect_system_info_impl(run_id: str) -> str:
@@ -506,6 +973,8 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         ``session_annotation_report``,
         ``session_install_dftracer``,
         ``session_install_dftracer_utils``, ``session_build_annotated``,
+        ``session_init_run``, ``session_snapshot_run_source``,
+        ``session_get_run_paths``, ``session_list_runs``,
         ``session_run_with_dftracer``, ``session_split_traces``,
         ``session_analyze_traces``, ``session_status``,
         ``session_collect_system_info``, ``session_generate_dftracer_pc``.
@@ -524,20 +993,28 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         url: str,
         ref: str = "main",
         run_id: Optional[str] = None,
+        dataset_path: Optional[str] = None,
     ) -> str:
         """Clone a Git repository into a new, isolated session workspace.
 
         Creates a timestamped workspace directory under
         ``workspaces/<app_name>/<YYYYMMDD_HHMMSS>/`` (where *app_name* is
         derived from *url*), clones *url* at *ref* into the ``source/``
-        sub-folder, and persists initial session state to ``session.json``.
+        sub-folder, builds the canonical session directory skeleton (see
+        ``session_init_structure``), and persists initial session state to
+        ``session.json``.
 
         A shallow clone (``--depth 1``) is attempted first for speed.  If the
         branch/tag does not exist on the remote the tool retries with a bare
         clone followed by ``git checkout <ref>``.
 
         Side effects:
-            * Creates ``workspaces/<app>/<ts>/source/`` on disk.
+            * Creates ``workspaces/<app>/<ts>/source/`` on disk (the raw clone).
+            * Creates ``baseline/source/`` and ``annotated/source/`` as copies
+              of the clone, plus ``baseline/scripts/``, ``annotated/scripts/``,
+              ``annotated/traces/{raw,compact}/``, ``artifacts/``, ``tmp/``,
+              ``dataset/`` (symlinked to *dataset_path* if given), and
+              ``session_report.md`` — see ``session_init_structure``.
             * Writes ``workspaces/<app>/.current_run`` pointer so that
               ``pipeline_get_run_id`` can recall this session.
             * Persists ``{"url", "ref", "step": "cloned"}`` to ``session.json``.
@@ -547,6 +1024,10 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             ref: Branch, tag, or commit SHA to checkout (default: ``"main"``).
             run_id: Optional fixed RUN-ID string.  A UUID-based ID is generated
                 when omitted.
+            dataset_path: Optional absolute path (typically on a parallel
+                filesystem such as Lustre) to symlink as ``dataset/`` in the
+                workspace.  When omitted, ``dataset/`` is created as a plain
+                empty directory.
 
         Returns:
             JSON string with keys:
@@ -555,6 +1036,8 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
                 * ``run_id`` — the session identifier for all subsequent calls.
                 * ``workspace`` — absolute path to the session root directory.
                 * ``source`` — absolute path to the cloned source tree.
+                * ``baseline``, ``annotated``, ``artifacts``, ``tmp``, ``dataset``,
+                  ``session_report`` — paths created by ``session_init_structure``.
 
         Raises:
             Returns ``{"status": "error"}`` JSON when both clone attempts fail,
@@ -584,17 +1067,66 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
                 return _err("git clone failed", clone_stderr=r2["stderr"])
             _run(["git", "checkout", ref], cwd=src)
 
+        structure = _init_structure(ws, dataset_path)
+        for target_name in ("baseline", "annotated"):
+            target_source = Path(structure[target_name]) / "source"
+            if not any(target_source.iterdir()):
+                shutil.copytree(src, target_source, dirs_exist_ok=True)
+
         _save_state(rid, {
             "url": url,
             "ref": ref,
             "step": "cloned",
+            "structure_dataset_path": dataset_path,
         })
         return _ok(
             f"Session {rid} created",
             run_id=rid,
             workspace=str(ws),
             source=str(src),
+            **structure,
         )
+
+    @mcp.tool()
+    def session_init_structure(
+        run_id: str,
+        dataset_path: Optional[str] = None,
+    ) -> str:
+        """Build (or repair) the canonical session directory skeleton.
+
+        Normally invoked automatically by ``session_create``; exposed as a
+        standalone tool so callers can re-run it idempotently — e.g. to attach
+        a ``dataset_path`` symlink after the fact, or to restore directories
+        removed via ``session_remove_path``.
+
+        Directory layout created (existing paths/files are left untouched)::
+
+            baseline/source/, baseline/scripts/{compile.sh,run.sh}
+            annotated/source/, annotated/scripts/{compile.sh,run.sh},
+                      annotated/traces/{raw,compact}/, annotated/analysis-diagnostics/
+            artifacts/
+            tmp/
+            dataset/            ← symlink to dataset_path if given, else empty dir
+            session_report.md   ← skeleton header, not overwritten if present
+
+        ``opt<n>/`` run directories are intentionally not pre-created — they
+        are created lazily by the optimization loop using the same
+        ``source/patches/scripts/traces/{raw,compact}`` sub-layout as ``annotated/``.
+
+        Args:
+            run_id: Session identifier returned by ``session_create``.
+            dataset_path: Optional absolute path to symlink as ``dataset/``.
+                Ignored if ``dataset/`` already exists (file, dir, or symlink).
+
+        Returns:
+            JSON string with keys: ``status``, ``message``, ``baseline``,
+            ``annotated``, ``artifacts``, ``tmp``, ``dataset``, ``dataset_kind``,
+            ``session_report``.
+        """
+        ws = _ws(run_id)
+        structure = _init_structure(ws, dataset_path)
+        _save_state(run_id, {"structure_dataset_path": dataset_path})
+        return _ok(f"Session structure ready for {run_id}", **structure)
 
     @mcp.tool()
     def session_detect(run_id: str) -> str:
@@ -725,7 +1257,10 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         Raises:
             Returns ``{"status": "error"}`` when the file does not exist.
         """
-        p = _ws(run_id) / subfolder / filepath
+        try:
+            p = _safe_session_path(_ws(run_id), f"{subfolder}/{filepath}")
+        except ValueError as exc:
+            return _err(str(exc))
         if not p.exists():
             return _err(f"File not found: {subfolder}/{filepath}")
         content = p.read_text(errors="replace")[:max_bytes]
@@ -775,10 +1310,79 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
                 * ``status`` (``"ok"``).
                 * ``message`` — ``"Wrote <N> bytes to <subfolder>/<filepath>"``.
         """
-        p = _ws(run_id) / subfolder / filepath
+        try:
+            p = _safe_session_path(_ws(run_id), f"{subfolder}/{filepath}")
+        except ValueError as exc:
+            return _err(str(exc))
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
         return _ok(f"Wrote {len(content)} bytes to {subfolder}/{filepath}")
+
+    @mcp.tool()
+    def session_remove_path(
+        run_id: str,
+        relpath: str,
+        recursive: bool = False,
+    ) -> str:
+        """Remove a file, directory, or symlink inside the session workspace.
+
+        Strictly sandboxed to the calling session's workspace: *relpath* is
+        resolved and validated with :func:`_safe_session_path`, which rejects
+        ``..``-traversal, absolute-path injection, and any resolved path that
+        falls outside ``<workspace>/``.  The workspace root itself and
+        ``session.json`` can never be removed through this tool.
+
+        Symlinks (e.g. the ``dataset`` link created by ``session_init_structure``)
+        are unlinked directly — the link node is removed, its target is never
+        followed or touched.
+
+        Args:
+            run_id: Session identifier returned by ``session_create``.
+            relpath: Path to remove, relative to the session workspace root
+                (e.g. ``"tmp/scratch.bin"`` or ``"opt3"``).
+            recursive: Must be ``True`` to remove a non-empty directory.
+                Defaults to ``False`` as a safety guard against accidental
+                large deletions.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"`` or ``"error"``).
+                * ``message`` — human-readable summary.
+                * ``removed`` — resolved path that was removed (on success).
+                * ``kind`` — one of ``"file"``, ``"dir"``, ``"symlink"``.
+
+        Raises:
+            Returns ``{"status": "error"}`` when *relpath* escapes the
+            workspace, targets the workspace root or ``session.json``, does
+            not exist, or is a non-empty directory with ``recursive=False``.
+        """
+        ws = _ws(run_id)
+        try:
+            p = _safe_session_path(ws, relpath)
+        except ValueError as exc:
+            return _err(str(exc))
+
+        if p.name == "session.json" and p.parent == ws.resolve():
+            return _err("refusing to remove session.json")
+
+        if not p.exists() and not p.is_symlink():
+            return _err(f"path does not exist: {relpath}")
+
+        if p.is_symlink():
+            p.unlink()
+            return _ok(f"Removed symlink {relpath}", removed=str(p), kind="symlink")
+
+        if p.is_dir():
+            if any(p.iterdir()) and not recursive:
+                return _err(
+                    f"{relpath} is a non-empty directory — pass recursive=True to remove it",
+                    removed=str(p),
+                )
+            shutil.rmtree(p)
+            return _ok(f"Removed directory {relpath}", removed=str(p), kind="dir")
+
+        p.unlink()
+        return _ok(f"Removed file {relpath}", removed=str(p), kind="file")
 
     @mcp.tool()
     def session_configure(
@@ -879,7 +1483,21 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             flags = ["install", "-e", str(src)] + (
                 extra_pip_flags.split() if extra_pip_flags else []
             )
-            r = _run([str(pip)] + flags, timeout=300)
+            # mpi4py must be compiled against the system MPI (not a wheel) so
+            # that it uses the same ABI as the rest of the MPI stack.
+            pip_env: Dict[str, str] = {}
+            if _has_mpi4py_dependency(src):
+                if "--no-binary=mpi4py" not in flags:
+                    flags.insert(flags.index(str(src)) + 1, "--no-binary=mpi4py")
+                # Point CC/CXX at MPI wrappers for consistent compilation.
+                import shutil as _shutil
+                mpicc = info.get("mpi_impl", {}).get("mpicc") or _shutil.which("mpicc") or ""
+                mpicxx = info.get("mpi_impl", {}).get("mpicxx") or _shutil.which("mpicxx") or _shutil.which("mpic++") or ""
+                if mpicc:
+                    pip_env["CC"] = mpicc
+                if mpicxx:
+                    pip_env["CXX"] = mpicxx
+            r = _run([str(pip)] + flags, env=pip_env if pip_env else None, timeout=300)
         else:
             return _err(f"Unsupported build tool: {bt}")
 
@@ -1019,7 +1637,17 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
 
         safe_command, stripped = _strip_mpi_launcher(command)
 
-        r = _run(["/bin/sh", "-c", safe_command], cwd=cwd, env=env, timeout=timeout)
+        # For flux proxy commands, always use a wrapper script — inline bash -c
+        # does not propagate module loads reliably inside flux proxy subprocesses.
+        safe_command = _ensure_flux_proxy_wrapper(safe_command, _ws(run_id), "run_smoke_test.sh")
+
+        # Prepend module-load preamble extracted from the app's own scripts so
+        # the run environment is consistent with what the app's job scripts use.
+        preamble = _build_module_preamble(_ws(run_id) / "source")
+        if preamble:
+            safe_command = preamble + safe_command
+
+        r = _run(["/bin/bash", "-c", safe_command], cwd=cwd, env=env, timeout=timeout)
         _save_state(run_id, {"last_smoke_test": {"command": safe_command, **r}})
         _write_artifact_log(_ws(run_id), 5, "session_run_smoke_test", {
             "command_original": command,
@@ -1040,6 +1668,97 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             mpi_launcher_stripped=stripped,
             **r,
         )
+
+    @mcp.tool()
+    def session_wait_flux_job(
+        alloc_id: str,
+        job_id: str,
+        poll_interval: int = 30,
+        timeout: int = 7200,
+        log_file: Optional[str] = None,
+    ) -> str:
+        """Wait for a Flux job (inside an allocation) to complete, polling until done.
+
+        Uses ``flux proxy <alloc_id> flux jobs -a`` to poll the job state every
+        *poll_interval* seconds until the job reaches a terminal state (CD, CA, F)
+        or *timeout* seconds elapse.
+
+        After the job finishes, optionally tails the last 50 lines of *log_file*
+        (if provided) so the caller can see the final output without reading the
+        whole file.
+
+        Args:
+            alloc_id: The allocation JOBID to proxy into (e.g. ``"f3Gb7i5BCZsM"``).
+            job_id: The inner job JOBID to wait for (e.g. ``"f6H3GwWJpo"``).
+            poll_interval: Seconds between status polls. Defaults to ``30``.
+            timeout: Maximum seconds to wait. Defaults to ``7200`` (2 hours).
+            log_file: Optional absolute path to a log file whose last 50 lines
+                are returned in the response after the job finishes.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"``, ``"error"``, or ``"timeout"``).
+                * ``message`` — human-readable summary.
+                * ``job_state`` — final flux job state (``"CD"``, ``"CA"``, ``"F"``).
+                * ``elapsed`` — seconds waited.
+                * ``log_tail`` — last 50 lines of *log_file* (if provided and exists).
+        """
+        import time as _time
+        import subprocess as _sp
+
+        start = _time.time()
+        terminal = {"CD", "CA", "F"}
+        job_state = None
+        elapsed = 0
+
+        while elapsed < timeout:
+            try:
+                result = _sp.run(
+                    ["flux", "proxy", alloc_id, "flux", "jobs", "-a"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                for line in result.stdout.splitlines():
+                    parts = line.split()
+                    if parts and parts[0] == job_id:
+                        job_state = parts[3] if len(parts) > 3 else None
+                        break
+            except Exception:
+                pass
+
+            if job_state in terminal:
+                break
+
+            _time.sleep(poll_interval)
+            elapsed = int(_time.time() - start)
+
+        elapsed = int(_time.time() - start)
+
+        log_tail = ""
+        if log_file:
+            try:
+                with open(log_file, "r") as fh:
+                    lines = fh.readlines()
+                    log_tail = "".join(lines[-50:])
+            except Exception:
+                log_tail = "(could not read log file)"
+
+        if elapsed >= timeout and job_state not in terminal:
+            return json.dumps({
+                "status": "timeout",
+                "message": f"Job {job_id} did not finish within {timeout}s",
+                "job_state": job_state,
+                "elapsed": elapsed,
+                "log_tail": log_tail,
+            })
+
+        ok = job_state == "CD"
+        return json.dumps({
+            "status": "ok" if ok else "error",
+            "message": f"Job {job_id} finished with state {job_state} after {elapsed}s",
+            "job_state": job_state,
+            "elapsed": elapsed,
+            "log_tail": log_tail,
+        })
 
     @mcp.tool()
     def session_copy_annotated(run_id: str) -> str:
@@ -1331,6 +2050,7 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         state = _load_state(run_id)
         info = state.get("detection") or _detect_info(ws / "source")
         features = info.get("features", {})
+        bt = info.get("build_tool", state.get("build_tool", "unknown"))
 
         features_enabled = []
         compat_warnings: list = []
@@ -1378,15 +2098,34 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         if features.get("hwloc"):
             features_enabled.append("hwloc")
 
-        # Create (or reuse) a fresh isolated venv inside the workspace so that
-        # dftracer and its dependencies are completely separate from the MCP
-        # server's own Python environment.
-        try:
-            venv_python = _ensure_session_venv(ws)
-        except RuntimeError as exc:
-            return _err(f"session venv creation failed: {exc}")
-
-        venv_python_str = str(venv_python)
+        # For Python (ML/AI) projects, dftracer and the app MUST share the same
+        # venv (ws/install/) so `import dftracer` resolves at runtime without
+        # any path surgery.  Never create a parallel ws/venv/ for Python apps —
+        # it causes import errors when the app venv is active but dftracer lives
+        # in a different site-packages.
+        #
+        # For C/C++ projects, create an isolated session venv (ws/venv/) that is
+        # separate from the MCP server's own Python environment.
+        app_venv_python = ws / "install" / "bin" / "python"
+        if bt == "python":
+            if not app_venv_python.exists():
+                # App venv not yet created — create it now so dftracer and the
+                # app land in the same environment from the start.
+                try:
+                    import subprocess as _sp
+                    _sp.run(
+                        [sys.executable, "-m", "venv", str(ws / "install")],
+                        check=True, timeout=60,
+                    )
+                except Exception as exc:
+                    return _err(f"Failed to create app venv at ws/install/: {exc}")
+            venv_python_str = str(app_venv_python)
+        else:
+            try:
+                venv_python = _ensure_session_venv(ws)
+            except RuntimeError as exc:
+                return _err(f"session venv creation failed: {exc}")
+            venv_python_str = str(venv_python)
         _save_state(run_id, {"session_venv_python": venv_python_str})
 
         result = _install_dftracer_pip_direct(
@@ -1565,6 +2304,234 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         )
 
     @mcp.tool()
+    @mcp.tool()
+    def session_init_run(
+        run_id: str,
+        run_name: str,
+    ) -> str:
+        """Create the directory structure for a named profiling/optimization run.
+
+        Every profiling iteration (baseline, opt1, opt2, …) lives under its own
+        sub-directory inside the session workspace:
+
+        .. code-block:: text
+
+            <workspace>/
+              <run_name>/
+                traces/raw/      ← DFTRACER_LOG_FILE prefix goes here
+                traces/compact/  ← session_split_traces output
+                scripts/         ← launch scripts for this run
+                source/          ← optional source snapshot
+
+        Call this before ``session_run_with_dftracer`` to obtain the canonical
+        paths for the run.  Calling it on an already-existing run is safe
+        (directories are created only if absent).
+
+        Args:
+            run_id: Session identifier returned by ``session_create``.
+            run_name: Short name for this run iteration, e.g. ``"baseline"``,
+                ``"opt1"``, ``"opt2"``.  Used as the directory prefix.
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"``).
+                * ``message`` — confirmation.
+                * ``run_name`` — the *run_name* argument.
+                * ``run_dir`` — ``<workspace>/<run_name>/``.
+                * ``traces_raw`` — ``<workspace>/<run_name>/traces/raw/``.
+                * ``traces_compact`` — ``<workspace>/<run_name>/traces/compact/``.
+                * ``scripts_dir`` — ``<workspace>/<run_name>/scripts/``.
+                * ``dftracer_log_prefix`` — value to set for ``DFTRACER_LOG_FILE``.
+        """
+        ws = _ws(run_id)
+        run_d = _run_dir(ws, run_name)
+        raw = _run_traces_raw(ws, run_name)
+        compact = _run_traces_compact(ws, run_name)
+        source = _run_source_dir(ws, run_name)
+        patches = _run_patches_dir(ws, run_name)
+        scripts = run_d / "scripts"
+        scripts.mkdir(parents=True, exist_ok=True)
+        log_prefix = str(raw / run_name)
+        return _ok(
+            f"Run directory initialised: {run_d}",
+            run_name=run_name,
+            run_dir=str(run_d),
+            source_dir=str(source),
+            patches_dir=str(patches),
+            traces_raw=str(raw),
+            traces_compact=str(compact),
+            scripts_dir=str(scripts),
+            dftracer_log_prefix=log_prefix,
+        )
+
+    @mcp.tool()
+    def session_get_run_paths(
+        run_id: str,
+        run_name: str,
+    ) -> str:
+        """Return the canonical paths for a named run without creating anything.
+
+        Useful for querying where a run's traces/scripts live without
+        side-effecting the workspace.  Directories are NOT created.
+
+        Args:
+            run_id: Session identifier returned by ``session_create``.
+            run_name: Run name (e.g. ``"baseline"``, ``"opt1"``).
+
+        Returns:
+            JSON with ``run_dir``, ``traces_raw``, ``traces_compact``,
+            ``scripts_dir``, ``dftracer_log_prefix``, and ``exists``
+            (``true`` if ``<workspace>/<run_name>/`` exists on disk).
+        """
+        ws = _ws(run_id)
+        run_d = ws / run_name
+        raw = run_d / "traces" / "raw"
+        compact = run_d / "traces" / "compact"
+        source = run_d / "source"
+        patches = run_d / "patches"
+        scripts = run_d / "scripts"
+        return _ok(
+            f"Paths for run {run_name!r}",
+            run_name=run_name,
+            run_dir=str(run_d),
+            source_dir=str(source),
+            patches_dir=str(patches),
+            traces_raw=str(raw),
+            traces_compact=str(compact),
+            scripts_dir=str(scripts),
+            dftracer_log_prefix=str(raw / run_name),
+            exists=run_d.exists(),
+        )
+
+    @mcp.tool()
+    def session_list_runs(run_id: str) -> str:
+        """List all named runs (baseline, opt1, opt2, …) in the session workspace.
+
+        A directory is counted as a *run* when it contains a ``traces/``
+        sub-folder.
+
+        Args:
+            run_id: Session identifier returned by ``session_create``.
+
+        Returns:
+            JSON with ``runs`` (list of run names) and per-run summary
+            (``has_raw``, ``has_compact``, ``raw_count``, ``compact_count``).
+        """
+        ws = _ws(run_id)
+        runs = []
+        for child in sorted(ws.iterdir()):
+            if not child.is_dir():
+                continue
+            has_traces = (child / "traces").exists()
+            has_source = (child / "source").exists()
+            has_patches = (child / "patches").exists()
+            if not (has_traces or has_source):
+                continue
+            raw = child / "traces" / "raw"
+            compact = child / "traces" / "compact"
+            patches = child / "patches"
+            source = child / "source"
+            raw_count = len(list(raw.rglob("*.pfw*"))) if raw.exists() else 0
+            compact_count = len(list(compact.rglob("*.pfw*"))) if compact.exists() else 0
+            patch_files = sorted(p.name for p in patches.glob("*.patch")) if has_patches else []
+            source_file_count = sum(1 for _ in source.rglob("*") if _.is_file()) if has_source else 0
+            runs.append({
+                "name": child.name,
+                "has_source": has_source,
+                "source_file_count": source_file_count,
+                "patches": patch_files,
+                "has_raw": raw.exists(),
+                "has_compact": compact.exists(),
+                "raw_count": raw_count,
+                "compact_count": compact_count,
+            })
+        return _ok(f"Found {len(runs)} run(s)", runs=runs)
+
+    @mcp.tool()
+    def session_snapshot_run_source(
+        run_id: str,
+        run_name: str,
+        source_path: Optional[str] = None,
+        prev_run_name: Optional[str] = None,
+    ) -> str:
+        """Snapshot the current source tree into ``<run_name>/source/`` and generate a patch.
+
+        Captures the state of the source code for a named run iteration so that
+        every run has a reproducible record of exactly which code produced its
+        traces.  Optionally generates a unified diff (patch) vs the previous run's
+        snapshot.
+
+        The canonical pipeline order is::
+
+            baseline   → snapshot ws/source/   (no patch — this is the origin)
+            annotated  → snapshot ws/annotated/ + patch vs baseline/source/
+            opt1       → snapshot ws/annotated/ (after applying opt) + patch vs annotated/source/
+            opt2       → snapshot ws/annotated/ (after applying opt2) + patch vs opt1/source/
+
+        Side effects:
+            * Copies *source_path* (or ``<workspace>/annotated/`` for annotated /
+              opt runs, ``<workspace>/source/`` for baseline) into
+              ``<workspace>/<run_name>/source/`` using rsync (shutil fallback).
+            * If *prev_run_name* is given, writes a unified diff to
+              ``<workspace>/<run_name>/patches/from_<prev_run_name>.patch``.
+            * Persists ``{"snapshot_<run_name>": {...}}`` to ``session.json``.
+
+        Args:
+            run_id: Session identifier returned by ``session_create``.
+            run_name: Run label (e.g. ``"baseline"``, ``"annotated"``, ``"opt1"``).
+            source_path: Absolute path of the source tree to snapshot.
+                Defaults to ``<workspace>/annotated/`` for non-baseline runs,
+                or ``<workspace>/source/`` for ``"baseline"``.
+            prev_run_name: If given, generates a patch from
+                ``<workspace>/<prev_run_name>/source/`` to the new snapshot.
+
+        Returns:
+            JSON with ``source_dir``, ``file_count``, and (if *prev_run_name*)
+            ``patch_file``.
+        """
+        ws = _ws(run_id)
+
+        # Resolve default source path
+        if source_path:
+            src = Path(source_path)
+        elif run_name == "baseline":
+            src = ws / "source"
+        else:
+            src = ws / "annotated"
+            if not src.exists():
+                src = ws / "source"
+
+        if not src.exists():
+            return _err(f"Source path not found: {src}")
+
+        dest = _run_source_dir(ws, run_name)
+        snap = _snapshot_source(src, dest)
+        if not snap["success"]:
+            return _err(f"Snapshot failed for {run_name}", source=str(src))
+
+        result: Dict[str, Any] = {
+            "source_dir": str(dest),
+            "source_from": str(src),
+            "file_count": snap["file_count"],
+            "tool": snap.get("tool"),
+        }
+
+        # Generate patch vs previous run
+        if prev_run_name:
+            prev_source = ws / prev_run_name / "source"
+            if prev_source.exists():
+                patch_file = _run_patches_dir(ws, run_name) / f"from_{prev_run_name}.patch"
+                patch_status = _generate_patch(prev_source, dest, patch_file)
+                result["patch_file"] = str(patch_file)
+                result["patch_status"] = patch_status
+            else:
+                result["patch_file"] = None
+                result["patch_status"] = f"skipped: {prev_run_name}/source/ not found"
+
+        _save_state(run_id, {f"snapshot_{run_name}": result})
+        return _ok(f"Snapshotted {src.name} → {run_name}/source/ ({snap['file_count']} files)", **result)
+
+    @mcp.tool()
     def session_run_with_dftracer(
         run_id: str,
         command: str,
@@ -1572,21 +2539,21 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         data_dir: str = "all",
         timeout: int = 600,
         env_extra: Optional[str] = None,
+        run_name: str = "baseline",
     ) -> str:
         """Run a command with dftracer environment variables set to capture traces.
 
         Executes *command* inside the workspace with all ``DFTRACER_*`` env
-        vars configured per the
-        `dftracer documentation <https://dftracer.readthedocs.io/en/latest/api.html>`_.
-        Trace files (``<run_id>.<pid>.pfw``) are written to
-        ``<workspace>/traces/`` and consumed by ``session_split_traces``.
+        vars configured.  Trace files are written to
+        ``<workspace>/<run_name>/traces/raw/`` and consumed by
+        ``session_split_traces``.
 
         The following variables are always set:
 
         * ``DFTRACER_ENABLE=1``         — activates tracing.
         * ``DFTRACER_INC_METADATA=1``   — records process/thread metadata.
-        * ``DFTRACER_LOG_FILE=<workspace>/traces/<run_id>`` — trace file
-          prefix; dftracer appends ``.<pid>.pfw``.
+        * ``DFTRACER_LOG_FILE=<workspace>/<run_name>/traces/raw/<run_name>``
+          — trace file prefix; dftracer appends ``.<pid>.pfw``.
         * ``DFTRACER_DATA_DIR=all``     — captures I/O on *any* file path.
           Pass an explicit path via *data_dir* only to restrict monitoring
           to a subtree.
@@ -1598,48 +2565,32 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         Additional variables can be merged/overridden via *env_extra*.
 
         Side effects:
-            * Creates ``<workspace>/traces/`` if it does not exist.
-            * Writes one or more ``<run_id>.<pid>.pfw`` trace files inside
-              ``<workspace>/traces/``.
-            * Persists ``{"step": "ran_with_dftracer", "dftracer_run": {...}}``
-              to ``session.json``.
+            * Creates ``<workspace>/<run_name>/traces/raw/`` if absent.
+            * Writes trace files inside that directory.
+            * Persists ``{"step": "ran_with_dftracer", ...}`` to ``session.json``.
             * Writes an artifact log at step 11.
 
         Args:
             run_id: Session identifier returned by ``session_create``.
-            command: Shell command to run (via ``/bin/sh -c``).  The command
-                should invoke the annotated binary installed in ``install_ann/``
-                or reachable via the venv in ``install/``.
+            command: Shell command to run (via ``/bin/sh -c``).
             subfolder: Working-directory sub-folder relative to the workspace
                 root.  Defaults to ``"build_ann"``.  Falls back to ``"build"``
-                then ``"source"`` if the requested subfolder does not exist.
+                then ``"source"`` if absent.
             data_dir: Value passed to ``DFTRACER_DATA_DIR``.  Defaults to
-                ``"all"`` which captures I/O on any file path.  Pass an
-                absolute directory path to restrict monitoring to a subtree.
-            timeout: Seconds before the subprocess is killed.
-                Defaults to ``600``.
-            env_extra: Optional JSON object string (``'{"VAR": "val"}'``) of
-                additional environment variables merged into the dftracer env,
-                allowing overrides of any ``DFTRACER_*`` variable or addition
-                of project-specific variables.  Defaults to ``None``.
+                ``"all"``.
+            timeout: Seconds before the subprocess is killed (default: 600).
+            env_extra: Optional JSON object string of additional env vars.
+            run_name: Named run label — e.g. ``"baseline"``, ``"opt1"``.
+                Traces are stored under ``<workspace>/<run_name>/traces/raw/``.
+                Defaults to ``"baseline"``.
 
         Returns:
-            JSON string with keys:
-                * ``status`` (``"ok"`` or ``"error"``).
-                * ``message`` — ``"Command completed with dftracer"`` or
-                  ``"Command failed with dftracer"``.
-                * ``traces_dir`` — absolute path to the traces directory.
-                * ``stdout``, ``stderr``, ``returncode`` — subprocess output.
-
-        Raises:
-            Returns ``{"status": "error"}`` when the command exits non-zero.
+            JSON string with keys ``status``, ``message``, ``run_name``,
+            ``traces_dir``, ``stdout``, ``stderr``, ``returncode``.
 
         Note:
-            Must be called after ``session_build_annotated``.  Surround with
-            ``session_service_start`` / ``session_service_stop`` to also
-            capture system-level daemon traces alongside inline annotation spans.
-            Follow with ``session_split_traces`` to compact the raw ``.pfw``
-            files.
+            Must be called after ``session_build_annotated``.  Follow with
+            ``session_split_traces`` (same *run_name*) to compact the raw files.
         """
         return _session_run_with_dftracer_impl(
             run_id=run_id,
@@ -1648,62 +2599,63 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             data_dir=data_dir,
             timeout=timeout,
             env_extra=env_extra,
+            run_name=run_name,
         )
 
     @mcp.tool()
     def session_analyze_traces(
         run_id: str,
-        trace_subdir: str = "traces_split",
+        run_name: str = "baseline",
         query_type: str = "summary",
         index_dir: Optional[str] = None,
         extra_flags: str = "",
     ) -> str:
         """Summarise dftracer traces using ``dftracer_info`` (dfanalyzer).
 
-        Invokes ``dftracer_info`` against the compacted trace directory to
-        produce a human-readable summary of I/O behaviour — function call
-        counts, time spent in I/O, per-file breakdowns, and metadata such as
-        process counts.  The index directory is created automatically to cache
-        the parsed trace data for faster subsequent queries.
+        Invokes ``dftracer_info`` against the compacted trace directory
+        (``<workspace>/<run_name>/traces/compact/``) to produce a summary of
+        I/O behaviour — function call counts, time in I/O, per-file breakdowns,
+        and process metadata.  The index directory caches parsed data for faster
+        repeated queries.
 
         Side effects:
-            * Creates *index_dir* (or ``<traces_subdir>/idx/``) if it does not
-              exist.
-            * Persists ``{"step": "traces_analyzed", "analysis_result": <r>}``
-              to ``session.json``.
+            * Creates *index_dir* (or ``<compact>/idx/``) if absent.
+            * Persists ``{"step": "traces_analyzed_<run_name>", ...}`` to
+              ``session.json``.
             * Writes an artifact log at step 13.
 
         Args:
             run_id: Session identifier returned by ``session_create``.
-            trace_subdir: Sub-folder (relative to workspace root) containing
-                compacted traces to analyse.  Defaults to ``"traces_split"``.
+            run_name: Run label whose compact traces to analyse (default
+                ``"baseline"``).  Maps to
+                ``<workspace>/<run_name>/traces/compact/``.
             query_type: Value passed to ``dftracer_info --query``.  Common
                 values: ``"summary"`` (default), ``"function"``, ``"file"``.
-            index_dir: Absolute path to the dftracer_info index directory.
-                Defaults to ``<workspace>/<trace_subdir>/idx/``.
-            extra_flags: Additional space-separated flags appended to the
-                ``dftracer_info`` invocation.  Defaults to ``""``.
+            index_dir: Absolute path to the index directory.  Defaults to
+                ``<compact>/idx/``.
+            extra_flags: Additional space-separated flags for ``dftracer_info``.
 
         Returns:
-            JSON string with keys:
-                * ``status`` (``"ok"`` or ``"error"``).
-                * ``message`` — ``"Analysis complete"`` or error description.
-                * ``stdout`` — raw ``dftracer_info`` output.
-                * ``stderr``, ``returncode`` — subprocess result.
+            JSON string with keys ``status``, ``message``, ``run_name``,
+            ``stdout``, ``stderr``, ``returncode``.
 
         Raises:
-            Returns ``{"status": "error"}`` when *trace_subdir* does not exist
-            or when ``dftracer_info`` exits non-zero.
+            Returns ``{"status": "error"}`` when the compact directory does not
+            exist or when ``dftracer_info`` exits non-zero.
 
         Note:
-            Must be called after ``session_split_traces``.  This is the final
-            step of the annotation pipeline; its output is the primary artifact
-            for evaluating dftracer coverage.
+            Must be called after ``session_split_traces`` with the same
+            *run_name*.
         """
         ws = _ws(run_id)
-        traces = ws / trace_subdir
+        traces = ws / run_name / "traces" / "compact"
         if not traces.exists():
-            return _err(f"{trace_subdir}/ not found — run session_split_traces first")
+            # Legacy fallback for sessions predating the structured layout
+            legacy = ws / "traces_split"
+            if legacy.exists():
+                traces = legacy
+            else:
+                return _err(f"{run_name}/traces/compact/ not found — run session_split_traces first")
 
         idx = Path(index_dir) if index_dir else traces / "idx"
         idx.mkdir(parents=True, exist_ok=True)
@@ -1718,11 +2670,11 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             ] + flags,
             timeout=600,
         )
-        _save_state(run_id, {"step": "traces_analyzed", "analysis_result": r})
-        _write_artifact_log(_ws(run_id), 13, "session_analyze_traces", r, run_id)
+        _save_state(run_id, {f"step_analyzed_{run_name}": True, "analysis_result": r})
+        _write_artifact_log(_ws(run_id), 13, "session_analyze_traces", {"run_name": run_name, **r}, run_id)
         if r["success"]:
-            return _ok("Analysis complete", **r)
-        return _err("dftracer_info failed", **r)
+            return _ok("Analysis complete", run_name=run_name, **r)
+        return _err("dftracer_info failed", run_name=run_name, **r)
 
     @mcp.tool()
     def session_status(run_id: str) -> str:

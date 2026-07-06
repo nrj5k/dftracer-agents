@@ -13,6 +13,7 @@
 - Do not run commands with `sudo`, `su`, or any privilege escalation.
 - Do not write to `/tmp`, `/var`, `/etc`, `/usr` (outside the project), or any path outside the project root.
 - Prefer relative paths rooted at the project directory.
+- **App execution runs in the session workspace, not the project root.** Any command that builds, runs, or smoke-tests the traced application (`make`, `torchrun`, `flux run`, manual reproduction of an MCP step, etc.) must use `cwd=workspaces/<session>/...` (e.g. `build_ann/`, `build/`, or `source/`). Never invoke the app from the project root — that directory holds this repo's own source, not session artifacts.
 
 ## Permission Tiers
 

@@ -172,31 +172,6 @@ Note: `MPICH_MPIIO_HINTS` uses **colon-separated** key=value pairs (not semicolo
 `"*:romio_cb_write=enable:cb_buffer_size=67108864:cb_nodes=16"` — see `software-mpi` skill
 for the full list of Cray MPICH 9.0.1 supported hints and how to discover them on new versions.
 
-## Cancelling a job or allocation
-
-When a job is killed, crashes, or needs to be stopped, always cancel its Flux job ID
-to release resources immediately. **Forgetting to cancel a killed job leaks allocation
-time and may block other runs.**
-
-```bash
-# Cancel a specific job inside the allocation (via proxy):
-flux proxy <ALLOC_JOBID> flux cancel <INNER_JOBID>
-
-# Cancel the entire allocation itself:
-flux cancel <ALLOC_JOBID>
-
-# List running jobs to find IDs:
-flux proxy <ALLOC_JOBID> flux jobs -a
-
-# Cancel ALL running jobs inside the allocation at once:
-flux proxy <ALLOC_JOBID> flux cancel --all
-```
-
-**When to cancel:**
-- Any `flux run` or `flux submit` job that was killed with Ctrl-C, `kill`, or crashed
-- Any background job (`&`) whose PID is dead but the flux job is still listed
-- Before re-running a failed benchmark to avoid stale job conflicts
-
 ## Tuolumne-specific notes
 
 On tuolumne, use `flux_wrappers` module — the `flux` command is already

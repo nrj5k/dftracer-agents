@@ -31,7 +31,7 @@ from typing import List, Optional
 from fastmcp import FastMCP
 
 from ...mcp_service_factory import MCPService
-from ..session.session_tools import _session_split_traces_impl
+from ..session.session_tools import _session_split_traces_impl, _session_validate_traces_impl
 
 
 # ── shared / default helpers ───────────────────────────────────────────
@@ -1366,51 +1366,87 @@ class DftracerUtilsService(MCPService):
         def session_split_traces(
             run_id: str,
             app_name: str = "app",
+            run_name: str = "baseline",
         ) -> str:
             """Compact raw dftracer traces via the ``dftracer-utils`` split service.
 
-            Reads raw ``.pfw`` / ``.pfw.gz`` files from ``<workspace>/traces/``
-            (written by ``session_run_with_dftracer``) and writes compacted chunk
-            files to ``<workspace>/traces_split/``.
+            Reads raw ``.pfw`` / ``.pfw.gz`` files from
+            ``<workspace>/<run_name>/traces/raw/`` (written by
+            ``session_run_with_dftracer``) and writes compacted chunk files to
+            ``<workspace>/<run_name>/traces/compact/``.
 
-            Splitting is performed by the ``dftracer_split`` binary (via
-            ``DftracerUtilsService``) so that all dftracer-utils error handling
-            and output formatting is applied.  For single files below 512 MB
-            (uncompressed), the file is copied without splitting.
+            Splitting is performed by the ``dftracer_split`` binary so that all
+            dftracer-utils error handling and output formatting is applied.  For
+            single files below 512 MB (uncompressed), the file is copied without
+            splitting.
 
             Side effects:
-                * Creates ``<workspace>/traces_split/`` if it does not exist.
+                * Creates ``<workspace>/<run_name>/traces/compact/`` if absent.
                 * Writes compacted trace chunks named ``<app_name>_*.pfw`` inside
-                  ``<workspace>/traces_split/``.
-                * Persists ``{"step": "traces_split", "split_result": <r>}`` to
+                  ``<workspace>/<run_name>/traces/compact/``.
+                * Persists ``{"step": "traces_split_<run_name>", ...}`` to
                   ``session.json``.
                 * Writes an artifact log at step 12.
 
             Args:
                 run_id:   Session identifier returned by ``session_create``.
-                app_name: Prefix used for output chunk file names.
-                    Defaults to ``"app"``.
+                app_name: Prefix used for output chunk file names (default ``"app"``).
+                run_name: Run label (e.g. ``"baseline"``, ``"opt1"``). Determines
+                    which ``<run_name>/traces/raw/`` directory is read.
+                    Defaults to ``"baseline"``.
 
             Returns:
-                JSON string with keys:
-                    * ``status`` (``"ok"`` or ``"error"``).
-                    * ``message`` — outcome description.
-                    * ``output`` — absolute path to ``traces_split/`` directory.
-                    * Additional keys from the split service result.
+                JSON string with keys ``status``, ``message``, ``run_name``,
+                ``output`` (path to compact dir), and split service result keys.
 
             Raises:
-                Returns ``{"status": "error"}`` when:
-                    * ``traces/`` does not exist in the session workspace.
-                    * No ``.pfw`` or ``.pfw.gz`` files are found in ``traces/``.
-                    * The split binary exits non-zero.
+                Returns ``{"status": "error"}`` when the raw traces directory does
+                not exist or the split binary exits non-zero.
 
             Note:
-                Must be called after ``session_run_with_dftracer``.  Call
-                ``session_install_dftracer_utils`` first to ensure the
-                ``develop``-branch version of ``dftracer-utils`` is active.
-                Follow with ``session_analyze_traces`` to query the split output.
+                Must be called after ``session_run_with_dftracer`` with the same
+                *run_name*.  Follow with ``session_analyze_traces`` (same
+                *run_name*) to query the compacted output.
             """
-            return _session_split_traces_impl(run_id=run_id, app_name=app_name)
+            return _session_split_traces_impl(run_id=run_id, app_name=app_name, run_name=run_name)
+
+        @self.session_subservice.tool()
+        def session_validate_traces(
+            run_id: str,
+            run_name: str = "baseline",
+            traces_dir: Optional[str] = None,
+        ) -> str:
+            """Validate trace files via dftracer-utils' own indexing/parsing pipeline.
+
+            Runs ``dftracer_event_count --directory <dir> --force`` over the
+            session's trace files. This forces dftracer-utils to fully parse
+            and index every ``.pfw``/``.pfw.gz`` file, so a file that is
+            truncated or contains malformed JSON (e.g. a worker killed
+            mid-write) is surfaced by the tool's own
+            ``indexed=.. skipped=.. failed=..`` summary rather than by any
+            separate ad hoc content check.
+
+            By default validates ``<workspace>/<run_name>/traces/compact/``
+            if it has trace files, else ``<workspace>/<run_name>/traces/raw/``.
+            Pass ``traces_dir`` to validate an arbitrary directory instead
+            (e.g. a per-iteration optimization-loop trace directory).
+
+            Args:
+                run_id:     Session identifier returned by ``session_create``.
+                run_name:   Run label (e.g. ``"baseline"``, ``"opt1"``).
+                    Ignored when ``traces_dir`` is given.
+                traces_dir: Explicit directory to validate, overriding the
+                    ``run_name``-derived default.
+
+            Returns:
+                JSON string with ``status``, ``message``, ``directory``,
+                ``trace_file_count``, ``indexed``, ``skipped``, ``failed``,
+                and ``valid_events``. ``status`` is ``"error"`` when any file
+                fails validation (``failed > 0``).
+            """
+            return _session_validate_traces_impl(
+                run_id=run_id, run_name=run_name, traces_dir=traces_dir
+            )
 
     # ── Execute / name (abstract contract) ────────────────────────────
 
