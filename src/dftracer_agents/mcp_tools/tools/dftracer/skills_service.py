@@ -96,6 +96,57 @@ def _parse_frontmatter(text: str) -> Tuple[Dict[str, str], str]:
     return meta, text[m.end():]
 
 
+_SECTION_RE = re.compile(r"^## +(.+?)\s*$", re.MULTILINE)
+_WIKILINK_RE = re.compile(r"\[\[([\w-]+)\]\]")
+
+
+def _split_sections(body: str) -> Dict[str, str]:
+    """Split a skill body into ``## `` sections, keyed by header text (as written).
+
+    Each value includes its own header line up to (not including) the next
+    ``## `` header or end of file. Content before the first ``## `` header (if
+    any) is not included — callers wanting that should just use the full body.
+    """
+    sections: Dict[str, str] = {}
+    matches = list(_SECTION_RE.finditer(body))
+    for i, m in enumerate(matches):
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
+        sections[m.group(1).strip()] = body[start:end].rstrip() + "\n"
+    return sections
+
+
+def _match_section(section: str, sections: Dict[str, str]) -> Optional[str]:
+    """Resolve *section* against section header keys, preferring precise matches.
+
+    Tries, in order: exact case-insensitive equality, case-insensitive prefix
+    match, then case-insensitive substring match. This avoids a short query
+    like "CRITICAL" incorrectly matching an unrelated header that merely
+    contains the word in passing (e.g. "...Critical Rules...") ahead of the
+    actual "## CRITICAL — ..." section.
+    """
+    target = section.lower()
+    for key in sections:
+        if key.lower() == target:
+            return key
+    for key in sections:
+        if key.lower().startswith(target):
+            return key
+    for key in sections:
+        if target in key.lower():
+            return key
+    return None
+
+
+def _extract_wikilinks(text: str) -> List[str]:
+    """Return deduped ``[[skill-name]]`` cross-references found in *text*, in order."""
+    seen: List[str] = []
+    for name in _WIKILINK_RE.findall(text):
+        if name not in seen:
+            seen.append(name)
+    return seen
+
+
 def _iter_skills() -> List[Dict[str, object]]:
     """Return metadata for every skill found under the active skills dir.
 
@@ -227,18 +278,42 @@ def _register_skill_tools(mcp: FastMCP) -> None:
         }, indent=2)
 
     @mcp.tool()
-    def skill_load(name: str) -> str:
-        """Return the full Markdown text of one or more skills.
+    def skill_load(
+        name: str,
+        section: Optional[str] = None,
+        file: str = "SKILL.md",
+    ) -> str:
+        """Return Markdown text from one or more skills — full file, one section, or a sibling file.
 
         Load a skill into context before acting on the task it covers. Accepts a
         single skill name or a comma-separated list to load several at once.
         Names match either the frontmatter ``name`` or the skill directory name.
 
+        By default returns the entire ``SKILL.md``. Pass ``section`` to fetch
+        only one ``## `` section instead (case-insensitive substring match
+        against header text) — use this for large skills so you don't pull the
+        whole file into context just to read one part. Pass ``file`` to load a
+        sibling reference file within the skill's own directory instead of
+        ``SKILL.md`` (e.g. an externalized troubleshooting doc or a lessons log
+        — see that skill's ``SKILL.md`` for pointers to what sibling files
+        exist and when to load them); sibling files have no frontmatter and are
+        returned as-is, with ``section`` still applying if given.
+
+        Every response includes ``related_skills`` — the ``[[skill-name]]``
+        cross-references found in whatever text was actually returned. These
+        are names only (never their content) so you know what to load next
+        without grepping for brackets yourself.
+
         Args:
             name: Skill name, or comma-separated names, e.g.
                   "dftracer-annotate-c" or "dftracer-cheatsheet,dftracer-annotate-c".
+            section: Optional ``## `` header text (or substring) to return only
+                     that section. If no section matches, the response reports
+                     ``available_sections`` instead of guessing.
+            file: Filename within the skill's directory to load (default
+                  "SKILL.md"). Use this to load sibling reference/log files.
 
-        Returns JSON: {status, loaded: [{name, content}], missing: [...]}.
+        Returns JSON: {status, loaded: [{name, content, related_skills}], missing: [...]}.
         """
         try:
             skills = _iter_skills()
@@ -249,10 +324,35 @@ def _register_skill_tools(mcp: FastMCP) -> None:
         loaded, missing = [], []
         for req in requested:
             hit = by_name.get(req.lower())
-            if hit:
-                loaded.append({"name": hit["name"], "content": hit["full"]})
-            else:
+            if not hit:
                 missing.append(req)
+                continue
+
+            if file != "SKILL.md":
+                sibling = Path(str(hit["path"])).parent / file
+                if not sibling.is_file():
+                    missing.append(f"{req} (file={file!r} not found)")
+                    continue
+                text = sibling.read_text(encoding="utf-8", errors="replace")
+            else:
+                text = str(hit["full"])
+
+            entry: Dict[str, object] = {"name": hit["name"]}
+            if section:
+                sections = _split_sections(text)
+                match_key = _match_section(section, sections)
+                if match_key is None:
+                    entry["error"] = f"No section matching {section!r}"
+                    entry["available_sections"] = sorted(sections.keys())
+                    loaded.append(entry)
+                    continue
+                text = sections[match_key]
+                entry["section"] = match_key
+
+            entry["content"] = text
+            entry["related_skills"] = _extract_wikilinks(text)
+            loaded.append(entry)
+
         result: Dict[str, object] = {"status": "ok", "loaded": loaded}
         if missing:
             result["missing"] = missing

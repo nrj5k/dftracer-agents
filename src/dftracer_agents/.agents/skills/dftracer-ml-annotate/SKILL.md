@@ -7,9 +7,11 @@ description: >
   the lessons file with any new pitfalls discovered during the session.
 ---
 
-Lessons file: workspaces/.agents/skills/dftracer-annotation-lessons/SKILL.md (workspace-local
+Lessons file: workspaces/.agents/skills/dftracer-annotation-lessons/LESSONS_LOG.md (workspace-local
 staging copy — shared with the general dftracer-pipeline skill; sync it back to the source
-repo with session_lessons_sync_preview / session_lessons_sync_pr, see Step 10)
+repo with session_lessons_sync_preview / session_lessons_sync_pr, see Step 10). Load the
+compact rules/instructions with skill_load(name="dftracer-annotation-lessons"); load the
+accumulated log entries with skill_load(name="dftracer-annotation-lessons", file="LESSONS_LOG.md").
 
 **Read the lessons file before doing anything else.** Apply every standing rule
 (ML-R1 through ML-R16) and check every session log entry for context matching
@@ -853,7 +855,7 @@ If PITFALLS is empty, call session_ml_append_lesson once with:
 
 This keeps a session history even for successful runs.
 
-Print: "Lessons file updated: workspaces/.agents/skills/dftracer-annotation-lessons/SKILL.md"
+Print: "Lessons file updated: workspaces/.agents/skills/dftracer-annotation-lessons/LESSONS_LOG.md"
 
 Sync the new entries back to the source repo so future sessions and other users
 inherit them:

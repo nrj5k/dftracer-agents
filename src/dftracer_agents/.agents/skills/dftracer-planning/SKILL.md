@@ -72,3 +72,22 @@ of cascading errors. Extract it with:
 ```bash
 grep -m1 "error:" <workspace>/artifacts/10_session_build_annotated*.log
 ```
+
+## Context management for heavy stages
+
+Annotation and optimization stages generate large tool-call histories (build logs,
+per-file annotation passes, trace analysis output). Two rules keep the supervisor's
+context from filling up with that raw history:
+
+1. **Delegate heavy stages to a sub-agent when the harness supports it.** If launching
+   a fresh, isolated-context worker is available, run a whole annotation pass or
+   optimization iteration there rather than in the main session — let the worker read
+   the deep skill content and raw tool output, and have it report back only a compact
+   status summary (files annotated, pass/fail, key metrics). This is the same pattern
+   used to keep supervisor context clean when exploring or designing large changes.
+2. **Prefer compact status tools over re-reading raw logs.** `session_status` and
+   `session_validate_structure` already return small JSON summaries rather than raw
+   artifact content — query those instead of re-reading `<workspace>/artifacts/*.log`
+   or re-running `skill_load` on a large skill you've already read this session. If a
+   tool's JSON response already answers the question, don't re-fetch the source file
+   behind it.

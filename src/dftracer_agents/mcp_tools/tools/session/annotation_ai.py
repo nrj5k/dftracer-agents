@@ -109,14 +109,18 @@ _AI_FILE_CACHE: Dict[tuple, List[str]] = {}
 _AI_IMPORT = "from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai"
 _DFT_FINI  = "_dft_log.finalize()"
 
-#: Canonical path to the annotation lessons file — relative to the workspaces root.
-#: This constant is used by session_ml_append_lesson so every tool call lands in the
-#: same file regardless of the active session. Folded into the single
+#: Canonical path to the annotation lessons LOG file — relative to the workspaces
+#: root. This constant is used by session_ml_append_lesson so every tool call lands
+#: in the same file regardless of the active session. Folded into the single
 #: dftracer-annotation-lessons skill (shared by C/C++/Python and ML annotation
 #: sessions alike) rather than a separate, never-packaged dftracer-ml-annotation-lessons
-#: skill — the anchor text below must match the one actually present in
-#: .agents/skills/dftracer-annotation-lessons/SKILL.md exactly (literal string search).
-_LESSONS_REL = Path(".agents") / "skills" / "dftracer-annotation-lessons" / "SKILL.md"
+#: skill. The accumulating log lives in a sibling file, LESSONS_LOG.md, kept separate
+#: from SKILL.md so that file stays compact regardless of how many sessions have
+#: contributed entries — the anchor text below must match the one actually present
+#: in .agents/skills/dftracer-annotation-lessons/LESSONS_LOG.md exactly (literal
+#: string search). session_lessons_sync_pr (lessons_sync.py) imports these same
+#: constants, so this is the only place the path/anchor need to change.
+_LESSONS_REL = Path(".agents") / "skills" / "dftracer-annotation-lessons" / "LESSONS_LOG.md"
 _LESSONS_ANCHOR = "<!-- New entries are appended below this line by the pipeline recipe -->"
 
 #: Canonical directory containing local research papers relevant to ML/DL
@@ -1323,12 +1327,12 @@ def register_ai_tools(mcp: FastMCP) -> None:
         This is a **workspace-local staging copy** — it lives at a fixed path
         relative to the workspaces root::
 
-            workspaces/.agents/skills/dftracer-annotation-lessons/SKILL.md
+            workspaces/.agents/skills/dftracer-annotation-lessons/LESSONS_LOG.md
 
         It is not the source-repo skill file itself. Use
         ``session_lessons_sync_preview`` / ``session_lessons_sync_pr`` to merge
         these staged entries back into the real
-        ``dftracer-annotation-lessons/SKILL.md`` in the source repo via a PR.
+        ``dftracer-annotation-lessons/LESSONS_LOG.md`` in the source repo via a PR.
 
         Entries are appended after the anchor comment line in the file.  If the
         file does not yet exist it is created with the anchor in place.
