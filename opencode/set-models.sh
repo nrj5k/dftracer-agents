@@ -5,24 +5,24 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ORCHESTRATOR_DEFAULT="ollama/qwen3.5:397b-cloud"
-ACTION_DEFAULT="ollama/kimi-k2.7-code:cloud"
+ORCHESTRATOR_DEFAULT="ollama/gemma4:31b-cloud"
+ACTION_DEFAULT="ollama/nemotron-3-super:120b"
 
 ORCHESTRATOR="${ORCHESTRATOR_DEFAULT}"
 ACTION="${ACTION_DEFAULT}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --orchestrator)
-      ORCHESTRATOR="$2"
-      shift 2
-      ;;
-    --action)
-      ACTION="$2"
-      shift 2
-      ;;
-    -h|--help)
-      cat <<EOF
+  --orchestrator)
+    ORCHESTRATOR="$2"
+    shift 2
+    ;;
+  --action)
+    ACTION="$2"
+    shift 2
+    ;;
+  -h | --help)
+    cat <<EOF
 Usage: $0 [--orchestrator MODEL] [--action MODEL]
 
 Replace {{ORCHESTRATOR_MODEL}} and {{ACTION_MODEL}} placeholders in:
@@ -35,12 +35,12 @@ Defaults:
   --orchestrator ${ORCHESTRATOR_DEFAULT}
   --action       ${ACTION_DEFAULT}
 EOF
-      exit 0
-      ;;
-    *)
-      echo "Unknown option: $1" >&2
-      exit 1
-      ;;
+    exit 0
+    ;;
+  *)
+    echo "Unknown option: $1" >&2
+    exit 1
+    ;;
   esac
 done
 
@@ -53,6 +53,7 @@ FILES=(
   "${SCRIPT_DIR}/opencode.json"
 )
 
+cp -r ./agents-template/ ./agents/
 while IFS= read -r -d '' file; do
   FILES+=("$file")
 done < <(find "${SCRIPT_DIR}/agents" -type f -name '*.md' -print0 2>/dev/null || true)

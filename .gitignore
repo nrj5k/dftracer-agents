@@ -26,3 +26,4 @@ dftracer-agents/.agents
 test/data/dftracer-sample
 package-lock.json
 workspaces/
+opencode/agents
