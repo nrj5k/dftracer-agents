@@ -587,6 +587,18 @@ def _install_dftracer_pip_direct(
     # Start from the pre-built pip_env if detection produced one
     pip_env: Dict[str, str] = dict(features.get("dftracer_pip_env") or {})
 
+    # System-specific env (e.g. Tuolumne's CCE lib dirs + /usr/lib64 for libdl)
+    # is NOT necessarily present in the MCP server process's own environment,
+    # so it must be re-applied here or linking dftracer_core against libdl
+    # fails with "undefined reference: dlopen (disallowed by
+    # --no-allow-shlib-undefined)". See resources/systems.yaml env.LD_LIBRARY_PATH.
+    try:
+        from ..system.system_service import get_current_system_env
+        for _k, _v in get_current_system_env().items():
+            pip_env.setdefault(_k, _v)
+    except Exception:
+        pass
+
     # Always-on defaults (fill gaps when dftracer_pip_env is absent or partial)
     pip_env.setdefault("DFTRACER_BUILD_TYPE", "RelWithDebInfo")
     pip_env.setdefault("DFTRACER_ENABLE_TESTS", "OFF")

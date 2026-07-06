@@ -178,6 +178,34 @@ def _base_hostname(hostname: Optional[str] = None) -> str:
     return re.sub(r"\d+$", "", h)
 
 
+def get_current_system_env(hostname: Optional[str] = None) -> Dict[str, str]:
+    """Return the env dict for the current system, with ${VAR} expanded.
+
+    Looks up ``resources/systems.yaml`` for the detected base hostname and
+    resolves any ``${VAR}`` references against the current process
+    environment (e.g. ``LD_LIBRARY_PATH: "/opt/x:${LD_LIBRARY_PATH}"``).
+    Returns an empty dict if the system is unknown or has no ``env`` section.
+
+    Subprocess-launching tools (dftracer install, annotated build, smoke
+    test, trace runs) must merge this into their subprocess env — the MCP
+    server process's own environment does not necessarily have these vars
+    set, so system-specific paths (e.g. Tuolumne's CCE lib dirs) are silently
+    missing unless explicitly re-applied here.
+    """
+    base = _base_hostname(hostname)
+    data = _load_yaml_simple(_SYSTEMS_YAML)
+    cfg = (data.get("systems") or {}).get(base)
+    if not cfg:
+        return {}
+    raw_env = cfg.get("env") or {}
+    resolved: Dict[str, str] = {}
+    for k, v in raw_env.items():
+        resolved[k] = re.sub(
+            r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), ""), str(v)
+        )
+    return resolved
+
+
 def _fmt_system(name: str, cfg: Dict[str, Any]) -> str:
     """Format a system config dict into a human-readable string."""
     lines = [
