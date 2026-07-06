@@ -8,8 +8,7 @@
       "name": "Ollama",
       "options": {
         // "baseURL": "http://[::1]:11434/v1",
-        // "baseURL": "http://127.0.0.1:11434/v1",
-        "baseURL": "http://host.docker.internal:11434/v1",
+        "baseURL": "http://127.0.0.1:11434/v1",
       },
       "models": {
         "kimi-k2.7-code:cloud": {
