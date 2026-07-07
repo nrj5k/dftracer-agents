@@ -1,0 +1,38 @@
+--- /usr/WS2/haridev/dftracer-agents/workspaces/montage/20260706_062459/source/MontageLib/Project/montageProject.c	2026-07-05 23:25:06.227651000 -0700
++++ /usr/WS2/haridev/dftracer-agents/workspaces/montage/20260706_062459/annotated/MontageLib/Project/montageProject.c	2026-07-06 19:41:14.845396000 -0700
+@@ -60,6 +60,7 @@
+ 
+ */
+ 
++#define _DEFAULT_SOURCE
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <unistd.h>
+@@ -68,6 +69,7 @@
+ #include <math.h>
+ #include <sys/types.h>
+ #include <time.h>
++#include <fcntl.h>
+ 
+ #include <fitsio.h>
+ #include <wcs.h>
+@@ -2595,6 +2597,19 @@
+          return 1;
+    }
+ 
++   /* Advise the kernel this file will be read sequentially, top to bottom
++      (matches mProject's row-by-row fits_read_pix() access pattern below).
++      This is a read-ahead hint only -- it does not alter any FITS data
++      path or numerical logic. */
++   {
++      int advise_fd = open(filename, O_RDONLY);
++      if(advise_fd >= 0)
++      {
++         posix_fadvise(advise_fd, 0, 0, POSIX_FADV_SEQUENTIAL);
++         close(advise_fd);
++      }
++   }
++
+    if(hdu > 0)
+    {
+       if(fits_movabs_hdu(input.fptr, hdu+1, NULL, &status))

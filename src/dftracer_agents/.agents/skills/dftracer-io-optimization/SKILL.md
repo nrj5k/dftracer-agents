@@ -61,6 +61,10 @@ Workload-specific results:
 - **[[workload-ior]]** — quantified ROMIO results on VAST NVMe (Tuolumne)
 - **[[workload-h5bench]]** — HDF5 CMake build and annotation pitfalls
 
+
+System-specific accelerators (L3 near-node storage tiers):
+- **[[system-tuolumne-rabbit]]** — Rabbit near-node flash on Tuolumne (XFS/GFS2/Lustre via Flux `-S "#DW ..."`); stage hot data onto a local flash tier to relieve network-Lustre bottlenecks
+
 ---
 
 ## Key Reference Papers
@@ -342,6 +346,21 @@ a 4× write regression on VAST NVMe but is safe on Lustre spinning disk.**
 - Disable file creation time tracking: `lfs setstripe --mdt-count 1` (for small dirs)
 - Use DNE (Distributed Namespace): `lfs mkdir -c <N>` (admin-only)
 - Client-side: mount with `-o localflock` to reduce lock traffic (requires remount — admin)
+
+### Near-node flash accelerators (Rabbit)  (FS_TYPE: any network PFS — bottleneck: read_time/write_time/bandwidth from network-Lustre latency — metric: bandwidth or time)
+
+On systems with node-local NVMe accelerators, stage hot data onto a per-node or
+per-chassis flash tier instead of accessing network Lustre directly. No sudo —
+provisioned per job via the scheduler.
+
+- **Tuolumne (Rabbit):** request via Flux `-S "#DW jobdw type=<xfs|gfs2|lustre> ..."`.
+  Pick the tier by data-sharing scope (SHM ≤20% node mem → XFS single-node ≤1 TB
+  → GFS2 across ≤16 nodes on one chassis with `--coral2-chassis=1` → Lustre for
+  >16 nodes). Stage input onto `$DW_JOB_*` once, run against it, copy persistent
+  outputs back to Lustre at job end. The `#DW` directive is an **allocation-time**
+  flag — ask the user to `flux alloc` with it and report the JOBID before you can
+  proxy in. Full guide: [[system-tuolumne-rabbit]].
+
 
 ### Linux kernel readahead  (FS_TYPE: local_nvme, local_hdd only — bottleneck: read_time or seq_pct low — metric: time or bandwidth)
 
