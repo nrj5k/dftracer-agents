@@ -118,7 +118,15 @@ def _diagnose_via_api(
     output_format: str,
     metric_boundaries: Dict[str, float],
 ) -> Optional[Dict[str, Any]]:
-    """Attempt Python-API diagnosis; return None if dfdiagnoser is not installed."""
+    """Attempt Python-API diagnosis; return None to signal the CLI fallback
+    should be used instead (package not installed, or this installed version
+    of DFDiagnoser doesn't expose the checkpoint-scoring API we need — as of
+    dftracer-agents' pinned ``DFDiagnoser@main``, only ``diagnose_file``,
+    ``diagnose_facts``, ``diagnose_mofka``, and ``diagnose_zmq`` exist; there
+    is no ``diagnose_checkpoint`` method in any branch of that repo. Treat
+    that as an expected "API unavailable" case, not a hard failure, so the
+    working CLI path (``dfdiagnoser input=checkpoint ...``) always runs.
+    """
     try:
         from dfdiagnoser.diagnoser import Diagnoser  # type: ignore
         from dfdiagnoser.output import FileOutput    # type: ignore
@@ -126,13 +134,15 @@ def _diagnose_via_api(
         return None
 
     diagnoser = Diagnoser()
+    if not hasattr(diagnoser, "diagnose_checkpoint"):
+        return None
     try:
         result = diagnoser.diagnose_checkpoint(
             checkpoint_dir=checkpoint_dir,
             metric_boundaries=metric_boundaries,
         )
-    except Exception as exc:
-        return {"returncode": -1, "stdout": "", "stderr": str(exc), "success": False}
+    except Exception:
+        return None
 
     os.makedirs(output_dir, exist_ok=True)
     handler = FileOutput(output_dir=output_dir, output_format=output_format)

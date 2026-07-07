@@ -37,6 +37,7 @@ from fastmcp import FastMCP
 
 from ...mcp_service_factory import MCPService, MCPServiceFactory
 from ..session.session_tools import register_session_tools
+from ..session.annotation_filter import register_annotation_filter_tools
 from ..session.pipeline_tools import register_pipeline_tools, register_run_tools
 from ..session.annotation_clang import register_clang_tools
 from ..session.annotation_python import register_python_tools
@@ -686,6 +687,7 @@ class DFTracerSessionService(MCPService):
 
         register_session_tools(self.session_subservice)
         register_install_session_tools(self.session_subservice)
+        register_annotation_filter_tools(self.session_subservice)
         register_pipeline_tools(self.pipeline_subservice)
         register_run_tools(self.pipeline_subservice)
         register_daemon_tools(self.daemon_subservice)

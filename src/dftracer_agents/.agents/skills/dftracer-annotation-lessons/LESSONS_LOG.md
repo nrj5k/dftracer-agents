@@ -797,4 +797,323 @@ fix: |
 tags: [flux, flux-proxy, env-vars, mpiio-hints, dftracer, tuolumne, cray-mpich]
 
 ---
+date: 2026-07-06
+app: general (Tuolumne)
+context: dftracer install fails linking test_cpp/dftracer_service — undefined reference to dlopen
+error: |
+  ld.lld: error: undefined reference: dlopen
+  >>> referenced by ../lib64/libdftracer_core.so (disallowed by --no-allow-shlib-undefined)
+  clang++: error: linker command failed with exit code 1
+root_cause: |
+  dlopen/dlclose/dlsym live in libdl.so.2 (this glibc has not yet merged libdl into libc).
+  ld.lld's --no-allow-shlib-undefined check must locate libdl.so.2 (in /usr/lib64) to prove
+  the symbol resolves. Tuolumne's systems.yaml env.LD_LIBRARY_PATH only included the CCE lib
+  dirs, not /usr/lib64, so the check failed even though libdl.so.2 exists on the system.
+  Separately, LD_LIBRARY_PATH alone was NOT sufficient to fix it — ld.lld does not treat
+  LD_LIBRARY_PATH as a link-time search path the way the runtime loader does. Only explicitly
+  adding -ldl to the link line (via LDFLAGS or DFTRACER_CMAKE_ARGS -DCMAKE_EXE_LINKER_FLAGS)
+  actually resolved it.
+fix: |
+  1. resources/systems.yaml tuolumne env.LD_LIBRARY_PATH now includes /usr/lib64.
+  2. session_install_dftracer (install.py) now merges the current system's env
+     (via new get_current_system_env() in system_service.py) into pip_env before
+     the pip install subprocess runs — previously it only inherited the MCP server
+     process's own environment, which may lack Tuolumne-specific paths entirely.
+  3. For the actual link failure, pass LDFLAGS="-ldl" and/or
+     DFTRACER_CMAKE_ARGS="-DCMAKE_EXE_LINKER_FLAGS=-ldl -DCMAKE_SHARED_LINKER_FLAGS=-ldl"
+     to the dftracer pip install env — this is the fix that actually worked, not just
+     the LD_LIBRARY_PATH addition.
+  NOTE: code changes to install.py/system_service.py require an MCP server restart
+  (not just a client reconnect) to take effect — the running process has the old
+  module bytecode loaded in memory.
+tags: [tuolumne, dftracer-install, dlopen, libdl, ld.lld, linker, systems.yaml, mcp-tool-fix]
 
+---
+date: 2026-07-06
+app: general
+context: clang_annotate_file caches file content in-memory (_FILE_CACHE) keyed by (run_id, filepath) — a plain disk overwrite is invisible to it
+error: |
+  After manually `cp`-ing a pristine (unannotated) file over a previously-annotated one
+  on disk, clang_annotate_file still reports "already_annotated": true with 0 insertions,
+  and clang_write_annotated_file reports "No in-memory state" or overwrites disk with the
+  STALE (previously-annotated, possibly corrupted) content instead of the fresh disk content.
+root_cause: |
+  annotation_clang.py's clang_annotate_file / clang_write_annotated_file keep a module-level
+  dict `_FILE_CACHE[(run_id, filepath)] = list_of_lines` populated on first annotate and
+  never invalidated by external file changes. Bash `cp` writes bypass this cache entirely.
+fix: |
+  To force a clean re-annotation after manually restoring a file from source/:
+    1. cp <ws>/source/<file> <ws>/annotated/<file>   (attempt restore — may be masked by cache)
+    2. clang_write_annotated_file(run_id, filepath)   (flushes the STALE cached content to
+       disk AND deletes the cache entry — accept the temporary bad write)
+    3. cp <ws>/source/<file> <ws>/annotated/<file>   (restore pristine content again, now
+       with cache guaranteed empty)
+    4. clang_annotate_file(run_id, filepath, ...)     (now genuinely re-reads disk and
+       re-annotates from scratch)
+  If clang_write_annotated_file returns "No in-memory state", the cache was already empty —
+  skip straight to step 4.
+tags: [dftracer, clang_annotate_file, cache, mcp-tool-fix, re-annotation]
+
+---
+date: 2026-07-06
+app: https://github.com/Caltech-IPAC/Montage
+context: clang_add_braces (via clang_annotate_file/clang_annotate_project) corrupts multi-line if-conditions and 3+ arm else-if chains — confirmed real bug, not just a cache artifact
+error: |
+  montageProject.c:2688:53: error: expected ')' before '{' token
+  montageProjectPP.c:2289: if((output.wcs->xinc < 0 && output.wcs->yinc < 0)
+                              || (output.wcs->xinc > 0 && output.wcs->yinc > 0))
+                              {   <- brace inserted mid-condition, before the ')' that
+                                     actually closes the multi-line if(...)
+  mAdd.c:72: 'else' without a previous 'if' (4-arm else-if chain, each arm wrapped in its
+  own separate { } block instead of being recognized as one chain)
+root_cause: |
+  The AST-range-based brace inserter mis-resolves the end line/column of an IfStmt's
+  condition when the condition itself spans multiple source lines (e.g. an `if((a && b)\n
+  || (c && d))` split across 2+ lines). It inserts the opening brace at the first line's
+  end instead of after the true closing ')' several lines down, splitting the condition.
+  A related but distinct failure mode: else-if chains with 3+ arms are sometimes not fully
+  covered by the existing "else-body is IfStmt -> skip wrapping" guard, causing each arm to
+  be individually braced as if it were a top-level statement.
+  IMPORTANT: an earlier, unrelated bug (stale _FILE_CACHE — see prior lesson) produced
+  IDENTICAL-looking symptoms and caused a previous session to misdiagnose ALL "expected
+  expression"/"expected identifier" build failures as this brace-insertion bug. Always rule
+  out the cache issue first (verify the file on disk actually reflects a fresh
+  clang_annotate_file call, not a stale write) before concluding this is a real parser bug.
+fix: |
+  No source_parser.py fix applied this session (would need a server restart to test, and
+  time did not allow safely verifying a fix against the live annotator). Interim mitigation:
+  when clang_syntax_check reports "expected ')'", "expected expression before '{'", or
+  "'else' without a previous 'if'" AFTER confirming it's not a cache artifact (see prior
+  lesson's revalidation steps), revert that single file to pristine via
+  `cp source/<f> annotated/<f>` and leave it unannotated — do NOT hand-patch with `#if 0`
+  wrapping or manual brace edits (this was tried by a subagent and rejected; hand-patching
+  corrupts semantics in ways a full validation pass won't catch).
+  Root-cause fix belongs in source_parser.py's `_collect_braceless` / brace-range resolver:
+  it needs to walk forward past line-continuations when computing an IfStmt condition's true
+  end line before deciding where to insert braces, and the else-if guard needs to handle
+  chains of arbitrary depth (recurse fully, not just one level).
+tags: [c, clang, brace-insertion, multi-line-condition, else-if, montage, mcp-tool-bug, known-limitation]
+
+---
+date: 2026-07-06
+app: https://github.com/Caltech-IPAC/Montage
+context: plain recursive-Makefile projects (no cmake/autotools) need PATH-shadowing, not CC= override, to inject dftracer link flags
+error: |
+  mtbl.c:7:10: fatal error: mtbl.h: No such file or directory
+  (after passing `make CC=<wrapper-script>` to link against libdftracer_core)
+root_cause: |
+  Montage's ~140 per-module Makefiles are NOT uniform: most set `CC = gcc` and a separate
+  `CFLAGS = -I. -I.. ...`, but some vendored lib/src Makefiles fold everything into one
+  line: `CC = gcc -g -fPIC -I . -D_LARGEFILE_SOURCE ...`. Passing `CC=<wrapper>` on the
+  `make` command line completely REPLACES that variable for every sub-make (command-line
+  vars have highest precedence in GNU make), silently discarding the embedded `-I .` flags
+  in the single-line-CC Makefiles and breaking their local header includes.
+  Separately, some modules use `CC = cc ...` instead of `gcc`, so a gcc-only wrapper doesn't
+  catch them either.
+fix: |
+  Do NOT override CC via `make CC=...` for heterogeneous legacy Makefile trees. Instead:
+    1. mkdir -p <ws>/tmp/binshim
+    2. Write executable shim scripts named exactly `gcc` AND `cc` in that directory, each
+       execing the REAL compiler (resolved via `command -v` with a restricted PATH before
+       shadowing) with all passed-through args plus the extra link flags appended:
+         #!/bin/bash
+         exec /real/path/to/gcc "$@" -L<dftracer_lib> -Wl,-rpath,<dftracer_lib> -ldftracer_core
+    3. export PATH="<ws>/tmp/binshim:$PATH" (no CC= on the make command line at all)
+    4. export CPATH="<dftracer_include_dir>" for the #include <dftracer/dftracer.h> resolution
+       (CPATH is honored by gcc/clang as an implicit -I for every invocation, so it doesn't
+       clobber per-Makefile CFLAGS/CC content the way overriding CC or CFLAGS would).
+  Appending -l/-L/-rpath flags to a compile-only ("-c") invocation is harmless (ignored,
+  no link phase runs), so a single wrapper safely handles both compile and link calls.
+  Also: Montage's nested `(cd X && make)` recipe pattern is not jobserver-safe under `-j`>1
+  at the top level (only sub-makes show "jobserver unavailable" warnings, but top-level
+  parallel directory recipes still race on shared objects like `ar`-built static libs) —
+  use `make -j1` for this codebase's top-level build to avoid nondeterministic races
+  (e.g. "ar: util/checkFile.o: No such file or directory" when checkFile.c hadn't finished
+  compiling yet in a sibling directory).
+tags: [c, make, plain-makefile, cc-override, path-shadow, cpath, montage, jobserver, race-condition]
+
+---
+date: 2026-07-06
+app: general
+context: for large multi-binary C codebases, annotate only the files a specific smoke test actually exercises, not the whole tree
+error: |
+  (not an error — a scoping/efficiency lesson)
+  Montage has ~700 source files across 100+ independently-linked executables. Running
+  clang_annotate_project over the whole tree annotated 266 files, most of which (HiPS
+  tile-pyramid tools, PNG/JPEG viewers, Globus/Pegasus DAG generators, MovingTarget/rtree,
+  vendored third-party libs) are never invoked by the actual mosaic-building pipeline a
+  user's workflow (e.g. montage-workflow-v3) runs. This wasted annotation/validation effort
+  and needlessly exposed the session to annotator edge-case bugs (see brace-insertion
+  lesson above) in code paths nobody will ever trace.
+root_cause: |
+  No tool existed to answer "given this smoke test command, which source files actually
+  matter?" before annotating — clang_annotate_project's only scoping knob was glob-pattern
+  exclusion, which requires already knowing which directories to skip.
+fix: |
+  Added `session_identify_smoke_test_files` MCP tool (annotation_filter.py) that:
+    1. Extracts binary names invoked by a smoke_cmd — preferring `strace -f -e trace=execve`
+       against the ORIGINAL (unannotated, already-built) tree for ground truth, falling back
+       to a static text-scan of smoke_cmd against install/bin/ contents.
+    2. For each binary, parses the Makefile link recipe (`$(CC) ... -o <name> <objs...>`,
+       following backslash-continuation lines) to extract every .o object file.
+    3. Resolves each .o back to its .c/.cpp source, honoring the Makefile's own relative
+       path context (e.g. `../util/foo.o` from `MontageLib/Add/Makefile` resolves to
+       `MontageLib/util/foo.c`).
+    4. Returns the de-duplicated union of source files across all invoked binaries.
+  For Montage's 10-binary mosaic pipeline (mArchiveList, mProjExec, mOverlaps, mDiffExec,
+  mFitExec, mBgModel, mBackground/mBgExec, mAdd, mImgtbl) this narrowed 267 files to 51 —
+  an 81% reduction. ALWAYS present the resulting file list to the user for confirmation
+  (grouped by which binary/pipeline-stage needs it and why) before annotating, so they can
+  adjust the binary list first if the smoke test scope was wrong.
+  New tool registered in dftracer_service.py's session_subservice; requires MCP server
+  restart to become callable (code changes to the server module don't hot-reload).
+tags: [dftracer, annotation-scoping, montage, large-codebase, filter-tool, mcp-tool-added, best-practice]
+
+---
+
+
+---
+date: 2026-07-06
+app: https://github.com/llnl/ior (tag 4.0.0)
+context: Annotating IOR C on Tuolumne; DFTRACER_C_INIT third arg type + C→C++ link.
+error: |
+  annotated/src/ior.c:110:37: error: incompatible integer to pointer conversion
+  passing 'int' to parameter of type 'int *' [-Wint-conversion]
+    DFTRACER_C_INIT(NULL, NULL, -1);
+  (macro expands to initialize_main(log_file, data_dirs, process_id) where
+   process_id is 'int *')
+root_cause: |
+  DFTRACER_C_INIT's third argument (process_id) is 'int *', not int. Passing a
+  literal like -1 is an int→pointer conversion error under clang/cce. The clang
+  annotate tools default init_args to "NULL, NULL, -1" which is wrong for this
+  dftracer header.
+fix: |
+  Always pass init_args="NULL, NULL, NULL" to clang_annotate_project /
+  clang_annotate_file for C. All three DFTRACER_C_INIT args are pointers.
+tags: [c, annotation, dftracer-c-init, tuolumne, cce]
+
+---
+date: 2026-07-06
+app: https://github.com/llnl/ior (tag 4.0.0)
+context: Linking a C app against libdftracer_core.so (C++) on Tuolumne/cce.
+error: |
+  ld.bfd: libdftracer_core.so: undefined reference to
+    std::filesystem::...@GLIBCXX_3.4.26 / ...@CXXABI_1.3.13
+  then at configure run: "C compiler cannot create executables";
+  then at run: /usr/lib64/libstdc++.so.6: version GLIBCXX_3.4.29 not found
+root_cause: |
+  dftracer_core is C++ and needs libstdc++ >= GLIBCXX_3.4.29 plus libyaml-cpp.
+  (1) -lstdc++ is dropped by --as-needed because the C main references no C++
+      symbols directly, so NEEDED-shlib undefined refs fail the link.
+  (2) The OS /usr/lib64/libstdc++.so.6 is 6.0.25 (only up to 3.4.25) and gets
+      picked at runtime.
+fix: |
+  Link with: LIBS="-ldftracer_core -lstdc++",
+  LDFLAGS+=" -Wl,--allow-shlib-undefined -Wl,--no-as-needed".
+  Runtime/configure-run: prepend the python module lib dir (has GLIBCXX_3.4.29 +
+  libyaml-cpp) AND dftracer/lib64 to LD_LIBRARY_PATH, BEFORE /usr/lib64:
+  export LD_LIBRARY_PATH="$DFT/lib64:/usr/tce/packages/python/python-3.13.2/lib:$LD_LIBRARY_PATH"
+tags: [c, cpp, linking, libstdc++, tuolumne, cce, dftracer_core]
+
+---
+date: 2026-07-06
+app: https://github.com/Caltech-IPAC/Montage (montage-workflow-v3 pipeline via Pegasus/PMC)
+context: annotating a per-pixel hot-loop function (mAdd_avg_mean) produced 11.9M trace events / 1.87GB from a single 4-image mosaic, drowning out real POSIX I/O signal
+error: |
+  (not a build/runtime error — a trace-quality/diagnosability failure)
+  dfanalyzer summary on the resulting trace showed "Total Files: 3" and an
+  EMPTY POSIX layer breakdown table despite 11.9M total events, making
+  bottleneck diagnosis impossible. Manually inspecting the largest trace file
+  (76MB compressed) showed cat=C_APP name=mAdd_avg_mean accounted for
+  499,613 of the first 500,000 sampled events (99.9%).
+root_cause: |
+  clang_annotate_file's static AST-cost filter (clang_estimate_function_cost)
+  scored mAdd_avg_mean above the annotate threshold because its source body
+  looks non-trivial (a loop + conditional). But it is called once per output
+  pixel during coaddition — for even a small 120x120 mosaic this is tens of
+  thousands of calls per image, and scales with mosaic size. Static cost
+  estimation has no way to know runtime call frequency; any per-pixel/
+  per-element inner-loop function is a blind spot for this heuristic
+  regardless of the score threshold used.
+  This is NOT the same as the earlier clang_add_braces multi-line-if bug —
+  the file compiled and ran correctly; the problem is purely instrumentation
+  density overwhelming the trace with true-but-useless micro-events.
+fix: |
+  1. Added an `exclude_functions` JSON-array parameter to `clang_annotate_file`
+     (annotation_clang.py) so specific hot-loop functions can be force-skipped
+     regardless of the cost filter, e.g.:
+       clang_annotate_file(run_id=..., filepath=..., exclude_functions='["avg_mean"]')
+     (Requires an MCP server restart to take effect — see prior lessons on
+     code changes not hot-reloading.)
+  2. For the live session (no restart available), manually removed the 3
+     DFTRACER_C_FUNCTION_START/UPDATE_STR/END lines around mAdd_avg_mean by
+     hand — this is safe (unlike the forbidden #if-0 brace hacks) because it
+     is a clean full-line deletion of already-syntactically-valid macro
+     statements, not a structural patch working around a parser bug.
+  3. Rebuilt, re-ran the same Pegasus/PMC workflow: trace count dropped from
+     11.9M events (1.87GB, 3 files visible) to 62,708 events (28 files visible,
+     811.5MB real I/O, 740.6MB/s aggregate bandwidth) — the difference between
+     an undiagnosable trace and a usable one.
+  RULE OF THUMB: before trusting a trace-derived bottleneck analysis, always
+  sanity-check `unique_file_count` and total event count against expectations
+  for the workload size. A tiny unique-file-count with a huge event count is
+  the signature of one hot annotated function dominating the trace — go find
+  it (grep the largest .pfw.gz for the most frequent `name` field) before
+  trusting the numbers.
+tags: [dftracer, annotation, hot-loop, cost-filter, trace-noise, montage, mAdd_avg_mean, exclude_functions, mcp-tool-fix, montage-workflow-v3]
+
+---
+date: 2026-07-06
+app: https://github.com/Caltech-IPAC/Montage (montage-workflow-v3 via Pegasus/PMC)
+context: applied and verified real L2 (posix_fadvise) + L3 (NFS->Lustre) I/O optimizations end-to-end through the actual Pegasus workflow
+error: |
+  (not an error — a successful optimization + a documented decision to NOT
+  do the riskier L1 change)
+root_cause: |
+  Baseline dfanalyzer summary (after fixing the mAdd_avg_mean trace-noise
+  issue, see prior lesson) showed 62,380 POSIX ops / 811.5MB / 740.6MB/s /
+  13KB avg transfer, running on NFS (/usr/WS2). Two concrete, safe
+  optimizations were available:
+    L2: mProject.c/montageAdd.c call fits_read_pix()/fits_open_file() but
+        never hint the kernel about the row-by-row sequential access
+        pattern that follows.
+    L3: the whole session had been running on NFS (/usr/WS2), not Lustre,
+        despite Lustre being available at /p/lustre5/$USER.
+  A third option (L1: rewrite mProject/mAdd's row-by-row fits_read_pix/
+  fits_write_pix calls into larger batched multi-row reads) was considered
+  and REJECTED — Montage's per-row I/O is an intentional design choice
+  (bounds memory usage for arbitrarily large mosaics); rewriting a mature
+  scientific library's numerical I/O path without pixel-correctness
+  regression tests against known-good mosaics is not something to do
+  blindly just to hit an optimization checklist.
+fix: |
+  L2: add `#include <fcntl.h>` (with `#define _DEFAULT_SOURCE` as the
+  FIRST line of the file, before any other #include — feature-test macros
+  like _DEFAULT_SOURCE/_POSIX_C_SOURCE only take effect if defined before
+  the first system header that would otherwise lock in a stricter default
+  under -std=c99; adding it later triggers "POSIX_FADV_SEQUENTIAL
+  undeclared" because fcntl.h's own multiple-inclusion guard has already
+  fired with the wrong feature-test state).
+  Then, right after every `fits_open_file()` call on the hot read path:
+    int advise_fd = open(filename, O_RDONLY);
+    if (advise_fd >= 0) {
+      posix_fadvise(advise_fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+      close(advise_fd);
+    }
+  This is a pure kernel read-ahead hint via a SEPARATE fd — it does not
+  touch cfitsio's internal file handle or any FITS data path, so it's safe
+  to add without re-verifying pixel correctness.
+  L3: write a new Pegasus sites.yml pointing sharedScratch/localStorage at
+  /p/lustre5/$USER/<project>/{scratch,storage} instead of an NFS-backed
+  workspace dir, then `rm -rf work_lustre && pegasus-plan --dir work_lustre
+  --sites local ...` (site name stays "local"; only its directories changed).
+  RESULT (identical op count/data volume before vs after, confirming no
+  behavior change — only performance):
+    Bandwidth:   740.6 MB/s -> 859.8 MB/s   (+16.1%)
+    POSIX time:  1.096s     -> 0.944s       (-13.9%)
+    Ops/bytes:   62,380 / 811.5MB  (unchanged both runs)
+  Caveat: at this test-mosaic scale (4 images, <1s total I/O time), the
+  wall-clock impact is dominated by Pegasus/PMC per-task dispatch overhead
+  (chmod/register/cleanup bookkeeping across 57 tasks), not I/O — the 16%
+  bandwidth gain matters far more at production mosaic scale.
+tags: [dftracer, optimization, posix_fadvise, lustre, nfs, montage, fcntl, feature-test-macro, l2-l3-optimization, montage-workflow-v3]

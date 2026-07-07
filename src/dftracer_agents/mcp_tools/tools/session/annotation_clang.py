@@ -334,6 +334,7 @@ def register_clang_tools(mcp: FastMCP) -> None:
         is_entry: bool = False,
         init_args: str = "NULL, NULL, -1",
         comp_overrides: str = None,
+        exclude_functions: str = None,
     ) -> str:
         """Annotate a C/C++ source file with dftracer macros in a single in-memory pass.
 
@@ -381,6 +382,15 @@ def register_clang_tools(mcp: FastMCP) -> None:
                         "MPIIO_Xfer": "comm"}'``).  Overrides the automatic
                         ``comp`` classification for the named functions.
                         Defaults to ``None`` (use automatic classification).
+            exclude_functions: Optional JSON array string of function names to
+                        force-skip regardless of the static cost filter (e.g.
+                        ``'["avg_mean"]'``). Use this for functions called in
+                        hot per-pixel/per-element inner loops that the AST-cost
+                        heuristic can't detect — static cost estimation has no
+                        way to know a function is called millions of times at
+                        runtime, and annotating it can produce gigabytes of
+                        trace noise that drowns out real I/O signal. Defaults
+                        to ``None`` (no additional exclusions).
 
         Returns:
             JSON string with keys:
@@ -441,6 +451,7 @@ def register_clang_tools(mcp: FastMCP) -> None:
         is_cpp = language.lower() in ("cpp", "c++", "cxx")
         import json as _json
         _comp_overrides: dict = _json.loads(comp_overrides) if comp_overrides else {}
+        _exclude_functions: set = set(_json.loads(exclude_functions)) if exclude_functions else set()
         START = (
             "DFTRACER_CPP_FUNCTION();"
             if is_cpp
@@ -528,6 +539,9 @@ def register_clang_tools(mcp: FastMCP) -> None:
             # Skip trivial functions unless they are lifecycle or vendor-FS.
             # entry-point main() is always annotated.
             if fn_name != "main" and not _should_annotate(fn):
+                skipped_functions.append(fn_name)
+                continue
+            if fn_name in _exclude_functions:
                 skipped_functions.append(fn_name)
                 continue
 

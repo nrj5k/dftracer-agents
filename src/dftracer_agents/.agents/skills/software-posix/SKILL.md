@@ -101,6 +101,17 @@ lfs mkdir -c <N> <dir>
 
 ---
 
+## L3 OS/Filesystem — Near-Node Flash Accelerators (FS_TYPE: network PFS)
+
+On systems with node-local NVMe accelerators, front the network PFS with a local
+flash tier: stage hot data onto per-node/per-chassis flash, run against it, copy
+persistent outputs back. No sudo — provisioned per job. On **Tuolumne (Rabbit)**
+this is a Flux `-S "#DW jobdw type=<xfs|gfs2|lustre> ..."` directive; pick the
+tier by sharing scope (SHM → XFS → GFS2 → Lustre). Full guide:
+[[system-tuolumne-rabbit]].
+
+---
+
 ## L3 OS/Filesystem — Linux Kernel Readahead (FS_TYPE: local_nvme, local_hdd ONLY)
 
 ```bash

@@ -1,0 +1,9 @@
+reverted
+MontageLib/Add/mAdd.c
+grid/Pegasus/mDiffFit.c
+MontageLib/BgModel/montageBgModel.c
+MontageLib/Imgtbl/montageImgtbl.c
+MontageLib/Project/montageProject.c
+MontageLib/ProjectPP/montageProjectPP.c
+MontageLib/ProjectQL/montageProjectQL.c
+MontageLib/ProjectCube/montageProjectCube.c

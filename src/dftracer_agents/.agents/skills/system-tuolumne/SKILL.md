@@ -82,6 +82,15 @@ gcc /tmp/zstd_test.c -o /tmp/zstd_test -lzstd \
 mkdir -p /p/lustre5/$USER/workspaces/ior
 ```
 
+### Rabbit near-node flash accelerators
+
+Tuolumne compute nodes have **Rabbit** node-local NVMe accelerators that can be
+provisioned as XFS, GFS2, or Lustre scratch to front the network Lustre path and
+accelerate data access. Request them via DataWarp directives passed to Flux with
+`-S "#DW jobdw ..."`. For the tier decision guide (SHM → XFS → GFS2 → Lustre by
+sharing scope), `--coral2-chassis=1` usage, and L3 optimization workflow, load
+[[system-tuolumne-rabbit]].
+
 ## Scheduler: Flux
 
 Tuolumne uses **Flux** as its job scheduler. Do not use `srun` or `mpirun` directly.
