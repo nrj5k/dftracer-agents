@@ -61,6 +61,7 @@ Workload-specific results:
 - **[[workload-ior]]** — quantified ROMIO results on VAST NVMe (Tuolumne)
 - **[[workload-h5bench]]** — HDF5 CMake build and annotation pitfalls
 
+
 System-specific accelerators (L3 near-node storage tiers):
 - **[[system-tuolumne-rabbit]]** — Rabbit near-node flash on Tuolumne (XFS/GFS2/Lustre via Flux `-S "#DW ..."`); stage hot data onto a local flash tier to relieve network-Lustre bottlenecks
 
@@ -359,6 +360,7 @@ provisioned per job via the scheduler.
   outputs back to Lustre at job end. The `#DW` directive is an **allocation-time**
   flag — ask the user to `flux alloc` with it and report the JOBID before you can
   proxy in. Full guide: [[system-tuolumne-rabbit]].
+
 
 ### Linux kernel readahead  (FS_TYPE: local_nvme, local_hdd only — bottleneck: read_time or seq_pct low — metric: time or bandwidth)
 

@@ -141,8 +141,8 @@ def _diagnose_via_api(
             checkpoint_dir=checkpoint_dir,
             metric_boundaries=metric_boundaries,
         )
-    except Exception:
-        return None
+    except Exception as exc:
+        return {"returncode": -1, "stdout": "", "stderr": str(exc), "success": False}
 
     os.makedirs(output_dir, exist_ok=True)
     handler = FileOutput(output_dir=output_dir, output_format=output_format)

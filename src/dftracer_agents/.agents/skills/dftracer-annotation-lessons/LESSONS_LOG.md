@@ -797,6 +797,7 @@ fix: |
 tags: [flux, flux-proxy, env-vars, mpiio-hints, dftracer, tuolumne, cray-mpich]
 
 ---
+
 date: 2026-07-06
 app: general (Tuolumne)
 context: dftracer install fails linking test_cpp/dftracer_service — undefined reference to dlopen
@@ -1117,3 +1118,4 @@ fix: |
   (chmod/register/cleanup bookkeeping across 57 tasks), not I/O — the 16%
   bandwidth gain matters far more at production mosaic scale.
 tags: [dftracer, optimization, posix_fadvise, lustre, nfs, montage, fcntl, feature-test-macro, l2-l3-optimization, montage-workflow-v3]
+
