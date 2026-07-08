@@ -25,7 +25,116 @@ Source: https://dftracer.readthedocs.io/en/latest/api.html
 contains **both** `DFTRACER_C_INIT(...)` and `DFTRACER_C_FINI()`. If only one
 is present, use `PRELOAD` instead (missing FINI leaves the trace open).
 
+**Fortran programs rule:** Fortran codes (e.g. Flash-X) have no C `main()`.
+For FUNCTION/HYBRID mode, create a C wrapper with `__attribute__((constructor))`
+and `__attribute__((destructor))` calling DFTRACER_C_INIT/DFTRACER_C_FINI, compile
+it to `.o`, and link it into the binary. If the Fortran linker (e.g. CCE `crayftn`)
+does not reliably fire constructors, **use PRELOAD mode instead** — it captures
+HDF5/POSIX/MPI I/O at the library level without requiring INIT/FINI in the
+application binary. See [[dftracer-annotation-lessons]] PF1 for the wrapper pattern.
+
 ---
+
+## Run on the system-detected parallel file system (PFS)
+
+**HARD RULE — every multinode run, baseline trace, and optimization iteration must
+write its data files and trace output to the system-detected PFS. Never use `/tmp`,
+`/scratch` (unless it is the detected PFS), or the shared home filesystem for I/O
+benchmarking.**
+
+- Determine the PFS from the system-detect skill / `system_detect` output.
+- Known mappings:
+  - **Tuolumne (LLNL Lustre)** → `/p/lustre5/$USER`
+- The application's output path (`-o`, `--output-file`, `checkpointFileNumber`,
+  plotfile prefix, etc.) must point under the detected PFS.
+- `session_run_with_dftracer` routes trace files into the workspace automatically,
+  but the **data files** must be directed to the PFS by the run command or
+  parameter file.
+- If the PFS path is not available, stop and ask the user to confirm the system
+  or allocation before running.
+
+## Allocation-Aware Run Rules (MANDATORY for Production Runs)
+
+**Every baseline and optimization iteration must run on the user's active allocation with ALL nodes.**
+
+1. **Ask the user for their active allocation ID** before any large run. If they forgot, prompt them.
+2. **Verify the allocation is active** with `flux jobs` — check that the allocation ID shows status `R` (running).
+3. **Use ALL nodes in the allocation** with `--exclusive`:
+   ```bash
+   flux proxy <alloc_id> flux run -N <nnodes> -n <ntasks> --exclusive [other flags] ./app
+   ```
+4. **Problem size must be large enough**:
+   - Use ~50% of total node memory across all nodes
+   - Run for at least 30 minutes of wall time
+   - Generate multi-GB checkpoint files
+5. **Never compare smoke test against production** — baseline and optimization iterations must be the same run class (both production-scale).
+6. **Create Lustre output directory before running**:
+   ```bash
+   mkdir -p /p/lustre5/$USER/<app>/<run_name>
+   ```
+
+## Flux Proxy Run Pattern (MANDATORY)
+
+**Never pass environment variables inline with `flux proxy <id> flux run -x VAR`.**
+`flux proxy` opens an SSH tunnel to the allocation broker; environment variables
+set in the local shell are **not** automatically forwarded through the proxy.
+Instead, **wrap the entire run in a bash script** and invoke that script via
+`flux proxy`:
+
+```bash
+# 1. Create a run script that exports ALL env vars internally
+cat > production_run.sh << 'EOF'
+#!/bin/bash
+set -e
+
+# Module setup
+module load PrgEnv-cray/8.7.0
+module load cce/20.0.0
+module load cray-mpich/9.0.1
+
+# Environment
+export PATH="/usr/WS2/haridev/dftracer-agents/.venv/bin:$PATH"
+export LD_LIBRARY_PATH="${WS}/hdf5_1.14/lib:${WS}/install/lib/python3.13/site-packages/dftracer/lib64:/opt/cray/pe/cce/20.0.0/cce/x86_64/lib:$LD_LIBRARY_PATH"
+
+# DFTracer setup
+export DFTRACER_ENABLE=1
+export DFTRACER_INIT=PRELOAD
+export DFTRACER_DATA_DIR=all
+export DFTRACER_INC_METADATA=1
+export DFTRACER_LOG_FILE="${WS}/traces/raw/baseline"
+export LD_PRELOAD="${WS}/install/lib/python3.13/site-packages/dftracer/lib64/libdftracer_preload.so"
+
+# MPI / HDF5 settings
+export MPICH_GPU_SUPPORT_ENABLED=0
+export HDF5_USE_FILE_LOCKING=FALSE
+
+# Run the application
+cd "${FLASHX_DIR}"
+./flashx
+EOF
+chmod +x production_run.sh
+
+# 2. Submit the script via flux proxy — NO -x flags needed
+flux proxy <alloc_id> flux run -N <nnodes> -n <ntasks> --exclusive ./production_run.sh
+```
+
+**Why this works:** The bash script runs inside the allocation where it sets its
+own environment. `flux proxy` only needs to forward the script execution;
+all DFTracer variables are established locally within the script.
+
+**Anti-pattern (DO NOT USE):**
+```bash
+# WRONG — env vars are lost across the proxy boundary
+export DFTRACER_ENABLE=1
+flux proxy <id> flux run -N 8 -n 768 --exclusive -x DFTRACER_ENABLE ./flashx
+```
+
+**When `-x` IS appropriate:** For single-node runs or direct `flux run` (without
+`flux proxy`), `-x` is required to forward env vars to MPI ranks:
+```bash
+# OK — direct flux run on a single node, no proxy boundary
+flux run -N 1 -n 4 -x DFTRACER_ENABLE -x DFTRACER_INIT -x LD_PRELOAD ./flashx
+```
 
 ## Required Environment Variables
 
@@ -52,21 +161,29 @@ export LD_PRELOAD=<session_venv>/lib/python3.12/site-packages/dftracer/lib/libdf
 
 ## DFTRACER_DATA_DIR Rules
 
-`DFTRACER_DATA_DIR` is **case-sensitive** and must be a **real filesystem
-path** or colon-separated list of paths. The string `"all"` is **not** valid
-at the C++ layer (it is only understood by the Python helper layer and will
-cause a `Code 2001` error at runtime).
+**HARD RULE — always set `DFTRACER_DATA_DIR=all`.** `all` tells dftracer to record
+POSIX/HDF5 I/O for every path, no filtering. This is the default for all runs and
+smoke tests. `DFTRACER_DATA_DIR` is a path *filter*: any narrower value silently
+drops every I/O event whose file path falls outside it — leaving a trace with only
+`C_APP` annotation events and no POSIX/HDF5 (a common false alarm). Datasets on
+Lustre, `/tmp`, or the real cwd all get filtered out unless `all` is used.
 
-| Goal                               | Correct value              |
+| Goal                               | Value                      |
 |------------------------------------|----------------------------|
-| Capture all I/O on any file        | `/` or leave empty¹        |
-| Capture I/O under /tmp             | `DFTRACER_DATA_DIR=/tmp`   |
-| Capture two specific data dirs     | `DFTRACER_DATA_DIR=/data:/scratch` |
-| HDF5 + MPI-IO file in /tmp         | `DFTRACER_DATA_DIR=/tmp`   |
+| Capture all I/O on any file (default) | `DFTRACER_DATA_DIR=all` |
+| Capture I/O under /tmp only         | `DFTRACER_DATA_DIR=/tmp`   |
+| Capture two specific data dirs      | `DFTRACER_DATA_DIR=/data:/scratch` |
 
-¹ Empty / unset → dftracer errors out with Code 2001. Always set an explicit path.
+Never leave it empty/unset. If a specific older build rejects `all` with a
+`Code 2001` error, use `/` as the equivalent capture-everything value — but `all`
+is the standard on current dftracer.
 
-Use `/` to capture I/O on any path without knowing the exact location in advance.
+**Forward it to every rank.** Exporting it in a launcher is not enough — MPI
+launchers don't propagate env to compute ranks. With `flux run`, pass
+`-x DFTRACER_DATA_DIR` (plus `-x` for every other DFTRACER var and `LD_LIBRARY_PATH`).
+Omitting `-x DFTRACER_DATA_DIR` leaks a stale value into the ranks and filters out
+the real I/O. Verify: the trace's `FH` (file-hash) entries must reference the actual
+data files (e.g. Lustre checkpoints), not just the run dir.
 
 ---
 

@@ -45,6 +45,10 @@ make decisions, and recover from failures before proceeding.
         * ``session_split_traces``       — compact raw .pfw traces via dftracer-utils split
         * ``session_analyze_traces``     — summarise traces with dftracer_info
 
+    Configuration discovery (paper-backed)
+        * ``session_search_papers_for_config`` — search arXiv + Semantic Scholar
+          for benchmark-proven run parameters before production execution
+
     Session management
         * ``session_status``         — inspect the persisted state of a session
         * ``session_validate_structure``   — read-only check that the workspace
@@ -120,6 +124,7 @@ from .install import (
     _dftracer_utils_split, _dftracer_utils_comparator,
     _dftracer_info_uncompressed_bytes, _install_dftracer_utils, _find_dftracer_dirs,
 )
+from .config_search import search_papers_for_config
 
 
 
@@ -611,10 +616,12 @@ def _snapshot_source(src: Path, dest: Path) -> Dict[str, Any]:
             return {"success": True, "file_count": count, "tool": "rsync"}
     except (FileNotFoundError, _sp.TimeoutExpired):
         pass
-    # Fallback: shutil
+    # Fallback: shutil. Preserve symlinks (rsync -a already does) and tolerate
+    # dangling ones so repos like Flash-X (with links to not-yet-generated
+    # targets) snapshot without crashing.
     import shutil as _sh
     _sh.rmtree(str(dest), ignore_errors=True)
-    _sh.copytree(str(src), str(dest))
+    _sh.copytree(str(src), str(dest), symlinks=True, ignore_dangling_symlinks=True)
     count = sum(1 for _ in dest.rglob("*") if _.is_file())
     return {"success": True, "file_count": count, "tool": "shutil"}
 
@@ -655,6 +662,9 @@ def _session_run_with_dftracer_impl(
     timeout: int = 600,
     env_extra: Optional[str] = None,
     run_name: str = "baseline",
+    allocation_id: Optional[str] = None,
+    nnodes: Optional[int] = None,
+    ntasks: Optional[int] = None,
 ) -> str:
     """Standalone implementation of session_run_with_dftracer."""
     ws = _ws(run_id)
@@ -702,6 +712,16 @@ def _session_run_with_dftracer_impl(
     # For flux proxy commands, always use a wrapper script — inline bash -c
     # does not propagate module loads reliably inside flux proxy subprocesses.
     command = _ensure_flux_proxy_wrapper(command, ws, f"run_with_dftracer_{run_name}.sh")
+
+    # Allocation-aware run: wrap with flux proxy + flux run using all nodes
+    if allocation_id:
+        _nnodes = nnodes if nnodes else 1
+        _ntasks = ntasks if ntasks else _nnodes
+        flux_flags = f"-N {_nnodes} -n {_ntasks} --exclusive"
+        # Forward all DFTRACER env vars and LD_LIBRARY_PATH/LD_PRELOAD to ranks
+        for key in list(env.keys()):
+            flux_flags += f" -x {key}"
+        command = f"flux proxy {allocation_id} flux run {flux_flags} {command}"
 
     # Prepend module-load preamble from the app's own scripts for ABI consistency.
     preamble = _build_module_preamble(ws / "source")
@@ -1049,7 +1069,8 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         ``session_get_run_paths``, ``session_list_runs``,
         ``session_run_with_dftracer``, ``session_split_traces``,
         ``session_analyze_traces``, ``session_status``,
-        ``session_collect_system_info``, ``session_generate_dftracer_pc``.
+        ``session_collect_system_info``, ``session_generate_dftracer_pc``,
+        ``session_search_papers_for_config``.
 
     Optimization tools (diagnose, search, iteration, proposals, levels) are
     registered separately via
@@ -1119,31 +1140,48 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             This must be the first tool called in a new annotation session.
             All other ``session_*`` tools require a valid *run_id* produced here.
         """
-        # _create_run derives app name from the URL, creates workspaces/<app>/<ts>/,
-        # and writes .current_run so pipeline_get_run_id can recall this session.
-        rid, ws = _create_run(url, run_id)
+        # _create_run derives app name from the URL and creates
+        # workspaces/<app>/<uid>/ for a NEW session. A supplied run_id is a
+        # resume handle: it must reference an existing session or _create_run
+        # raises FileNotFoundError (we never invent a new run under that name).
+        try:
+            rid, ws = _create_run(url, run_id)
+        except FileNotFoundError as e:
+            return _err(str(e))
 
         src = ws / "source"
         src.mkdir(exist_ok=True)
 
-        clone_result = _run(
-            ["git", "clone", "--depth", "1", "--branch", ref, url, str(src)],
-            timeout=300,
-        )
-        if not clone_result["success"]:
-            # Retry without --branch (bare clone then checkout)
-            shutil.rmtree(src, ignore_errors=True)
-            src.mkdir(exist_ok=True)
-            r2 = _run(["git", "clone", "--depth", "1", url, str(src)], timeout=300)
-            if not r2["success"]:
-                return _err("git clone failed", clone_stderr=r2["stderr"])
-            _run(["git", "checkout", ref], cwd=src)
+        # Resume: if source/ is already populated (existing session), skip the
+        # clone entirely — re-cloning into a non-empty dir would fail and would
+        # clobber any local state.
+        already_cloned = any(src.iterdir())
+        if not already_cloned:
+            clone_result = _run(
+                ["git", "clone", "--depth", "1", "--branch", ref, url, str(src)],
+                timeout=300,
+            )
+            if not clone_result["success"]:
+                # Retry without --branch (bare clone then checkout)
+                shutil.rmtree(src, ignore_errors=True)
+                src.mkdir(exist_ok=True)
+                r2 = _run(["git", "clone", "--depth", "1", url, str(src)], timeout=300)
+                if not r2["success"]:
+                    return _err("git clone failed", clone_stderr=r2["stderr"])
+                _run(["git", "checkout", ref], cwd=src)
 
         structure = _init_structure(ws, dataset_path)
         for target_name in ("baseline", "annotated"):
             target_source = Path(structure[target_name]) / "source"
             if not any(target_source.iterdir()):
-                shutil.copytree(src, target_source, dirs_exist_ok=True)
+                # symlinks=True preserves repo symlinks as symlinks (matching the
+                # clone) instead of dereferencing them; ignore_dangling_symlinks
+                # keeps the copy from crashing on links whose target is absent in
+                # a shallow clone (e.g. Flash-X's physics/.../StirMain/TurbGen.h).
+                shutil.copytree(
+                    src, target_source, dirs_exist_ok=True,
+                    symlinks=True, ignore_dangling_symlinks=True,
+                )
 
         _save_state(rid, {
             "url": url,
@@ -1204,8 +1242,25 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         return _ok(f"Session structure ready for {run_id}", **structure)
 
     @mcp.tool()
-    def session_detect(run_id: str) -> str:
+    def session_detect(
+        run_id: str,
+        hdf5_prefix: Optional[str] = None,
+        mpi_prefix: Optional[str] = None,
+        mpicc: Optional[str] = None,
+        mpicxx: Optional[str] = None,
+    ) -> str:
         """Detect the programming language, build tool, and dftracer feature flags.
+
+        Optional overrides let the caller pin the SAME libraries the application
+        was built with, so dftracer links against them (not a stray system copy):
+
+        * ``hdf5_prefix`` — install prefix of the HDF5 the app uses (e.g. a
+          source-built HDF5 in the workspace like ``<WS>/hdf5_1.14``). Detection
+          probes ``<prefix>/bin/h5pcc``/``h5cc`` for the version + parallel flag
+          instead of scanning ``/usr``.
+        * ``mpi_prefix`` — MPI install prefix; its ``bin/mpicc``/``mpicxx`` are
+          used for the compile-based version probe.
+        * ``mpicc`` / ``mpicxx`` — explicit wrapper paths (override ``mpi_prefix``).
 
         Analyses the cloned ``source/`` tree to determine how the project is
         built, which languages it uses, and which optional dftracer features
@@ -1247,8 +1302,15 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         if not src.exists():
             return _err("source/ not found — run session_create first")
 
-        info = _detect_info(src)
-        _save_state(run_id, {"detection": info, "step": "detected"})
+        info = _detect_info(src, hdf5_prefix=hdf5_prefix, mpi_prefix=mpi_prefix,
+                            mpicc=mpicc, mpicxx=mpicxx)
+        # Persist the overrides so re-detection (configure/install) stays pinned.
+        overrides = {k: v for k, v in {
+            "hdf5_prefix": hdf5_prefix, "mpi_prefix": mpi_prefix,
+            "mpicc": mpicc, "mpicxx": mpicxx,
+        }.items() if v}
+        _save_state(run_id, {"detection": info, "step": "detected",
+                             **({"detect_overrides": overrides} if overrides else {})})
         _write_artifact_log(_ws(run_id), 2, "session_detect", info, run_id)
         return _ok("Detection complete", **info)
 
@@ -1878,7 +1940,7 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             return _err("source/ not found — run session_create first")
         if dst.exists():
             shutil.rmtree(dst)
-        shutil.copytree(src, dst)
+        shutil.copytree(src, dst, symlinks=True, ignore_dangling_symlinks=True)
         _save_state(run_id, {"step": "annotated_copy_created"})
         return _ok(f"Copied source to {dst}")
 
@@ -2787,6 +2849,9 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         timeout: int = 600,
         env_extra: Optional[str] = None,
         run_name: str = "baseline",
+        allocation_id: Optional[str] = None,
+        nnodes: Optional[int] = None,
+        ntasks: Optional[int] = None,
     ) -> str:
         """Run a command with dftracer environment variables set to capture traces.
 
@@ -2811,6 +2876,11 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
 
         Additional variables can be merged/overridden via *env_extra*.
 
+        **Allocation-aware runs:** For production-scale runs, provide *allocation_id*,
+        *nnodes*, and *ntasks* to wrap the command with ``flux proxy <alloc> flux run``
+        using all nodes in the allocation. The tracer agent must verify the allocation
+        is active before running.
+
         Side effects:
             * Creates ``<workspace>/<run_name>/traces/raw/`` if absent.
             * Writes trace files inside that directory.
@@ -2830,6 +2900,11 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             run_name: Named run label — e.g. ``"baseline"``, ``"opt1"``.
                 Traces are stored under ``<workspace>/<run_name>/traces/raw/``.
                 Defaults to ``"baseline"``.
+            allocation_id: Optional Flux allocation ID (e.g. ``"f3Junw1CTMif"``).
+                When provided, the command is wrapped with
+                ``flux proxy <alloc_id> flux run -N <nnodes> -n <ntasks> --exclusive``.
+            nnodes: Number of nodes to use (required when allocation_id is set).
+            ntasks: Number of MPI tasks (required when allocation_id is set).
 
         Returns:
             JSON string with keys ``status``, ``message``, ``run_name``,
@@ -2847,6 +2922,9 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
             timeout=timeout,
             env_extra=env_extra,
             run_name=run_name,
+            allocation_id=allocation_id,
+            nnodes=nnodes,
+            ntasks=ntasks,
         )
 
     @mcp.tool()
@@ -2922,6 +3000,79 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         if r["success"]:
             return _ok("Analysis complete", run_name=run_name, **r)
         return _err("dftracer_info failed", run_name=run_name, **r)
+
+    @mcp.tool()
+    def session_search_papers_for_config(
+        run_id: str,
+        app_name: str,
+        problem_name: Optional[str] = None,
+        max_results_each: int = 3,
+    ) -> str:
+        """Search academic literature AND GitHub repos for application-specific run configuration.
+
+        Before executing a production-scale run, agents MUST call this tool to
+        discover benchmark-proven parameter values (grid size, checkpoint
+        intervals, refinement levels, etc.) from published papers AND the app's
+        official GitHub repository.  The results are persisted to ``session.json``
+        so downstream steps (planner, tracer, optimizer) can read them without
+        re-searching.
+
+        Workflow:
+          1. Build targeted queries from *app_name* + *problem_name*.
+          2. Search arXiv + Semantic Scholar in parallel.
+          3. Search the app's official GitHub repository for benchmark parameter files.
+          4. Extract known parameter patterns from paper titles/abstracts AND repo files.
+          5. Persist findings and return structured recommendations.
+
+        Side effects:
+            * Writes ``<workspace>/artifacts/paper_config_search.json``.
+            * Persists ``{"paper_config_search": {...}}`` to ``session.json``.
+
+        Args:
+            run_id: Session identifier returned by ``session_create``.
+            app_name: Application name (e.g. ``"Flash-X"``, ``"IOR"``, ``"h5bench"``).
+            problem_name: Optional problem / benchmark name (e.g. ``"Sedov"``,
+                ``"weak"``, ``"strong"``).
+            max_results_each: Papers to fetch per source (default 3).
+
+        Returns:
+            JSON string with keys:
+                * ``status`` (``"ok"``).
+                * ``message`` — human-readable summary.
+                * ``queries`` — list of search strings used.
+                * ``paper_count`` — total unique papers found.
+                * ``papers`` — list of paper dicts (title, authors, year, url, pdf_url).
+                * ``github_files`` — list of benchmark parameter files found in the app's repo.
+                * ``github_params`` — dict of parameters extracted from repo files.
+                * ``extracted_params`` — combined dict of all parameters found (papers + GitHub).
+                * ``recommendations`` — human-readable bullet list.
+        """
+        ws = _ws(run_id)
+        if not ws.exists():
+            return _err(f"Session {run_id} not found")
+
+        result = search_papers_for_config(
+            app_name=app_name,
+            problem_name=problem_name,
+            max_results_each=max_results_each,
+        )
+
+        # Persist to artifact file
+        artifact = ws / "artifacts" / "paper_config_search.json"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text(json.dumps(result, indent=2, default=str))
+
+        _save_state(run_id, {"paper_config_search": result})
+        _write_artifact_log(
+            ws, 15, "session_search_papers_for_config",
+            {"app_name": app_name, "problem_name": problem_name, **result},
+            run_id,
+        )
+        total_sources = result.get("paper_count", 0) + result.get("github_file_count", 0)
+        return _ok(
+            f"Found {result.get('paper_count', 0)} papers and {result.get('github_file_count', 0)} repo files for {app_name} (total sources: {total_sources})",
+            **result,
+        )
 
     @mcp.tool()
     def session_status(run_id: str) -> str:

@@ -25,3 +25,14 @@ resources/
 .cargo-goose
 *.core
 /torchrun_hpc-scaffold_*/
+.claude/skills/
+.claude/agents
+.claude/settings.json
+.opencode/
+.vscode/mcp.json
+AGENTS.md
+CLAUDE.md
+copilot-instructions.md
+.claude/worktrees/
+.agents/agents
+.agents/skills
