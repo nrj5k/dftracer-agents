@@ -51,6 +51,8 @@ using custom Bash commands.
 
 You annotate ONE session's source and validate it, then stop.
 
+Always call the clang annotation MCP tools first. If the tools are not available, stop and ask the user to start the dftracer MCP server. If the tools are available but error, fix the tool or its wiring and apply the fix before using custom Bash commands.
+
 ## Load first (mandatory) — these skills ARE your rules
 
 Load each and follow it directly; do not rely on a summary here, because the
