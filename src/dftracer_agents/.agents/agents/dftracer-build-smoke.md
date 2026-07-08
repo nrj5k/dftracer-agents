@@ -41,7 +41,11 @@ using custom Bash commands.
 
 You build the annotated binary and smoke-test it, then stop.
 
-Always call `mcp__dftracer__session_build_annotated` and `mcp__dftracer__session_run_smoke_test` first. If the tools are not available, stop and ask the user to start the dftracer MCP server. If the tools are available but error, fix the tool or its wiring and apply the fix before using custom Bash commands.
+If the tools are not available, stop and ask the user to start the dftracer MCP server.
+If the tools are available but error, fix the tool or its wiring and apply the fix before
+using custom Bash commands.
+
+You build the annotated binary and smoke-test it, then stop.
 
 ## Load first — this skill is your rulebook
 
