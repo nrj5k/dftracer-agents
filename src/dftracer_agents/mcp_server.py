@@ -425,6 +425,80 @@ def _build_session_server() -> FastMCP:
     return server
 
 
+
+def _default_reload_dirs() -> list:
+    """Watch the installed package source. With `pip install -e .` this is the repo."""
+    return [str(Path(__file__).resolve().parent)]
+
+
+def _run_with_reload(args: argparse.Namespace) -> int:
+    """Re-exec the server whenever a watched source file changes.
+
+    Why a fresh process rather than an in-process ``importlib.reload``: the tool
+    objects registered on the FastMCP instance are closures captured at import
+    time. Reloading modules in place leaves the old closures registered (FastMCP
+    already warns "Component already exists" on double registration), so the
+    server would keep serving stale code while *looking* reloaded. A clean
+    re-exec has no such failure mode.
+
+    Why HTTP only: under stdio the MCP client owns the process and its pipes —
+    stdout IS the JSON-RPC channel. Killing and respawning the child would break
+    the client's transport, and any reloader chatter on stdout corrupts the
+    protocol stream. Reload therefore requires a transport where the server owns
+    its own lifetime.
+    """
+    if args.transport == "stdio":
+        print(
+            "error: --reload is not supported with --transport stdio.\n"
+            "  Under stdio the MCP client spawns and owns this process, and stdout is\n"
+            "  the protocol channel — a reloader cannot restart it without breaking the\n"
+            "  connection. Run the server over HTTP instead:\n\n"
+            "    dftracer-mcp-server run --transport http --reload\n\n"
+            "  and point the client at http://<host>:<port>/mcp.",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        from watchfiles import run_process, PythonFilter
+    except ImportError:
+        print("error: --reload requires `watchfiles` (pip install watchfiles)", file=sys.stderr)
+        return 2
+
+    dirs = args.reload_dir or _default_reload_dirs()
+    # The child runs the same server WITHOUT --reload (no recursion) and without
+    # re-running startup setup on every restart.
+    child = [
+        sys.executable, "-m", "dftracer_agents.mcp_server",
+        "--_child-run", "--skip-setup",
+        "--service", args.service,
+        "--transport", args.transport,
+        "--host", args.host, "--port", str(args.port), "--path", args.path,
+    ]
+
+    print(f"[reload] watching {', '.join(dirs)}", file=sys.stderr)
+    print(f"[reload] serving {args.transport} on {args.host}:{args.port}{args.path}", file=sys.stderr)
+    print("[reload] NOTE: new/renamed tools require the MCP client to reconnect; "
+          "edits to existing tool bodies take effect immediately.", file=sys.stderr)
+
+    def _on_change(changes) -> None:
+        for _kind, path in sorted(changes):
+            print(f"[reload] changed: {path}", file=sys.stderr)
+
+    # watchfiles requires a command STRING for target_type="command"; shlex.join
+    # quotes each argv element so paths with spaces survive the round-trip.
+    import shlex
+
+    return run_process(
+        *dirs,
+        target=shlex.join(child),
+        target_type="command",
+        watch_filter=PythonFilter(),
+        callback=_on_change,
+        debounce=400,
+    )
+
+
 def build_server(service: str) -> FastMCP:
     """Build and return the combined FastMCP server for the requested service(s)."""
     if service == "utils":
@@ -515,6 +589,24 @@ def main() -> None:
         help="Port to listen on for HTTP transports (default: 5000)",
     )
     parser.add_argument(
+        "--reload",
+        action="store_true",
+        help=(
+            "Auto-restart the server when source files change (HTTP transports "
+            "only; see --reload-dir). Intended for `pip install -e .` development. "
+            "NOTE: changed tool bodies take effect on the next call, but a NEWLY "
+            "ADDED tool only becomes visible after the MCP client reconnects, "
+            "because this FastMCP build does not emit notifications/tools/list_changed."
+        ),
+    )
+    parser.add_argument(
+        "--reload-dir",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="Directory to watch with --reload (repeatable; default: the package source dir)",
+    )
+    parser.add_argument(
         "--path",
         default="/mcp",
         help="URL path for HTTP transports (default: /mcp)",
@@ -570,6 +662,9 @@ def main() -> None:
             import traceback
             print(f"[setup] Skipped setup ({type(exc).__name__}): {exc}", file=sys.stderr)
             traceback.print_exc()
+
+    if getattr(args, "reload", False):
+        raise SystemExit(_run_with_reload(args))
 
     server = build_server(args.service)
 
