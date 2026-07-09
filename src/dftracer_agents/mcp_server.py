@@ -499,6 +499,34 @@ def _run_with_reload(args: argparse.Namespace) -> int:
     )
 
 
+_NO_AUTH_DISCOVERY_PATHS = (
+    "/.well-known/oauth-protected-resource",
+    "/.well-known/oauth-protected-resource/{path:path}",
+    "/.well-known/oauth-authorization-server",
+    "/.well-known/oauth-authorization-server/{path:path}",
+)
+
+
+def _register_no_auth_routes(server: FastMCP) -> None:
+    """Answer OAuth discovery with a JSON 404 instead of Starlette's text/plain one.
+
+    This server is unauthenticated, so 404 is the spec-correct answer. But MCP
+    clients probe these paths before registering tools and parse the body as
+    JSON even on the error path -- a text/plain "Not Found" makes them abort the
+    connection with a JSON parse error rather than concluding "no auth needed".
+    """
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+
+    async def _not_found(_request: Request) -> JSONResponse:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+
+    for i, path in enumerate(_NO_AUTH_DISCOVERY_PATHS):
+        server.custom_route(
+            path, methods=["GET"], name=f"no_auth_discovery_{i}", include_in_schema=False
+        )(_not_found)
+
+
 def build_server(service: str) -> FastMCP:
     """Build and return the combined FastMCP server for the requested service(s)."""
     if service == "utils":
@@ -671,6 +699,7 @@ def main() -> None:
     if args.transport == "stdio":
         asyncio.run(server.run_stdio_async(show_banner=False))
     else:
+        _register_no_auth_routes(server)
         transport = "streamable-http" if args.transport == "http" else args.transport
         asyncio.run(
             server.run_http_async(

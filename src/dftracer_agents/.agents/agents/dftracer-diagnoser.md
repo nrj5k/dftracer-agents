@@ -219,3 +219,49 @@ its real paths — this rule applies to the persisted trees, not to it.
 Verify deterministically with `privacy_scan()` rather than by reading. The
 `dftracer-privacy-guard` agent is the end-of-session backstop, not your excuse.
 Load [[dftracer-privacy-guard]].
+
+## Environment consistency (MANDATORY, applies to every step)
+
+The application defines the environment, not the site defaults. Before touching modules,
+compilers, or a venv, read the app's own scripts and reuse them VERBATIM:
+`<app>/scripts/install-<system>.sh`, `<app>/scripts/<app>-<system>.job`, `pyproject.toml`.
+
+- **install env == run env.** Same python, modules, `LD_PRELOAD`, `LD_LIBRARY_PATH`, patchelf steps.
+- **Install dftracer in the SAME script and venv as the app** (critical for DL workloads,
+  whose torch/mpi4py wheels pin an exact MPI/ROCm/Python ABI).
+- **Bind `CC`/`CXX` to the MPI the app uses.** `which mpicc` may be the wrong wrapper; linking
+  dftracer against a different MPI than the app preloads aborts at exit (`double free`).
+- Pass MPI (and HDF5 only if the app uses it) explicitly to dftracer via ENV VARS.
+- A zero exit code does not mean tracing worked. Verify `python -c "import dftracer.dftracer"`
+  and that a NON-EMPTY `.pfw` was produced.
+
+See the `dftracer-install` skill, RULE 0-5.
+
+## Optimization axes for deep-learning workloads (sweep in this order)
+
+1. **Overlap compute and I/O.** `dataloader_num_workers>0`, `persistent_workers=True`,
+   `prefetch_factor`, async checkpointing. Cheapest, usually the biggest win.
+   (Mohan et al., *Analyzing and Mitigating Data Stalls in DNN Training*, VLDB 2021,
+   https://arxiv.org/abs/2007.06775)
+2. **Pinned memory + CPU core affinity — as ONE change.** `pin_memory=True` only pays off when
+   each rank is bound to all cores of its GPU's die. Pinned to a single core, the copy thread
+   contends with dataloader workers and the benefit inverts. On an APU (e.g. AMD MI300A) CPU and
+   GPU share the die and HBM, so affinity determines memory locality, not just scheduling.
+   (PyTorch memory-pinning docs, https://docs.pytorch.org/docs/stable/data.html#memory-pinning)
+3. **File layout: minimize the NUMBER of reads and metadata calls.** Per-sample small files cause
+   an open/stat/close storm on the metadata server. Shard into few large files with an index.
+   (Devarajan et al., *DLIO: A Data-Centric Benchmark for Scientific Deep Learning Applications*,
+   CCGrid 2021, https://ieeexplore.ieee.org/document/9499416)
+4. **System utilization.** PFS bandwidth (striping; Data-on-MDT for small files) and memory
+   bandwidth. Establish whether you are bandwidth- or compute-bound before tuning kernels.
+   (Williams et al., *Roofline: An Insightful Visual Performance Model*, CACM 2009,
+   https://doi.org/10.1145/1498765.1498785)
+5. **Compute last.** Mixed precision, kernel/library tuning, then algorithmic change.
+
+**Async checkpointing** is only a win when checkpoint write time is a real fraction of epoch
+time — verify first. (Mohan et al., *CheckFreq*, USENIX FAST 2021,
+https://www.usenix.org/conference/fast21/presentation/mohan; Eisenman et al., *Check-N-Run*,
+USENIX NSDI 2022, https://www.usenix.org/conference/nsdi22/presentation/eisenman)
+
+**Guard rail.** A wall-clock gain from writing fewer checkpoints, reading less data, or running
+fewer epochs is *doing less*, not going faster. Check event and byte counts before crediting it.

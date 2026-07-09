@@ -23,6 +23,40 @@ from ..session.session_tools import (
     _generate_patch,
 )
 from .diagnose import _session_diagnose_bottlenecks_impl
+
+
+def _load_external_bottlenecks(
+    run_id: str, bottlenecks_json: Optional[str]
+) -> Optional[List[Dict[str, Any]]]:
+    """Load a bottleneck list produced outside ``session_optimization_iteration``.
+
+    Order: an explicit ``bottlenecks_json`` payload, then
+    ``<ws>/<run>/analysis/diagnosis.json`` for the usual run names. Returns ``None``
+    when nothing usable is found, so the caller can report a precise error.
+    """
+    if bottlenecks_json:
+        try:
+            data = json.loads(bottlenecks_json)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(data, dict):
+            data = data.get("bottlenecks")
+        return data if isinstance(data, list) and data else None
+
+    ws = _ws(run_id)
+    for run_name in ("baseline", "opt1", "."):
+        cand = ws / run_name / "analysis" / "diagnosis.json"
+        if not cand.is_file():
+            continue
+        try:
+            data = json.loads(cand.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict):
+            data = data.get("bottlenecks")
+        if isinstance(data, list) and data:
+            return data
+    return None
 from .strategies import (
     _fetch_arxiv_papers,
     _BUILTIN_REFS,
@@ -629,6 +663,7 @@ def register_iteration_tools(mcp: FastMCP) -> None:
         levels: str = "123",
         metric: str = "time",
         max_proposals_per_level: int = 3,
+        bottlenecks_json: Optional[str] = None,
     ) -> str:
         """Generate concrete, citation-backed optimization proposals from bottleneck diagnosis.
 
@@ -676,21 +711,40 @@ def register_iteration_tools(mcp: FastMCP) -> None:
             * ``unsupported`` — bottlenecks for which no strategy was found.
             * ``citation_sources`` — breakdown of how many proposals used searched
               papers vs built-in references.
+
+        Args:
+            bottlenecks_json: Optional JSON list of bottleneck dicts, used when the
+                run was launched externally (e.g. a `flux batch` job) and so has no
+                ``optimization_history``. Falls back to
+                ``<ws>/<run>/analysis/diagnosis.json`` when omitted.
         """
         import json as _json
 
         state = _load_state(run_id)
         history: list = state.get("optimization_history", [])
+
         if not history:
-            return _err("No optimization iterations found — run session_optimization_iteration first.")
+            # session_optimization_iteration assumes a locally-launched run. Runs
+            # submitted externally (e.g. a two-phase `flux batch` job on 8 nodes)
+            # never populate optimization_history, yet they have a perfectly good
+            # diagnosis. Accept one directly rather than dead-ending the optimizer.
+            fallback = _load_external_bottlenecks(run_id, bottlenecks_json)
+            if fallback is None:
+                return _err(
+                    "No optimization iterations found. Either run "
+                    "session_optimization_iteration first, or pass bottlenecks_json "
+                    "(a JSON list of {bottleneck, severity, category, ...}), or write "
+                    "<ws>/baseline/analysis/diagnosis.json."
+                )
+            bottlenecks, literature = fallback, []
+        else:
+            idx = iteration if iteration >= 0 else len(history) - 1
+            if idx >= len(history):
+                return _err(f"Iteration {iteration} not found (history has {len(history)} entries).")
 
-        idx = iteration if iteration >= 0 else len(history) - 1
-        if idx >= len(history):
-            return _err(f"Iteration {iteration} not found (history has {len(history)} entries).")
-
-        iter_entry  = history[idx]
-        bottlenecks = iter_entry.get("bottlenecks", [])
-        literature  = iter_entry.get("literature", [])
+            iter_entry  = history[idx]
+            bottlenecks = iter_entry.get("bottlenecks", [])
+            literature  = iter_entry.get("literature", [])
 
         # Build metric → papers lookup from the iteration's existing literature search
         searched: Dict[str, List[Dict[str, Any]]] = {}

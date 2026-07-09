@@ -95,6 +95,71 @@ dftracer_agents_stack logs collector     # mlflow | collector | mcp | graph
 dftracer_agents_stack stop
 ```
 
+### VSCode extension users: export the env before VSCode starts
+
+`eval "$(dftracer_agents_stack env)" && claude` works because the exporter is
+configured from the environment Claude Code is **launched with**. The VSCode
+extension spawns its own `claude` binary and never runs that `eval`, so telemetry
+silently does not export. The `env` block in `.claude/settings.json` does not
+rescue this: it reaches tool subprocesses, but not the telemetry SDK, which is
+configured at process start.
+
+The symptom is a profile that looks healthy but has no numbers — `profile_bind`
+succeeds, the MLflow parent run appears, steps record their wall time and
+retries, and every token and dollar column reads zero. `profile_status` shows
+`events_seen: 0` and the raw log under `<workspace>/performance/otlp/` stays at
+zero bytes.
+
+The env has to be in the real process environment of the **vscode-server**, which
+every extension host and every `claude` process inherits. Neither `~/.profile`
+nor `~/.bashrc` is reliable here: Remote-SSH launches the server through a
+non-login, non-interactive shell. Remote-SSH does source
+`~/.vscode-server/server-env-setup` before starting the server, so put it there:
+
+```bash
+dftracer_agents_stack env >> "$HOME/.vscode-server/server-env-setup"
+```
+
+Then restart the server — **not** a window reload. Reloading respawns the
+extension host from the server process that is *already running* with the old
+environment, so it changes nothing:
+
+- **Remote SSH:** Command Palette → **"Remote-SSH: Kill VS Code Server on Host"**,
+  pick the host, then reconnect. The server respawns and sources the file.
+- **Fallback, from a terminal on the remote host:** `pkill -u "$USER" -f vscode-server`,
+  then reconnect from VSCode.
+- **Local (non-remote) VSCode:** quit the application entirely — not just the
+  window — and relaunch it from a shell that has the env exported.
+
+Verify the server itself picked it up:
+
+```bash
+tr '\0' '\n' < /proc/$(pgrep -u "$USER" -f server-main.js | head -1)/environ | grep -c '^OTEL_'
+```
+
+Anything less than the full count means the server did not source the file. Then
+call `profile_status` and check that `events_seen` climbs on its own as you work.
+
+> Do not diagnose this by grepping `env` inside a Bash tool call. Claude Code does
+> not re-export `OTEL_*` to child processes, so their absence there is expected
+> and proves nothing — in either the working or the broken state. `events_seen`,
+> and the server's own `/proc/<pid>/environ`, are the only reliable signals.
+
+If `events_seen` is still `0` once the server env is confirmed, check that the
+collector is actually up and reachable (`dftracer_agents_stack logs collector`).
+To separate a dead receiver from a silent sender, POST a synthetic record and
+watch the raw log grow:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:4318/v1/logs \
+  -H 'Content-Type: application/json' \
+  -d '{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"body":{"stringValue":"probe"}}]}]}]}'
+```
+
+A `200` plus a new line in `<workspace>/performance/otlp/events-<date>.jsonl`
+means the receiver and MLflow sink are healthy and the problem is upstream env.
+Delete the probe line afterwards so it does not pollute the profile.
+
 ### The stack runs the server; the harnesses connect to it
 
 By default every harness *spawns its own private stdio MCP server* from a

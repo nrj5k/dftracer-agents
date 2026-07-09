@@ -4,6 +4,7 @@ description: profile_bind must fire right after session_create; token/cost needs
 metadata: 
   node_type: memory
   type: feedback
+  
 ---
 
 Pipeline self-profiling must start at **session creation**, not at the first
@@ -25,11 +26,32 @@ Critical gotcha: token and dollar figures only populate if telemetry is set
 **before** the Claude Code process starts — `CLAUDE_CODE_ENABLE_TELEMETRY=1`,
 `OTEL_LOGS_EXPORTER=otlp`, `OTEL_METRICS_EXPORTER=otlp`,
 `OTEL_EXPORTER_OTLP_PROTOCOL=http/json` (protobuf will NOT parse; the receiver is
-stdlib-only), `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318`. These live in
-the `env` block of `.claude/settings.json` — **not** in a launcher script; the
-user does not use `scripts/claude`. Without them `profile_status` still reports
-step timings and retries but shows `events_seen: 0` and `$0.0000`. Symptom of a
-bound-but-blind profile: `performance/otlp/events-*.jsonl` stays 0 bytes.
+stdlib-only), `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318`. Without them
+`profile_status` still reports step timings and retries but shows
+`events_seen: 0` and `$0.0000`. Symptom of a bound-but-blind profile:
+`performance/otlp/events-*.jsonl` stays 0 bytes.
+
+**The `env` block of `.claude/settings.json` does NOT work for these.** It reaches
+tool subprocesses but not the telemetry SDK, which is configured at process start.
+
+Do NOT try to diagnose this by grepping `env` in a Bash tool call. Claude Code
+never re-exports `OTEL_*` to child processes, so they read as unset in *both* the
+working and the broken state — the absence proves nothing. The only reliable
+signals are `profile_status` → `events_seen`, and the vscode-server's own
+`/proc/<pid>/environ`.
+
+Under the VS Code extension the OTEL vars must be in the real process env of the
+**vscode-server**, which every extension host and `claude` process inherits.
+Remote-SSH sources `$HOME/.vscode-server/server-env-setup` before starting the
+server; put the exports there. `$HOME/.profile` does **not** work: Remote-SSH
+launches the server through a non-login shell, so it is never read (a `PATH` that
+looks profile-derived usually came from `.bashrc`). After editing, run
+*Remote-SSH: Kill VS Code Server on Host* and reconnect — a window reload is not
+enough, since the extension host inherits from the already-running server.
+
+To distinguish "collector broken" from "nothing being sent": POST a synthetic
+record to `/v1/logs` and watch `events-*.jsonl` grow. If it grows, the receiver
+and MLflow sink are fine and the problem is upstream env.
 
 Both `CLAUDE.md` and `.claude/settings.json` at the project root are symlinks
 into `src/dftracer_agents/.agents/workspace/`, recreated on every MCP server

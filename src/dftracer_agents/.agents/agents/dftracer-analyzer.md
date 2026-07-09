@@ -250,3 +250,23 @@ its real paths — this rule applies to the persisted trees, not to it.
 Verify deterministically with `privacy_scan()` rather than by reading. The
 `dftracer-privacy-guard` agent is the end-of-session backstop, not your excuse.
 Load [[dftracer-privacy-guard]].
+
+## Never report "no bottlenecks" from an empty diagnose()
+
+If `diagnose()` returns 0 metric observations, that is a TOOL failure signal, not a result.
+`analyze()` has been observed to be non-deterministic on identical inputs (e.g. Job Time
+14.35s / 265k events / 13 procs on one call vs 86.47s / 607k / 37 procs on the next, for a
+trace with a known 925,828 events and 64 pids). A checkpoint built from such a run carries
+no usable facts, so `diagnose()` scores nothing.
+
+Procedure:
+1. Cross-check every `analyze()` summary against `event_count` and the known pid count.
+2. If they disagree, rerun once and compare. If still inconsistent, fall back to direct
+   per-event aggregation over the compact `.pfw.gz` chunks and SAY SO in the report,
+   labelling which numbers came from tools and which from manual aggregation.
+3. Never let an empty `diagnose()` become "the workload has no bottlenecks."
+
+## Rank by TIME, not by event count
+Event counts mislead. A category can dominate the trace and cost nothing:
+e.g. STDIO 166,952 events but only 1.50s aggregate (~9us/op, ~11-byte writes), while POSIX
+670,158 events cost 65.5s. Always aggregate `dur` per category/op before ranking.

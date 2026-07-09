@@ -188,3 +188,24 @@ its real paths — this rule applies to the persisted trees, not to it.
 Verify deterministically with `privacy_scan()` rather than by reading. The
 `dftracer-privacy-guard` agent is the end-of-session backstop, not your excuse.
 Load [[dftracer-privacy-guard]].
+
+## MANDATORY: derive the module env from the APP, not from defaults
+
+`system_detect` gives site defaults. They are a starting point, **not** the answer.
+Before reporting a module set, read the application's own scripts and prefer them verbatim:
+
+```
+<app>/scripts/install-<system>.sh    # python version, modules, pip extras, patchelf fixups
+<app>/scripts/<app>-<system>.job     # LD_PRELOAD, runtime env vars, launcher shape
+<app>/pyproject.toml                 # extras and pinned torch/mpi4py versions
+```
+
+Report, as one block to be reused for BOTH install and run:
+python version · module set · `LD_PRELOAD` · `LD_LIBRARY_PATH` · `patchelf` steps · pip extra + index.
+
+If the app pins a python (e.g. `python/3.11.5`), that pin wins over the site default.
+Using a different python produced a swallowed `ImportError` in `dftracer.dftracer`
+(GLIBCXX/RPATH), which masqueraded as "tracing produces empty traces".
+
+A consistent install-env == run-env is mandatory. Never hand downstream steps a module
+set that differs from what the app's own scripts use.

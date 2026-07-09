@@ -223,3 +223,68 @@ its real paths — this rule applies to the persisted trees, not to it.
 Verify deterministically with `privacy_scan()` rather than by reading. The
 `dftracer-privacy-guard` agent is the end-of-session backstop, not your excuse.
 Load [[dftracer-privacy-guard]].
+
+## Re-run session_detect after module stack finalization (STEP 1)
+
+**Lesson from 2026-07-09 ScaFFold/Tuolumne run:**
+
+When the preceding step (session setup / STEP 1) resolves and finalizes the module stack (e.g., discovering that cce/21.0.0 and cray-mpich/9.1.0 are available and compatible), dftracer-build-dftracer MUST re-run `session_detect` with explicit MPI compiler paths pinned to those resolved versions **before** calling `session_install_dftracer`.
+
+**Why:** `session_detect` runs once during app clone with system defaults. If STEP 1 finds newer/better module versions, the original detection is stale. When dftracer's pip wheel builds C++ code via CMake, it uses the stale compiler paths, causing header search path mismatches (e.g., `stdlib.h` not found from gcc-toolset-13 when Cray clang/21.0.0 was intended).
+
+**Implementation:**
+```bash
+# After sourcing the env.sh created by STEP 1 (which loads the finalized modules)
+source $WS/scripts/env.sh
+
+# Re-detect with explicit paths to the resolved MPI version
+session_detect(run_id=...,
+  mpicc="/opt/cray/pe/mpich/9.1.0/ofi/crayclang/20.0/bin/mpicc",
+  mpicxx="/opt/cray/pe/mpich/9.1.0/ofi/crayclang/20.0/bin/mpicxx")
+
+# Then proceed with install (MCP tool or manual pip with env vars)
+```
+
+This step is CRITICAL for Cray PE systems where module resolution is multi-step and version pins matter.
+
+
+## MANDATORY: install dftracer in the app's environment, in the app's install script
+
+Load the `dftracer-install` skill and follow RULE 0–RULE 5. Summary of the
+non-negotiables (each of these was a real, expensive failure):
+
+1. **Same env, same venv, same script as the app.** Read
+   `<app>/scripts/install-<system>.sh` and `<app>/scripts/<app>-<system>.job` and reuse
+   their python version, modules, `LD_PRELOAD`, and `patchelf` steps verbatim. Install
+   dftracer *inside* that same script. Never install dftracer separately afterwards, and
+   never with a different python — especially for DL workloads whose torch/mpi4py wheels
+   pin an exact MPI/ROCm/Python ABI.
+
+2. **Bind CC/CXX to the MPI THE APP USES.** `which mpicc` under PrgEnv-cray is the
+   crayclang wrapper (`libmpi_cray.so.12`). If the app's wheels and `LD_PRELOAD` use GNU
+   MPICH (`libmpi_gnu.so.12`), build dftracer with the GNU wrappers, or the process aborts
+   at exit with `double free or corruption (!prev)` from two MPI runtimes.
+   `export CC=$MPICC CXX=$MPICXX DFTRACER_ENABLE_MPI=ON DFTRACER_BUILD_WITH_MPI=ON`.
+   Pass HDF5 (`DFTRACER_ENABLE_HDF5=ON`, `HDF5_ROOT`, `HDF5_DIR`) only if the app uses it.
+
+3. **Do NOT disable ROCProfiler to "fix" torch.** `HIP Intercept context start failed` and
+   `Error in dlopen: libcaffe2_nvrtc.so` mean the ROCm module / `libomp` preload / torch
+   lib path are wrong — not that ROCProfiler is broken. Fix the env. Put ROCm on
+   `CMAKE_PREFIX_PATH` (+ `rocprofiler_sdk_DIR`) or rocprofiler-sdk is silently skipped.
+
+4. **Order:** dftracer BEFORE dftracer-utils (utils' headers in
+   `site-packages/dftracer/include/` break dftracer's own build). No
+   `--no-build-isolation` (needs `setuptools_scm`). Use `set -o pipefail` so
+   `pip ... | tee` cannot hide a build failure.
+
+5. **Linking:** `export LDFLAGS="-ldl"` (single token, no trailing space — CMake CMP0004),
+   plus `/usr/lib64` on `LD_LIBRARY_PATH`. At RUN time also export the CCE runtime lib
+   dirs and `<venv>/lib/pythonX.Y/site-packages/torch/lib`.
+
+6. **Verify, never assume.** A zero exit code does not mean tracing works:
+   ```bash
+   python -c "import dftracer.dftracer"                    # ImportError is swallowed by logger.py
+   ldd .../libdftracer_core.so | grep -i mpi               # exactly ONE libmpi
+   python -c "import dftracer.dftracer, torch; torch.cuda.init()"
+   ```
+   Then confirm a real run emits a NON-EMPTY `.pfw`.

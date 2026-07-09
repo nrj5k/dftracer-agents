@@ -368,3 +368,28 @@ This skill uses:
 - **Write:** `workspaces/<session>/*` only (job scripts, wrapper scripts, logs)
 
 Always cancel killed/crashed Flux job IDs to release the allocation. Never `sudo`; never write outside the project root.
+
+## Allocations: ASK the user first (baseline and optimization runs)
+
+Before any baseline or optimization run that needs nodes, ASK the user which they want:
+
+1. **Use an existing user-created allocation** via `flux proxy <JOBID> bash <wrapper>.sh ...`
+   (the user often keeps a standing allocation running; this is frequently the preference), or
+2. **Spawn a new allocation** (`flux batch -N <n> -q pdebug -t <mins> --wrap "bash <wrapper>.sh ..."`).
+
+Do not assume. If the user has named a JOBID, prefer it, and check its remaining time with
+`flux jobs -no "{id} {state} {t_remaining}" <JOBID>` before starting — a run that outlives the
+allocation is lost work.
+
+**Never block on a long `flux proxy` in the foreground.** The Bash tool caps at ~10 minutes and
+killing the proxy client kills the job inside the allocation. Launch it with
+`run_in_background: true` (or `flux submit` inside the allocation) and poll.
+
+Queue note: 8-node `pbatch` jobs may sit in SCHED indefinitely; `pdebug` usually schedules at once.
+
+## Run length: make the run long enough to measure
+
+A run whose training phase is a few seconds cannot resolve checkpoint, collective, or barrier
+effects — the deltas are inside run-to-run noise. Target **at least ~10 minutes of training**,
+and always take at least one replicate of the baseline and of the best variant so you can state
+the noise band. Report deltas against that band, not as bare percentages.

@@ -3066,6 +3066,17 @@ def register_session_tools(mcp: FastMCP) -> None:  # noqa: C901  (long but inten
         idx = Path(index_dir) if index_dir else traces / "idx"
         idx.mkdir(parents=True, exist_ok=True)
 
+        # dftracer_info --query accepts ONLY "summary" or "detailed". It silently
+        # ignores anything else and returns the summary, which made callers passing
+        # query_type="function"/"file" believe the parameter was unwired.
+        _VALID_QUERIES = {"summary", "detailed"}
+        if query_type not in _VALID_QUERIES:
+            return _err(
+                f"invalid query_type {query_type!r}; dftracer_info supports only "
+                f"{sorted(_VALID_QUERIES)}. Passing anything else silently returns "
+                f"the summary."
+            )
+
         flags = extra_flags.split() if extra_flags else []
         r = _run(
             [

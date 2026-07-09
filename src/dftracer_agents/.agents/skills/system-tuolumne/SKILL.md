@@ -603,3 +603,92 @@ This skill uses:
 - **Write / Edit:** `workspaces/<session>/*` (traces → `workspaces/<session>/traces/`, never Lustre)
 
 Never `sudo`; never search or write under `/opt/cray`; never write outside the project root.
+
+## dftracer build on Cray PE (2026-07-09)
+
+**Symptom:** dftracer pip install from source fails:
+```
+fatal error: 'stdlib.h' file not found
+```
+when building via session_install_dftracer after STEP 1 has resolved a newer CCE/MPI version than what session_detect originally found.
+
+**Root cause:** `session_detect` runs once during app clone/detection with system defaults (e.g., cce/20.0.0, cray-mpich/9.0.1). But STEP 1 (session setup / module resolution) finds and resolves to newer versions (e.g., cce/21.0.0, cray-mpich/9.1.0). When pip builds dftracer, the CMake setup uses stale MPI compiler paths from the original detection, causing compiler/header mismatches.
+
+**Fix:**
+1. After STEP 1 finalizes the module stack, re-run `session_detect` with explicit mpicc/mpicxx pinning to the resolved versions:
+   ```bash
+   # Source the env.sh created by STEP 1 to load correct modules
+   source $WS/scripts/env.sh
+   
+   # Re-detect with explicit paths
+   session_detect(run_id=..., 
+     mpicc="/opt/cray/pe/mpich/9.1.0/ofi/crayclang/20.0/bin/mpicc",
+     mpicxx="/opt/cray/pe/mpich/9.1.0/ofi/crayclang/20.0/bin/mpicxx")
+   ```
+
+2. Then install dftracer into the shared venv with the corrected environment:
+   ```bash
+   source $WS/scripts/env.sh
+   export DFTRACER_ENABLE_MPI=ON
+   export MPICC="/opt/cray/pe/mpich/9.1.0/ofi/crayclang/20.0/bin/mpicc"
+   export MPICXX="/opt/cray/pe/mpich/9.1.0/ofi/crayclang/20.0/bin/mpicxx"
+   export DFTRACER_ENABLE_HDF5=ON
+   export HDF5_ROOT=/usr
+   export DFTRACER_ENABLE_HIP_TRACING=ON
+   pip install setuptools_scm pybind11
+   pip install "git+https://github.com/llnl/dftracer.git@develop"
+   ```
+
+**Important:** For Python/AI/ML apps, **dftracer MUST install into the same venv as the app** (not a separate `install/` directory). The session_install_dftracer MCP tool may create a separate environment; if so, manually install via pip into the shared venv instead.
+
+
+## Environment consistency (MANDATORY, applies to every step)
+
+The application defines the environment, not the site defaults. Before touching modules,
+compilers, or a venv, read the app's own scripts and reuse them VERBATIM:
+`<app>/scripts/install-<system>.sh`, `<app>/scripts/<app>-<system>.job`, `pyproject.toml`.
+
+- **install env == run env.** Same python, modules, `LD_PRELOAD`, `LD_LIBRARY_PATH`, patchelf steps.
+- **Install dftracer in the SAME script and venv as the app** (critical for DL workloads,
+  whose torch/mpi4py wheels pin an exact MPI/ROCm/Python ABI).
+- **Bind `CC`/`CXX` to the MPI the app uses.** `which mpicc` may be the wrong wrapper; linking
+  dftracer against a different MPI than the app preloads aborts at exit (`double free`).
+- Pass MPI (and HDF5 only if the app uses it) explicitly to dftracer via ENV VARS.
+- A zero exit code does not mean tracing worked. Verify `python -c "import dftracer.dftracer"`
+  and that a NON-EMPTY `.pfw` was produced.
+
+See the `dftracer-install` skill, RULE 0-5.
+
+## APU core affinity + pinned memory (MI300A)
+
+Tuolumne's MI300A is an **APU**: CPU and GPU share the same die and the same HBM. There is no
+discrete host-to-device copy over PCIe.
+
+**Set each rank's CPU affinity to ALL the cores belonging to its GPU's die.** Do not leave the
+default 1-core-per-rank binding — the dataloader worker threads and the `pin_memory` copy thread
+need those cores, and on an APU they are physically local to that GPU's memory.
+
+`pin_memory=True` only pays off **when affinity is set correctly**. Pinned (page-locked) staging
+lets the copy engine run asynchronously; if the rank is pinned to one core, the pinning thread
+contends with the worker threads and the benefit inverts. Treat the two as ONE change:
+`pin_memory=True` + full-die affinity per rank. Measure them together.
+
+Rule of thumb for a 4-GPU node: `cores_per_rank = total_cores / gpus_per_node`, and bind rank i
+to the core range of GPU i's die (verify with `flux run --verbose` / `hwloc-bind --get`, or
+`rocm-smi --showtopo` for the die-to-core map).
+
+## The four optimization axes to sweep (in this order)
+
+1. **Overlap of compute and I/O.** Prefetch workers, `persistent_workers`, `prefetch_factor`,
+   async checkpointing. Cheapest and usually the largest win.
+2. **File layout / access pattern.** Minimize the *number* of reads and metadata calls. Many
+   small `.npy` files means an `open`/`stat`/`close` storm on the MDS. Shard/aggregate into few
+   large files with an index; prefer streaming reads over per-sample opens.
+3. **System utilization.** Parallel-filesystem bandwidth (striping, Data-on-MDT for small files)
+   and memory bandwidth (roofline: is the kernel bandwidth-bound or compute-bound?). On an APU,
+   HBM bandwidth is shared by CPU and GPU — a CPU-side dataloader steals GPU bandwidth.
+4. **Compute.** Mixed precision / `torch_amp`, kernel selection (MIOpen tuning), and only then
+   algorithmic change.
+
+Always check a wall-clock win against event/byte counts first: reducing checkpoint frequency or
+epochs is *doing less*, not going faster.

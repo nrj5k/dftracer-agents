@@ -217,3 +217,17 @@ its real paths — this rule applies to the persisted trees, not to it.
 Verify deterministically with `privacy_scan()` rather than by reading. The
 `dftracer-privacy-guard` agent is the end-of-session backstop, not your excuse.
 Load [[dftracer-privacy-guard]].
+
+## Initialize the dftracer singleton exactly ONCE per process
+
+A `cli.py`-style dispatcher usually imports **every** subcommand module. If two modules
+each call `initialize_log()` at import, the singleton initializes twice and the matching
+`finalize()` aborts with `double free or corruption (!prev)`.
+
+- Call `initialize_log()` in exactly ONE module (the one always imported on every path).
+- Everywhere else use `dftracer.get_instance()`.
+- Call `finalize()` from exactly one place, and before MPI teardown.
+- Never leave `initialize_log(logfile=None)` as the *diagnosis* for an empty trace:
+  `logfile=None` + `DFTRACER_LOG_FILE` exported works fine. An empty trace almost always
+  means the native extension failed to import (swallowed ImportError → `NoOpProfiler`),
+  which is an ENVIRONMENT bug. Verify with `python -c "import dftracer.dftracer"`.

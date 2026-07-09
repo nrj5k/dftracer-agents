@@ -44,7 +44,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastmcp import FastMCP
 
@@ -279,12 +279,120 @@ def _resolve(run_id: str, force: bool) -> Dict[str, Any]:
             else _ensure_knowledge_graph(force))
 
 
-def register_graph_tools(mcp: FastMCP) -> None:
-    """Register ``graph_ensure`` and ``graph_query``.
+_LOC_RE = re.compile(r"L(\d+)")
 
-    Deliberately two tools, not graphify's own MCP server (~25 schemas): this
+
+def _content_root(graph: str) -> Path:
+    """Directory the graph's ``source_file`` paths are relative to.
+
+    Both graphs are built over a copy (the stage, or the session's ``annotated``
+    tree), so line numbers only line up against that copy — never the pkg root.
+    """
+    return Path(graph).parents[1]
+
+
+def _load_nodes(graph: str) -> List[Dict[str, Any]]:
+    with open(graph, encoding="utf-8") as fh:
+        return json.load(fh).get("nodes", [])
+
+
+def _node_line(node: Dict[str, Any]) -> int:
+    m = _LOC_RE.search(str(node.get("source_location") or ""))
+    return int(m.group(1)) if m else 1
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def _header_end(lines: List[str], start: int) -> int:
+    """0-indexed line closing the definition header at 1-indexed *start*.
+
+    A multi-line signature ends at the ``:`` that closes it at bracket depth 0 —
+    not at the first dedent, since ``) -> bool:`` sits at the same indent as its
+    own ``def``. Scan at most 40 lines; a header longer than that is not a header.
+    """
+    depth = 0
+    for i in range(start - 1, min(start + 39, len(lines))):
+        for ch in lines[i]:
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                depth -= 1
+        if depth <= 0 and lines[i].rstrip().endswith(":"):
+            return i
+    return start - 1
+
+
+def _code_end(lines: List[str], start: int) -> int:
+    """End of the definition beginning at 1-indexed *start*, by dedent.
+
+    The next graph node in the file is NOT a usable end for code: graphify emits
+    nodes for nested defs too, so a method containing an inner function would
+    truncate to its signature. Scan past the header, then take the first non-blank
+    line indented no deeper than the definition itself.
+    """
+    base = _indent(lines[start - 1])
+    for i in range(_header_end(lines, start) + 1, len(lines)):
+        line = lines[i]
+        if line.strip() and _indent(line) <= base:
+            return i  # 1-indexed line i+1 is outside; body ends at line i
+    return -1
+
+
+def _doc_end(nodes: List[Dict[str, Any]], node: Dict[str, Any]) -> int:
+    """End of a markdown section: the line before the next heading in the file.
+
+    graphify emits one node per heading with a start line and no end, so the
+    next heading is exactly where this section stops.
+    """
+    src, start = node.get("source_file"), _node_line(node)
+    later = [
+        _node_line(n) for n in nodes
+        if n.get("source_file") == src and _node_line(n) > start
+    ]
+    return min(later) - 1 if later else -1
+
+
+def _read_span(
+    root: Path,
+    node: Dict[str, Any],
+    nodes: List[Dict[str, Any]],
+    max_lines: int,
+) -> Tuple[str, int, int, bool]:
+    """Extract the text *node* owns, choosing the end rule by node type."""
+    lines = (root / node["source_file"]).read_text(
+        encoding="utf-8", errors="replace").splitlines()
+    start = _node_line(node)
+    if start > len(lines):
+        raise OSError(f"node starts at L{start} but file has {len(lines)} lines "
+                      "(stale graph — run graph_ensure(force=True))")
+
+    if node.get("label") == Path(node["source_file"]).name:
+        end = -1  # the node IS the file (graphify emits one per file at L1)
+    elif node.get("file_type") == "document":
+        end = _doc_end(nodes, node)
+    else:
+        end = _code_end(lines, start)
+
+    stop = len(lines) if end < 0 else min(end, len(lines))
+    body = lines[start - 1:stop]
+    truncated = len(body) > max_lines
+    return "\n".join(body[:max_lines]), start, stop, truncated
+
+
+def _score(node: Dict[str, Any], terms: List[str]) -> int:
+    hay = f"{node.get('label','')} {node.get('source_file','')}".lower()
+    return sum(1 for t in terms if t in hay)
+
+
+def register_graph_tools(mcp: FastMCP) -> None:
+    """Register ``graph_ensure``, ``graph_query`` and ``graph_get_node``.
+
+    Deliberately three tools, not graphify's own MCP server (~25 schemas): this
     project already exposes 137 tool schemas, and schema text sits in context on
-    every turn. Two wrappers buy guaranteed freshness for a negligible cost.
+    every turn. Three wrappers buy guaranteed freshness and node retrieval for a
+    negligible cost.
     """
 
     @mcp.tool()
@@ -320,8 +428,10 @@ def register_graph_tools(mcp: FastMCP) -> None:
         budget: int = 1200,
         depth: int = 2,
         run_id: str = "",
+        context: List[str] | None = None,
+        limit: int = 12,
     ) -> str:
-        """Locate code without reading it. Ensures graph freshness first.
+        """Locate code and docs without reading them. Ensures graph freshness first.
 
         **Use this before Read/grep on any source tree.** Measured on this repo:
         locating via the graph cost ~986 tokens where reading the three relevant
@@ -331,6 +441,11 @@ def register_graph_tools(mcp: FastMCP) -> None:
 
         * ``query``    — BFS for *question*; returns ``NODE <sym> [src=file loc=Lnn]``.
           Open only the files it names. Budget-capped.
+        * ``docs``     — search only markdown nodes (skills, agent definitions,
+          memory). Returns one ranked ``NODE`` line per heading with the ``id`` to
+          pass to ``graph_get_node``. Use this instead of ``skill_load`` on a whole
+          skill: BFS ``query`` leaks into the code subgraph and buries headings
+          under generic helpers like ``_ok()``.
         * ``explain``  — definition, callers and callees of *symbol* (~200 tokens).
         * ``affected`` — reverse traversal: everything impacted by changing
           *symbol*. **Run this before editing any shared function** and state the
@@ -338,13 +453,16 @@ def register_graph_tools(mcp: FastMCP) -> None:
           moves ``_estimate_file_impl`` -> ``_validate_python`` -> ``_plan``.
 
         Args:
-            question: Natural-language target (``mode="query"``).
-            mode: ``query`` | ``explain`` | ``affected``.
+            question: Natural-language target (``mode="query"`` / ``"docs"``).
+            mode: ``query`` | ``docs`` | ``explain`` | ``affected``.
             symbol: Function/class name (``explain`` / ``affected``).
             budget: Token cap on ``query`` output. Raise only if truncated.
             depth: Reverse-traversal depth for ``affected``.
             run_id: Query the session's application graph instead of this
                 package's knowledge graph.
+            context: Edge-context filters narrowing a ``query`` BFS (repeatable),
+                e.g. ``["call"]``.
+            limit: Max rows returned by ``mode="docs"``.
 
         Returns:
             JSON with ``output`` (the graph answer) and ``graph`` (path used).
@@ -355,10 +473,35 @@ def register_graph_tools(mcp: FastMCP) -> None:
         graph = ensured["graph"]
 
         mode = mode.strip().lower()
+        if mode == "docs":
+            if not question:
+                return _err("mode='docs' needs a `question`")
+            terms = [t for t in re.split(r"\W+", question.lower()) if len(t) > 2]
+            if not terms:
+                return _err("mode='docs' needs at least one term longer than 2 chars")
+            docs = [n for n in _load_nodes(graph) if n.get("file_type") == "document"]
+            ranked = sorted(
+                ((_score(n, terms), n) for n in docs),
+                key=lambda p: -p[0],
+            )
+            hits = [(s, n) for s, n in ranked if s > 0][:limit]
+            if not hits:
+                return _err(f"no document node matches {question!r}", graph=graph)
+            base = _pkg_root() if not run_id else _content_root(graph)
+            lines = [
+                f"NODE {n['label']} [id={n['id']} src={base / n['source_file']} "
+                f"loc={n['source_location']} score={s}]"
+                for s, n in hits
+            ]
+            lines.append("\nFetch any of these with graph_get_node(node=<id>).")
+            return _ok("docs result", output="\n".join(lines), graph=graph,
+                       rebuilt=ensured.get("rebuilt", False))
         if mode == "query":
             if not question:
                 return _err("mode='query' needs a `question`")
             args = ["query", question, "--budget", str(budget), "--graph", graph]
+            for ctx in context or []:
+                args += ["--context", ctx]
         elif mode == "explain":
             if not symbol:
                 return _err("mode='explain' needs a `symbol`")
@@ -386,3 +529,56 @@ def register_graph_tools(mcp: FastMCP) -> None:
         base = Path(graph).parents[1] if run_id else _pkg_root()
         return _ok(f"{mode} result", output=_rewrite_paths(out, base), graph=graph,
                    rebuilt=ensured.get("rebuilt", False))
+
+    @mcp.tool()
+    def graph_get_node(node: str, run_id: str = "", max_lines: int = 200) -> str:
+        """Return the text a graph node owns — the retriever half of the graph.
+
+        ``graph_query`` locates; this fetches. A heading node resolves to exactly
+        its markdown section and a definition node to its body, so an agent can
+        pull the one section it needs instead of a whole skill: loading
+        ``dftracer-ml-annotate`` costs ~132K chars, one section costs hundreds.
+
+        Args:
+            node: Node ``id`` (exact, preferred — from ``graph_query``) or a node
+                ``label``. Ambiguous labels return the candidate ids instead.
+            run_id: Read from the session's application graph.
+            max_lines: Truncate bodies longer than this.
+
+        Returns:
+            JSON with ``text``, ``source_file``, ``lines`` and ``truncated``.
+        """
+        ensured = _resolve(run_id, force=False)
+        if ensured.get("error"):
+            return _err(ensured["error"], **ensured)
+        graph = ensured["graph"]
+        nodes = _load_nodes(graph)
+
+        want = node.strip()
+        hits = [n for n in nodes if n.get("id") == want]
+        if not hits:
+            hits = [n for n in nodes if str(n.get("label", "")).lower() == want.lower()]
+        if not hits:
+            hits = [n for n in nodes if want.lower() in str(n.get("label", "")).lower()]
+        if not hits:
+            return _err(f"no node {want!r}; locate one with graph_query", graph=graph)
+        if len(hits) > 1:
+            return _err(
+                f"{len(hits)} nodes match {want!r} — retry with an exact id",
+                candidates=[{"id": n["id"], "src": n.get("source_file")} for n in hits[:10]],
+                graph=graph)
+
+        hit = hits[0]
+        src = hit.get("source_file")
+        if not src:
+            return _err(f"node {want!r} has no source_file (external symbol)", graph=graph)
+        try:
+            text, start, stop, truncated = _read_span(
+                _content_root(graph), hit, nodes, max_lines)
+        except OSError as exc:
+            return _err(f"cannot read {src}: {exc}", graph=graph)
+
+        base = _pkg_root() if not run_id else _content_root(graph)
+        return _ok(f"node {hit['label']}", text=text, id=hit["id"],
+                   source_file=str(base / src), lines=f"L{start}-L{stop}",
+                   truncated=truncated, graph=graph)

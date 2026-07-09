@@ -24,6 +24,6 @@
 - [Feedback: Confirm before skill updates](feedback_confirm_before_skill_updates.md) — always confirm observation/fix with user BEFORE writing to skills/MCP/agents/lessons; propose, don't auto-persist
 - [Feedback: Pipeline self-learning](feedback_pipeline_selflearning.md) — session-first; planner writes sectioned pipeline_plan.md; all agents record lessons to workload/system/software skills
 - [Project: Claude agent models](project_claude_agent_models.md) — install materializes agents + resolves level_N→haiku/sonnet/opus; live session needs model override or reload
-- [Feedback: Profiling at session create](feedback_profiling_at_session_create.md) — profile_bind right after session_create; OTEL env lives in .claude/settings.json (symlink → src/), not a launcher
+- [Feedback: Profiling at session create](feedback_profiling_at_session_create.md) — profile_bind right after session_create; OTEL env must live in ~/.vscode-server/server-env-setup — settings.json env DROPS OTEL_*, and ~/.profile is never sourced
 - [Project: ScaFFold optimization](project_scaffold_optimization.md) — LBANN ScaFFold PyTorch 3D U-Net; session scaffold/20260709_064800; ~30 min bounded runs, 8N×4GPU
 - [Feedback: Privacy / anonymous persistence](feedback_privacy_anonymous.md) — memory lives in src/ and is git-tracked; never persist usernames, user paths, job ids; verify with privacy_scan

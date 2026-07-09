@@ -56,7 +56,12 @@ def _ensure_analyzable_path(trace_path: str) -> str:
         p = Path(trace_path)
         if not p.is_dir():
             return trace_path
-        split_dir = p / ".dfa_split"
+        # The split output MUST live outside the input directory. When it was nested
+        # at <input>/.dfa_split, `dftracer_split -d <input>` could pick up its own
+        # (possibly partially written) output, so two identical analyze() calls on the
+        # same traces returned wildly different totals — e.g. 265,294 events / 13
+        # processes vs 606,846 / 37 for a directory with a known 925,828 / 64.
+        split_dir = p.parent / f".dfa_split_{p.name}"
         gz = [f for f in glob.glob(str(p / "*.pfw.gz")) if os.path.isfile(f)]
         # Already a single (possibly split) chunk, or nothing to do.
         if len(gz) <= 1:

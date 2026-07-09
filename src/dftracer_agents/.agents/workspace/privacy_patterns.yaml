@@ -4,3 +4,21 @@ patterns:
   replacement: <slurm-jobid>
   structure_safe: true
   note: SLURM job ids appear in log filenames
+- name: mlflow-run-id
+  regex: (MLflow\s+(?:parent\s+)?run\s+`)([0-9a-f]{32})(`)
+  replacement: \1<mlflow-run-id>\3
+  structure_safe: true
+  note: MLflow run IDs are run-specific identifiers; per CLAUDE.md rule 9, drop provenance
+    when recording lessons. This removes the binding to a specific execution.
+- name: mlflow-run-id-context
+  regex: (?:MLflow.*run\s+`)([0-9a-f]{32})(`)
+  replacement: <mlflow-run-id>
+  structure_safe: true
+  note: MLflow run UUID should be anonymized to remove run-specific provenance from
+    memory/lessons per CLAUDE.md rule 9.
+- name: uuid-in-backticks
+  regex: '`([0-9a-f]{32})`'
+  replacement: '`<uuid>`'
+  structure_safe: true
+  note: 32-character UUIDs in backticks (MLflow run IDs, etc.) should be anonymized
+    to remove run-specific provenance.

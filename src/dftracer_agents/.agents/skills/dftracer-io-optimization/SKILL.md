@@ -512,3 +512,32 @@ Measured on this repo: locating cost 986 tokens vs 29,456 to read the three
 relevant files (3.3%). Run `affected` before editing any shared function and
 state the blast radius. Use the CLI, never `graphify-mcp` — its extra tool
 schemas would sit in context permanently. See [[dftracer-context-economy]].
+
+## Optimization axes for deep-learning workloads (sweep in this order)
+
+1. **Overlap compute and I/O.** `dataloader_num_workers>0`, `persistent_workers=True`,
+   `prefetch_factor`, async checkpointing. Cheapest, usually the biggest win.
+   (Mohan et al., *Analyzing and Mitigating Data Stalls in DNN Training*, VLDB 2021,
+   https://arxiv.org/abs/2007.06775)
+2. **Pinned memory + CPU core affinity — as ONE change.** `pin_memory=True` only pays off when
+   each rank is bound to all cores of its GPU's die. Pinned to a single core, the copy thread
+   contends with dataloader workers and the benefit inverts. On an APU (e.g. AMD MI300A) CPU and
+   GPU share the die and HBM, so affinity determines memory locality, not just scheduling.
+   (PyTorch memory-pinning docs, https://docs.pytorch.org/docs/stable/data.html#memory-pinning)
+3. **File layout: minimize the NUMBER of reads and metadata calls.** Per-sample small files cause
+   an open/stat/close storm on the metadata server. Shard into few large files with an index.
+   (Devarajan et al., *DLIO: A Data-Centric Benchmark for Scientific Deep Learning Applications*,
+   CCGrid 2021, https://ieeexplore.ieee.org/document/9499416)
+4. **System utilization.** PFS bandwidth (striping; Data-on-MDT for small files) and memory
+   bandwidth. Establish whether you are bandwidth- or compute-bound before tuning kernels.
+   (Williams et al., *Roofline: An Insightful Visual Performance Model*, CACM 2009,
+   https://doi.org/10.1145/1498765.1498785)
+5. **Compute last.** Mixed precision, kernel/library tuning, then algorithmic change.
+
+**Async checkpointing** is only a win when checkpoint write time is a real fraction of epoch
+time — verify first. (Mohan et al., *CheckFreq*, USENIX FAST 2021,
+https://www.usenix.org/conference/fast21/presentation/mohan; Eisenman et al., *Check-N-Run*,
+USENIX NSDI 2022, https://www.usenix.org/conference/nsdi22/presentation/eisenman)
+
+**Guard rail.** A wall-clock gain from writing fewer checkpoints, reading less data, or running
+fewer epochs is *doing less*, not going faster. Check event and byte counts before crediting it.

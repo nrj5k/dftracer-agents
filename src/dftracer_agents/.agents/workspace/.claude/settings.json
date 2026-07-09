@@ -3,13 +3,7 @@
   "env": {
     "REQUESTS_CA_BUNDLE": "/etc/pki/tls/cert.pem",
     "SSL_CERT_FILE": "/etc/pki/tls/cert.pem",
-    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
-    "OTEL_LOGS_EXPORTER": "otlp",
-    "OTEL_METRICS_EXPORTER": "otlp",
-    "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
-    "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
-    "OTEL_LOGS_EXPORT_INTERVAL": "5000",
-    "OTEL_METRIC_EXPORT_INTERVAL": "5000"
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1"
   },
   "permissions": {
     "deny": [

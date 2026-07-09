@@ -12,7 +12,7 @@ segmentation on procedurally generated 3D fractal volumes. Pure Python/PyTorch
 (ROCm), DDP + DistConv. Started 2026-07-08 on Tuolumne.
 
 Session: `scaffold/20260709_064800`. MLflow parent run
-`119e705bfcb34259bbc9f0f63fe0d0c6`.
+`<uuid>`.
 
 **Run conditions decided by the user:**
 - Smoke test: small — `benchmark_testing.yml`, 1-2 epochs, 1 node / 1 rank.

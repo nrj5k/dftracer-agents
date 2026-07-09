@@ -339,3 +339,20 @@ This skill uses:
 - **Write:** `workspaces/<session>/*` only
 
 Never set `DFTRACER_DISABLE_IO`. Never `sudo`; never write outside the project root.
+
+## Environment consistency (MANDATORY, applies to every step)
+
+The application defines the environment, not the site defaults. Before touching modules,
+compilers, or a venv, read the app's own scripts and reuse them VERBATIM:
+`<app>/scripts/install-<system>.sh`, `<app>/scripts/<app>-<system>.job`, `pyproject.toml`.
+
+- **install env == run env.** Same python, modules, `LD_PRELOAD`, `LD_LIBRARY_PATH`, patchelf steps.
+- **Install dftracer in the SAME script and venv as the app** (critical for DL workloads,
+  whose torch/mpi4py wheels pin an exact MPI/ROCm/Python ABI).
+- **Bind `CC`/`CXX` to the MPI the app uses.** `which mpicc` may be the wrong wrapper; linking
+  dftracer against a different MPI than the app preloads aborts at exit (`double free`).
+- Pass MPI (and HDF5 only if the app uses it) explicitly to dftracer via ENV VARS.
+- A zero exit code does not mean tracing worked. Verify `python -c "import dftracer.dftracer"`
+  and that a NON-EMPTY `.pfw` was produced.
+
+See the `dftracer-install` skill, RULE 0-5.

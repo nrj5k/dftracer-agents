@@ -362,3 +362,64 @@ its real paths — this rule applies to the persisted trees, not to it.
 Verify deterministically with `privacy_scan()` rather than by reading. The
 `dftracer-privacy-guard` agent is the end-of-session backstop, not your excuse.
 Load [[dftracer-privacy-guard]].
+
+## NEVER substitute a smaller run for the requested one
+
+If the requested shape (e.g. 8 nodes x 4 GPUs) fails, do **not** copy a smoke/single-rank
+trace into `baseline/` and call it the baseline. Report the failure with its real status.
+A single-rank trace cannot support distributed I/O optimization.
+
+Before declaring a multi-rank run "impossible", check the ordinary causes:
+- **Dataset too small for the rank count.** Many apps derive sample counts from config
+  (e.g. `volumes = n_categories * n_instances / n_fracts_per_vol`, then a val split).
+  Both train and val counts must exceed the rank count. Scale the config, don't give up.
+- **A required data-generation phase never ran.** Training entry points often cannot
+  synthesize the inputs they read; run the generator phase first, in the same job.
+- **Queue contention.** If N-node jobs sit in SCHED, try the debug/short queue before
+  concluding the run cannot happen.
+
+## Allocations: ASK the user first (baseline and optimization runs)
+
+Before any baseline or optimization run that needs nodes, ASK the user which they want:
+
+1. **Use an existing user-created allocation** via `flux proxy <JOBID> bash <wrapper>.sh ...`
+   (the user often keeps a standing allocation running; this is frequently the preference), or
+2. **Spawn a new allocation** (`flux batch -N <n> -q pdebug -t <mins> --wrap "bash <wrapper>.sh ..."`).
+
+Do not assume. If the user has named a JOBID, prefer it, and check its remaining time with
+`flux jobs -no "{id} {state} {t_remaining}" <JOBID>` before starting — a run that outlives the
+allocation is lost work.
+
+**Never block on a long `flux proxy` in the foreground.** The Bash tool caps at ~10 minutes and
+killing the proxy client kills the job inside the allocation. Launch it with
+`run_in_background: true` (or `flux submit` inside the allocation) and poll.
+
+Queue note: 8-node `pbatch` jobs may sit in SCHED indefinitely; `pdebug` usually schedules at once.
+
+## Run length: make the run long enough to measure
+
+A run whose training phase is a few seconds cannot resolve checkpoint, collective, or barrier
+effects — the deltas are inside run-to-run noise. Target **at least ~10 minutes of training**,
+and always take at least one replicate of the baseline and of the best variant so you can state
+the noise band. Report deltas against that band, not as bare percentages.
+
+## DL run length: ASK for a time budget, then FIX the epoch count
+
+Never guess a run length, and never let variants run for different amounts of work.
+
+1. **Ask the user for the time budget** (e.g. "10 minutes of training per run"). Do not assume.
+2. **Calibrate:** run a short probe, measure seconds/epoch on the BASELINE config.
+   `epochs = floor(budget_seconds / seconds_per_epoch)`.
+3. **Fix that epoch count for every variant** (baseline and all optimizations). Comparisons
+   must hold work constant; a variant that runs fewer epochs is "winning" by doing less.
+4. Also fix `problem_scale`, dataset size, and `checkpoint_interval` across variants unless the
+   knob under test IS one of them — and if it is, say so, because it changes total work.
+5. Take at least one replicate of the baseline and of the best variant, and report deltas against
+   that noise band. At a few seconds of training, checkpoint/collective effects are unmeasurable.
+
+Watch for early-exit knobs (e.g. `target_dice`) that can end a run before the fixed epoch count
+and silently break the equal-work assumption.
+
+### "Do-less" levers are not speedups
+Raising `checkpoint_interval`, cutting epochs, or shrinking the dataset reduce work. Any wall-clock
+gain must be checked against total bytes / data volume before it is credited as a speedup.

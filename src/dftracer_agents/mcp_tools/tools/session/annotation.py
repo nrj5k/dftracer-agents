@@ -56,6 +56,7 @@ Internal helpers
 from __future__ import annotations
 
 import difflib
+import ast
 import re
 import subprocess
 import textwrap
@@ -891,6 +892,10 @@ def _find_annotated_py_functions(path: Path) -> Set[str]:
     except OSError:
         return set()
 
+    ast_result = _find_annotated_py_functions_ast("\n".join(lines))
+    if ast_result is not None:
+        return ast_result
+
     annotated: Set[str] = set()
     prev_dft_dec = False
     current_func: str | None = None
@@ -920,6 +925,73 @@ def _find_annotated_py_functions(path: Path) -> Set[str]:
             annotated.add(current_func)
 
     return annotated
+
+
+# Factory callables that produce a dftracer tracer object bound to a local name,
+# e.g. ``_dft = dft_fn("worker")`` -> ``@_dft.log`` decorates functions.
+_DFT_FACTORIES = {"dft_fn", "DFTracerFn", "dft_ai", "dftracer"}
+
+
+def _find_annotated_py_functions_ast(src: str) -> Set[str] | None:
+    """AST-based detection of dftracer annotations.
+
+    The regex path only recognises the literal ``@dft_fn`` / ``@dft_ai`` spellings.
+    Real code almost always binds the tracer to a local first::
+
+        from dftracer.python import dft_fn as DFTracerFn
+        _dft = DFTracerFn("worker")
+
+        @_dft.log
+        def train_step(...): ...
+
+    which the regex misses entirely, making the coverage report read 0/N. Resolve
+    the alias instead: any decorator rooted at a name bound from a dftracer factory
+    counts, as does any ``dft_ai.*`` / ``<alias>.*`` call or ``with <alias>(...)``
+    block inside a body.
+
+    Returns ``None`` if the source does not parse, so the caller falls back to the
+    regex scanner rather than silently reporting zero coverage.
+    """
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return None
+
+    aliases: Set[str] = set(_DFT_FACTORIES)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            root = _root_name(node.value.func)
+            if root in _DFT_FACTORIES:
+                for tgt in node.targets:
+                    if isinstance(tgt, ast.Name):
+                        aliases.add(tgt.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for a in node.names:
+                if a.name in _DFT_FACTORIES or (a.asname or "") in _DFT_FACTORIES:
+                    aliases.add(a.asname or a.name)
+
+    annotated: Set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if any(_root_name(d) in aliases for d in node.decorator_list):
+            annotated.add(node.name)
+            continue
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Attribute) and _root_name(sub) in aliases:
+                annotated.add(node.name)
+                break
+            if isinstance(sub, ast.Call) and _root_name(sub.func) in aliases:
+                annotated.add(node.name)
+                break
+    return annotated
+
+
+def _root_name(node: ast.AST) -> str:
+    """Return the leftmost identifier of a dotted/called expression, or ''."""
+    while isinstance(node, (ast.Attribute, ast.Call)):
+        node = node.value if isinstance(node, ast.Attribute) else node.func
+    return node.id if isinstance(node, ast.Name) else ""
 
 
 def _parse_annotation_status(ws: Path) -> Dict[str, Dict[str, Dict[str, str]]]:
@@ -1053,6 +1125,11 @@ def _diff_modified_files(source_dir: Path, annotated_dir: Path) -> List[str]:
         content in ``annotated_dir`` differs from the content in
         ``source_dir``.
     """
+    # Build/venv/VCS artifacts hold copies of the real sources; counting them
+    # double-reports every function and skews the coverage percentage.
+    _SKIP_DIRS = {'build', 'dist', '.git', '__pycache__', '.eggs', 'venv',
+                  '.venv', 'site-packages', 'node_modules'}
+
     changed: List[str] = []
     for ann_file in sorted(annotated_dir.rglob("*")):
         if not ann_file.is_file():
@@ -1061,6 +1138,8 @@ def _diff_modified_files(source_dir: Path, annotated_dir: Path) -> List[str]:
                                              '.hpp', '.hxx', '.py'}:
             continue
         rel = ann_file.relative_to(annotated_dir)
+        if _SKIP_DIRS.intersection(rel.parts[:-1]) or rel.name.endswith('.egg-info'):
+            continue
         src_file = source_dir / rel
         if not src_file.exists():
             continue
