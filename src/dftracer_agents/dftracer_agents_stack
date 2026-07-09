@@ -1,0 +1,478 @@
+#!/usr/bin/env bash
+# dftracer-agents stack launcher — one command, three daemons.
+#
+#   1. mlflow server         SQLite-backed tracking + UI      (default :5001)
+#   2. profile collector     OTLP receiver → MLflow + session (default :4318)
+#   3. dftracer mcp-server   the agent tool surface           (default :5000)
+#
+# The knowledge graph (graphify) is a CLI, not a daemon: it is warmed once at
+# start so the first agent query does not pay the ~4 s build.
+#
+# `start` is IDEMPOTENT. Re-running it never launches a second copy of anything.
+# For each service it compares the running process against the one the current
+# configuration asks for — same command, same ports, same env — and:
+#
+#   * healthy and identical      → left alone (nothing is restarted needlessly)
+#   * healthy but configured differently, or dead, or not answering its port
+#                                → stopped and started again
+#   * port held by a process that is not ours
+#                                → refuses to touch it and tells you which pid
+#
+# So `start` doubles as `refresh`: run it after editing config or reinstalling,
+# and only what actually changed gets bounced. The collector is exempt from
+# needless restarts on purpose — its profile lives in memory, and bouncing it
+# mid-pipeline discards the cost accounting for every step so far.
+#
+# Invoked through the `dftracer_agents_stack` console script, which resolves the
+# interpreter, the project root and the venv bin dir and passes them in as
+# DFTRACER_STACK_{BIN,ROOT,CMD}. Running this file directly also works; the
+# fallbacks below then apply.
+#
+# Usage:
+#   dftracer_agents_stack start     # start or refresh everything; print the env
+#   dftracer_agents_stack stop      # stop everything (collector flushes first)
+#   dftracer_agents_stack status    # what is up, what is stale, what the run cost
+#   dftracer_agents_stack clean     # delete stale pid files, reap orphans
+#   dftracer_agents_stack restart   # unconditional stop + start
+#   dftracer_agents_stack env       # print export lines only (eval-able)
+#   dftracer_agents_stack logs NAME # tail mlflow | collector | mcp | graph
+#
+# `status` reconciles the pid files against /proc, so it also reports what the
+# launcher has LOST track of: pid files whose process died, orphaned reload
+# children still holding a port, and daemons started outside this stack.
+# `clean` fixes the first two. `clean --untracked` also kills the third.
+#
+# Point Claude Code at the stack by exporting the env BEFORE launching it:
+#   eval "$(dftracer_agents_stack env)" && claude
+#
+# Without those OTEL_* variables Claude Code exports no telemetry, the collector
+# sees nothing, and the profile stays empty — the profile_* MCP tools still work,
+# they just report `profiling: disabled`.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Project root: where `workspaces/` lives. The console script passes it; when this
+# file is run directly, fall back to the repo layout (src/dftracer_agents/ → ../..).
+REPO_ROOT="${DFTRACER_STACK_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+# How to spell this command in printed help, so copy-paste works either way.
+SELF="${DFTRACER_STACK_CMD:-$0}"
+
+# ── configuration (override by exporting before invoking) ──────────────────
+MCP_PORT="${MCP_PORT:-5000}"
+COLLECTOR_PORT="${COLLECTOR_PORT:-4318}"
+MLFLOW_PORT="${MLFLOW_PORT:-5001}"
+MCP_SERVICE="${MCP_SERVICE:-both}"
+HOST="${DFTRACER_STACK_HOST:-127.0.0.1}"
+
+WORKSPACES="${DFTRACER_WORKSPACES:-$REPO_ROOT/workspaces}"
+MLFLOW_DIR="$WORKSPACES/_mlflow"
+MLFLOW_DB="$MLFLOW_DIR/mlflow.db"
+MLFLOW_ARTIFACTS="$MLFLOW_DIR/artifacts"
+MLFLOW_URL="http://$HOST:$MLFLOW_PORT"
+EXPERIMENT="${MLFLOW_EXPERIMENT_NAME:-dftracer-agents}"
+
+# All daemon bookkeeping lives under the workspaces root — never /tmp, never
+# outside the project. Same rule the agents follow.
+RUN_DIR="$WORKSPACES/_stack"
+LOG_DIR="$RUN_DIR/logs"
+
+# ── the active environment ─────────────────────────────────────────────────
+# dftracer-agents is always installed into an environment — a Python venv or a
+# conda env — and both put their `bin/` on PATH when activated. So BIN is
+# *discovered*, never guessed from the repo layout: a repo-relative `venv/`
+# guess silently launches the wrong interpreter when the user has a conda env
+# active, or a second venv, and the failure surfaces much later as a missing
+# module inside a daemon log.
+#
+# Order of trust:
+#   1. DFTRACER_STACK_BIN  — the console script's own sys.executable dir. This is
+#      by construction the environment dftracer_agents is installed in.
+#   2. VIRTUAL_ENV / CONDA_PREFIX — an explicitly activated environment.
+#   3. Whatever `python3` PATH resolves to.
+if [[ -n "${DFTRACER_STACK_BIN:-}" && -x "$DFTRACER_STACK_BIN/python" ]]; then
+  BIN="$DFTRACER_STACK_BIN"
+elif [[ -n "${VIRTUAL_ENV:-}" && -x "$VIRTUAL_ENV/bin/python" ]]; then
+  BIN="$VIRTUAL_ENV/bin"
+elif [[ -n "${CONDA_PREFIX:-}" && -x "$CONDA_PREFIX/bin/python" ]]; then
+  BIN="$CONDA_PREFIX/bin"
+else
+  _py="$(command -v python3 || command -v python || true)"
+  [[ -n "$_py" ]] || { echo "[stack] no python on PATH" >&2; exit 1; }
+  BIN="$(cd "$(dirname "$_py")" && pwd)"
+fi
+PY="$BIN/python"
+[[ -x "$PY" ]] || PY="$BIN/python3"
+
+# The environment must be the one dftracer-agents is installed into. Checking a
+# console script beats importing the package: `pip install -e .` can leave the
+# source importable via cwd while the entry points live somewhere else entirely.
+if [[ ! -x "$BIN/dftracer-mcp-server" ]]; then
+  echo "[stack] dftracer-agents is not installed in the active environment ($BIN)." >&2
+  echo "[stack]   Activate your venv or conda env, then:  pip install -e '.[profile]'" >&2
+  exit 1
+fi
+
+mkdir -p "$RUN_DIR" "$LOG_DIR" "$MLFLOW_DIR" "$MLFLOW_ARTIFACTS"
+
+# ── process helpers ────────────────────────────────────────────────────────
+pid_file() { echo "$RUN_DIR/$1.pid"; }
+sig_file() { echo "$RUN_DIR/$1.sig"; }
+log_file() { echo "$LOG_DIR/$1.log"; }
+port_of()  { case "$1" in mlflow) echo "$MLFLOW_PORT";; collector) echo "$COLLECTOR_PORT";; mcp) echo "$MCP_PORT";; esac; }
+
+pid_of() { cat "$(pid_file "$1")" 2>/dev/null || true; }
+
+is_up() {
+  local pid; pid="$(pid_of "$1")"
+  [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+}
+
+# Is anything listening? Python, not `nc`/`lsof`, because neither is installed
+# uniformly across the compute nodes this runs on.
+port_open() {
+  "$PY" - "$HOST" "$1" <<'EOF' 2>/dev/null
+import socket, sys
+s = socket.socket(); s.settimeout(0.3)
+sys.exit(0 if s.connect_ex((sys.argv[1], int(sys.argv[2]))) == 0 else 1)
+EOF
+}
+
+wait_port() {
+  local port="$1" tries="${2:-40}"
+  for _ in $(seq "$tries"); do
+    port_open "$port" && return 0
+    sleep 0.5
+  done
+  return 1
+}
+
+# A service is healthy when its pid is alive AND it is answering its port. A pid
+# that survived while its listener died (a wedged mlflow, a crashed reloader
+# child) is exactly the case a naive `is_up` check would call "already running".
+is_healthy() {
+  is_up "$1" && port_open "$(port_of "$1")"
+}
+
+# Signature of what the service was launched with. `start` restarts a service iff
+# this changes, so editing a port or a flag refreshes only what it affects.
+signature() { printf '%s' "$*" | "$PY" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:16])'; }
+
+sig_matches() {
+  [[ -f "$(sig_file "$1")" ]] && [[ "$(cat "$(sig_file "$1")")" == "$2" ]]
+}
+
+# Each daemon runs in its OWN process group, and signals go to the group.
+#
+# `dftracer-mcp-server --reload` is a supervisor: it forks a child that actually
+# binds the port. Signalling only the pid we recorded leaves that child alive,
+# orphaned, still holding the port — and every later `start` then sees a port it
+# does not own and refuses to run. `setsid` makes the daemon a group leader
+# (pgid == pid), so `kill -- -$pid` reaches the supervisor and its children.
+#
+# The inner `bash -c` writes its own pid before exec'ing, because `setsid` may
+# fork, in which case `$!` is the wrapper rather than the daemon.
+_spawn() {
+  local name="$1" sig="$2"; shift 2
+  local pf; pf="$(pid_file "$name")"
+  echo "[stack] starting $name…"
+  rm -f "$pf"
+  # stdin from /dev/null, always. The MCP server's startup asks "continue with the
+  # previous configured system? [Y/n]" on a terminal; a backgrounded daemon that
+  # inherits the tty would silently compete with the user's shell for that input.
+  # On EOF it reuses the saved configuration, which is what a daemon start means.
+  if command -v setsid >/dev/null 2>&1; then
+    setsid bash -c 'echo $$ >"$1"; shift; exec "$@"' _ "$pf" "$@" \
+      </dev/null >>"$(log_file "$name")" 2>&1 &
+  else
+    ( exec "$@" </dev/null >>"$(log_file "$name")" 2>&1 ) &
+    echo $! >"$pf"
+  fi
+  for _ in $(seq 20); do [[ -s "$pf" ]] && break; sleep 0.1; done
+  echo "$sig" >"$(sig_file "$name")"
+}
+
+# Signal a whole process group, then the bare pid as a fallback for the
+# no-setsid path where the daemon shares our group (never signal our own group).
+_kill_tree() {
+  local pid="$1" sig="$2"
+  kill "-$sig" -- "-$pid" 2>/dev/null || kill "-$sig" "$pid" 2>/dev/null || true
+}
+
+stop_daemon() {
+  local name="$1" pid
+  pid="$(pid_of "$name")"
+  if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+    _reap_orphan "$name"
+    rm -f "$(pid_file "$name")" "$(sig_file "$name")"
+    [[ "${2:-}" == "quiet" ]] || echo "[stack] $name not running"
+    return 0
+  fi
+  echo "[stack] stopping $name (pid $pid)…"
+  # SIGTERM, not SIGKILL: the collector's handler does a final flush and closes
+  # its MLflow run. Killing it outright loses the last step's cost.
+  _kill_tree "$pid" TERM
+  for _ in $(seq 40); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.25
+  done
+  _kill_tree "$pid" KILL
+  rm -f "$(pid_file "$name")" "$(sig_file "$name")"
+}
+
+# A dead supervisor can leave a child still bound to the port. If that child is
+# in the process group we created, it is ours to clean up — not a foreign process.
+_reap_orphan() {
+  local name="$1" pid port
+  pid="$(pid_of "$name")"; port="$(port_of "$name")"
+  [[ -n "$pid" ]] || return 0
+  port_open "$port" || return 0
+  echo "[stack] $name left an orphan holding :$port — reaping process group $pid"
+  _kill_tree "$pid" TERM; sleep 1
+  _kill_tree "$pid" KILL; sleep 0.5
+}
+
+# The idempotent core: converge one service onto the requested configuration.
+ensure_daemon() {
+  local name="$1"; shift
+  local sig; sig="$(signature "$*")"
+
+  if is_healthy "$name" && sig_matches "$name" "$sig"; then
+    echo "[stack] $name already running unchanged (pid $(pid_of "$name"))"
+    return 0
+  fi
+
+  if is_up "$name"; then
+    if sig_matches "$name" "$sig"; then
+      echo "[stack] $name is not answering :$(port_of "$name") — restarting"
+    else
+      echo "[stack] $name configuration changed — restarting"
+    fi
+    stop_daemon "$name" quiet
+  else
+    # Dead pid. If the port is still open it is either our own orphaned child
+    # (reapable) or someone else's process (never ours to kill).
+    _reap_orphan "$name"
+    rm -f "$(pid_file "$name")" "$(sig_file "$name")"
+    if port_open "$(port_of "$name")"; then
+      echo "[stack] REFUSING to start $name: :$(port_of "$name") is held by a process" >&2
+      echo "[stack]   this stack did not start. Free it, or set a different port:" >&2
+      echo "[stack]   $(echo "$name" | tr '[:lower:]' '[:upper:]')_PORT=... $SELF start" >&2
+      return 1
+    fi
+  fi
+
+  _spawn "$name" "$sig" "$@"
+  if wait_port "$(port_of "$name")"; then
+    return 0
+  fi
+  echo "[stack] $name did not open :$(port_of "$name") — see $(log_file "$name")" >&2
+  return 1
+}
+
+# ── env for Claude Code ────────────────────────────────────────────────────
+# `http/json` is mandatory, not a preference: the collector is a stdlib HTTP
+# server and cannot decode protobuf, which is what `grpc` and `http/protobuf`
+# would send it. The 5 s log interval bounds how much of a finished step's cost
+# is still buffered inside Claude Code when `profile_report` runs.
+print_env() {
+  cat <<EOF
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export OTEL_LOGS_EXPORTER=otlp
+export OTEL_METRICS_EXPORTER=otlp
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://$HOST:$COLLECTOR_PORT
+export OTEL_LOGS_EXPORT_INTERVAL=5000
+export OTEL_METRIC_EXPORT_INTERVAL=15000
+export DFTRACER_PROFILE_ENDPOINT=http://$HOST:$COLLECTOR_PORT
+export DFTRACER_WORKSPACES=$WORKSPACES
+export MLFLOW_TRACKING_URI=$MLFLOW_URL
+export MLFLOW_EXPERIMENT_NAME=$EXPERIMENT
+EOF
+}
+
+# ── commands ───────────────────────────────────────────────────────────────
+cmd_start() {
+  local failed=0
+
+  # 1. MLflow. SQLite backend, because nested runs and the UI both need a real
+  #    tracking server; a bare file store cannot serve the UI in-process.
+  if [[ ! -x "$BIN/mlflow" ]]; then
+    echo "[stack] mlflow not installed in $BIN — run: pip install -e '.[profile]'" >&2
+    exit 1
+  fi
+  ensure_daemon mlflow "${BIN}/mlflow" server \
+    --backend-store-uri "sqlite:///$MLFLOW_DB" \
+    --default-artifact-root "$MLFLOW_ARTIFACTS" \
+    --host "$HOST" --port "$MLFLOW_PORT" || failed=1
+  is_healthy mlflow && echo "[stack]   mlflow UI  → $MLFLOW_URL"
+
+  # 2. Collector. After MLflow, so its client connects on the first try. It
+  #    degrades to file-only when MLflow is down, but there is no reason to.
+  MLFLOW_TRACKING_URI="$MLFLOW_URL" DFTRACER_WORKSPACES="$WORKSPACES" \
+  ensure_daemon collector "$BIN/dftracer-profile-collector" \
+    --host "$HOST" --port "$COLLECTOR_PORT" \
+    --mlflow-uri "$MLFLOW_URL" \
+    --experiment "$EXPERIMENT" \
+    --mlflow-ui "$MLFLOW_URL" || failed=1
+  is_healthy collector && echo "[stack]   collector  → http://$HOST:$COLLECTOR_PORT/v1/logs"
+
+  # 3. MCP server (HTTP, auto-reloading on source edits).
+  #    Its startup wants an interactive harness/model choice the first time. A
+  #    daemon cannot answer that, so require it to have been made once already.
+  if ! "$PY" -c "
+import sys
+from dftracer_agents.harness_models import has_setup_state
+sys.exit(0 if has_setup_state() else 1)" 2>/dev/null; then
+    echo "[stack] no harness configuration yet — run this once, interactively:" >&2
+    echo "[stack]     dftracer-configure-harness" >&2
+    echo "[stack]   then re-run: $SELF start" >&2
+    return 1
+  fi
+
+  DFTRACER_WORKSPACES="$WORKSPACES" \
+  DFTRACER_PROFILE_ENDPOINT="http://$HOST:$COLLECTOR_PORT" \
+  ensure_daemon mcp "$BIN/dftracer-mcp-server" run \
+    --service "$MCP_SERVICE" --transport http \
+    --host "$HOST" --port "$MCP_PORT" --reload || failed=1
+  is_healthy mcp && echo "[stack]   mcp server → http://$HOST:$MCP_PORT/mcp"
+
+  # 3b. Point the harnesses at the server we just started, so none of them spawn
+  #     a private stdio copy. Idempotent; prints "already up to date" on re-runs.
+  cmd_client
+
+  # 4. Warm the knowledge graph. Not a daemon, and a no-op when the graph's
+  #    content hash is unchanged — so this is free on a re-run. A cold first
+  #    `graph_query` would otherwise pay the ~4 s build inside an agent turn.
+  echo "[stack] warming knowledge graph…"
+  DFTRACER_WORKSPACES="$WORKSPACES" "$PY" - <<'EOF' >>"$(log_file graph)" 2>&1 ||
+    echo "[stack]   graph warm failed (non-fatal) — see $LOG_DIR/graph.log" >&2
+from dftracer_agents.mcp_tools.tools.session.code_graph import _ensure_knowledge_graph
+print(_ensure_knowledge_graph())
+EOF
+
+  echo
+  if (( failed )); then
+    echo "[stack] one or more services failed to come up — see $LOG_DIR/" >&2
+  fi
+  echo "[stack] Launch Claude Code with telemetry wired in:"
+  echo
+  echo "    eval \"\$($SELF env)\" && claude"
+  echo
+  return $failed
+}
+
+cmd_stop() {
+  # Collector first: its SIGTERM handler does a final flush and closes the MLflow
+  # run, and that write needs the MLflow server still listening.
+  stop_daemon collector
+  stop_daemon mcp
+  stop_daemon mlflow
+}
+
+# Reconcile the pid files against /proc. Pid files say what we *believe* is
+# running; only /proc says what is. See dftracer_agents.profiling.procscan.
+_procscan() {
+  "$PY" -m dftracer_agents.profiling.procscan "$@" \
+    --run-dir "$RUN_DIR" --workspaces "$WORKSPACES" \
+    --port "mlflow=$MLFLOW_PORT" \
+    --port "collector=$COLLECTOR_PORT" \
+    --port "mcp=$MCP_PORT"
+}
+
+cmd_status() {
+  printf '%-10s %-10s %s\n' SERVICE STATE ENDPOINT
+  for svc in mlflow collector mcp; do
+    case "$svc" in
+      mlflow)    url="$MLFLOW_URL" ;;
+      collector) url="http://$HOST:$COLLECTOR_PORT" ;;
+      mcp)       url="http://$HOST:$MCP_PORT/mcp" ;;
+    esac
+    if is_healthy "$svc"; then
+      printf '%-10s %-10s %s (pid %s)\n' "$svc" up "$url" "$(pid_of "$svc")"
+    elif is_up "$svc"; then
+      printf '%-10s %-10s %s (pid %s, port closed)\n' "$svc" unhealthy "$url" "$(pid_of "$svc")"
+    elif port_open "$(port_of "$svc")"; then
+      printf '%-10s %-10s %s\n' "$svc" foreign "$url"
+    else
+      printf '%-10s %-10s %s\n' "$svc" down "$url"
+    fi
+  done
+
+  # Everything the pid files do NOT account for: dead pid files, orphaned reload
+  # children still holding a port, hand-started daemons. procscan labels which
+  # of those are ours to clean and which merely exist.
+  local issues
+  issues="$(_procscan status 2>/dev/null || true)"
+  if [[ -n "$issues" ]]; then
+    echo
+    echo "$issues" | sed 's/^/[stack] /'
+  fi
+
+  if is_healthy collector; then
+    echo
+    echo "[stack] collector:"
+    "$PY" -c "
+import json, urllib.request
+d = json.load(urllib.request.urlopen('http://$HOST:$COLLECTOR_PORT/control/status', timeout=3))
+t, a = d['totals'], d['attempts']
+print(f\"  run_id      {d['run_id'] or '(unbound)'}\")
+print(f\"  events      {d['events_seen']}\")
+print(f\"  cost        \${t['cost_usd']:.4f}\")
+print(f\"  tokens      {t['tokens_total']:,}\")
+print(f\"  steps       {a['steps']} ({a['retries']} retries, {a['failed_attempts']} failed attempts)\")
+print(f\"  performance {d['performance_dir']}\")
+" 2>/dev/null || echo "  (control API not answering)"
+  fi
+}
+
+# Point every harness at the server the stack manages.
+#
+# Left to their defaults, Claude Code / Copilot / OpenCode each SPAWN their own
+# private stdio MCP server from a `command` entry, and the managed one on
+# :$MCP_PORT sits idle. Rewriting those entries to a `url` is what makes
+# "the stack runs the server, the harness connects" actually true.
+cmd_client() {
+  local dry=()
+  [[ "${1:-}" == "--dry-run" ]] && dry=(--dry-run)
+  echo "[stack] pointing harness configs at the managed MCP server…"
+  DFTRACER_STACK_ROOT="$REPO_ROOT" "$PY" - "$HOST" "$MCP_PORT" "$REPO_ROOT" "${dry[@]}" <<'EOF'
+import sys
+from pathlib import Path
+from dftracer_agents.mcp_setup import configure_project_clients
+host, port, root = sys.argv[1], int(sys.argv[2]), Path(sys.argv[3])
+configure_project_clients(root, host, port, "/mcp", dry_run="--dry-run" in sys.argv)
+EOF
+}
+
+cmd_clean() {
+  # Default scope: our own mess — stale pid files and orphaned children. A daemon
+  # this stack did not start is reported but left alone unless --untracked says
+  # otherwise, because it may be a colleague's server on a shared node.
+  local extra=()
+  [[ "${1:-}" == "--untracked" || "${1:-}" == "--all" ]] && extra=(--untracked)
+  echo "[stack] cleaning:"
+  _procscan clean "${extra[@]}"
+}
+
+cmd_logs() {
+  local name="${1:-}"
+  if [[ -z "$name" || ! -f "$(log_file "$name")" ]]; then
+    echo "usage: $SELF logs {mlflow|collector|mcp|graph}" >&2
+    exit 2
+  fi
+  tail -f "$(log_file "$name")"
+}
+
+case "${1:-start}" in
+  start)   cmd_start ;;
+  stop)    cmd_stop ;;
+  restart) cmd_stop; cmd_start ;;
+  status)  cmd_status ;;
+  clean)   shift; cmd_clean "$@" ;;
+  client)  shift; cmd_client "$@" ;;
+  env)     print_env ;;
+  logs)    shift; cmd_logs "$@" ;;
+  *) echo "usage: $SELF {start|stop|restart|status|clean [--untracked]|client|env|logs NAME}" >&2
+     exit 2 ;;
+esac

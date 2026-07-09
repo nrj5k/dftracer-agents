@@ -77,6 +77,10 @@ def ensure_workspace_setup(target_root: Optional[Path] = None, force: bool = Fal
         (".claude/settings.json", ".claude/settings.json"),
         (".opencode/opencode.jsonc", ".opencode/opencode.jsonc"),
         (".vscode/mcp.json", ".vscode/mcp.json"),
+        # Claude Code's project-level MCP config. Like the other two, it points at
+        # the HTTP server `dftracer_agents_stack` manages, rather than telling the
+        # harness to spawn a private stdio copy that bypasses it.
+        (".mcp.json", ".mcp.json"),
     ):
         dest = root / relative
         source = workspace / source_relative

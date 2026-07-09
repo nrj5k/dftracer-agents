@@ -46,6 +46,7 @@ from ..session.lessons_sync import register_lessons_sync_tools
 from ..session.final_report import register_final_report_tools
 from ..session.python_cost import register_python_cost_tools
 from ..session.code_graph import register_graph_tools
+from ..session.profiling import register_profiling_tools
 from ..session.ml_pipeline import register_ml_pipeline_tools
 from ..session.annotation_validate import register_validation_tools
 from ..session.workspace import _ws, _load_state, _save_state, _ok, _err, _run
@@ -704,6 +705,7 @@ class DFTracerSessionService(MCPService):
         register_python_tools(self.clang_subservice)
         register_python_cost_tools(self.clang_subservice)
         register_graph_tools(self.session_subservice)
+        register_profiling_tools(self.session_subservice)
         register_ml_pipeline_tools(self.clang_subservice)
         register_validation_tools(self.clang_subservice)
         register_ai_tools(self.clang_subservice)

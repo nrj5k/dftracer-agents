@@ -30,11 +30,16 @@ dev = [
     "black>=24.0.0",
     "flake8>=7.0.0",
 ]
+# Pipeline profiling: MLflow tracking + UI for per-step AI cost, tokens, timing
+# and retries. The OTLP collector itself is stdlib-only, so a session's
+# performance/ directory is still written without this extra installed.
 profile = [
-    "mlflow",
+    "mlflow>=2.9",
 ]
 
 [project.scripts]
+dftracer_agents_stack   = "dftracer_agents.stack:main"
+dftracer-profile-collector = "dftracer_agents.profiling.collector:main"
 dftracer-mcp-server     = "dftracer_agents.mcp_server:main"
 dftracer-configure-mcp  = "dftracer_agents.mcp_setup:main"
 dftracer-install-skills = "dftracer_agents.skills:main"
@@ -55,5 +60,11 @@ where = ["src"]
     ".agents/workspace/.claude/*.json",
     ".agents/workspace/.opencode/*.jsonc",
     ".agents/workspace/.vscode/*.json",
+    # Claude Code's project MCP config. A leading-dot FILE at the workspace root
+    # is matched by no glob above, so it must be named outright.
+    ".agents/workspace/.mcp.json",
     "*.sh",
+    # The stack launcher is bash but carries no extension: it is invoked as a
+    # command, not sourced as a script. Listed explicitly since "*.sh" misses it.
+    "dftracer_agents_stack",
 ]

@@ -1,13 +1,1 @@
-{
-  "mcpServers": {
-    "dftracer": {
-      "command": "/usr/WS2/haridev/dftracer-agents/.venv/bin/dftracer-mcp-server",
-      "args": [
-        "--skip-setup",
-				"run",
-        "--transport",
-        "stdio"
-			]
-    }
-  }
-}
+/usr/WS2/haridev/dftracer-agents/src/dftracer_agents/.agents/workspace/.mcp.json
