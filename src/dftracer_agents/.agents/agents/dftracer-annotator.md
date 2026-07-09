@@ -12,7 +12,7 @@ model_level: level_2
 effort: low
 isolation: worktree
 tools: Read, Bash, mcp__dftracer__session_identify_smoke_test_files, mcp__dftracer__clang_annotate_project, mcp__dftracer__clang_annotate_file, mcp__dftracer__clang_extract_functions, mcp__dftracer__clang_estimate_function_cost, mcp__dftracer__clang_syntax_check, mcp__dftracer__clang_lint_annotations, mcp__dftracer__clang_insert_line, mcp__dftracer__clang_write_annotated_file, mcp__dftracer__clang_add_braces, mcp__dftracer__session_annotation_report, mcp__dftracer__session_get_run_paths, mcp__dftracer__skill_load, mcp__dftracer__session_read_file, Edit, mcp__dftracer__session_capture_run_record, mcp__dftracer__session_snapshot_run_source, mcp__dftracer__annotate_add_app_metadata, mcp__dftracer__validate_annotations
-skills: dftracer-annotate-project, dftracer-annotate-general, dftracer-annotation-lessons, dftracer-cheatsheet
+skills: dftracer-context-economy, dftracer-annotate-project, dftracer-annotate-general, dftracer-annotation-lessons, dftracer-cheatsheet
 ---
 
 ## Load your plan section first (do this before anything else)
@@ -208,3 +208,38 @@ is the highest-risk path in the whole pipeline, not a reason to skip the check.
 
 **Do not mark the annotation stage complete until every language validates with
 `passed: true`.** Report unresolved findings verbatim and escalate.
+
+
+## Context economy — locate, don't read (MANDATORY)
+
+The dominant token cost is **input**: source you read to orient yourself. This
+repo ships `graphify` (dep `graphifyy`), a tree-sitter knowledge graph over
+C/C++/Fortran/Python. Query it instead of reading files.
+
+```
+graph_query(question="<what you are looking for>", budget=1200)  # -> NODE <sym> [src=file loc=Lnn]
+graph_query(mode="explain",  symbol="<symbol>")                  # definition + callers/callees
+graph_query(mode="affected", symbol="<symbol>", depth=2)         # blast radius of a change
+graph_ensure(run_id=RUN_ID)                                      # build the target app's graph
+```
+
+Measured here: locating via the graph cost **986 tokens** where reading the three
+relevant files cost **29,456** (3.3%). `explain`/`affected` cost ~210 each.
+
+**Rules**
+
+1. **Locate before you read.** Do not `grep`/`Read` a tree to find where something
+   lives. Ask the graph, then open only the `file:line` it names.
+2. **Before editing any shared function, run `graphify affected <fn> --depth 2`**
+   and state the blast radius. A "local" fix that silently breaks a caller is the
+   failure this prevents.
+3. **Freshness is automatic** — the graph rebuilds when skills/agents/code change
+   (~5 s) and costs ~0.1 s to validate otherwise. Force with `graph_ensure(force=True)`.
+4. **Budget queries** (`--budget 1200`); BFS pulls in generic nodes (`_ok`, `json`)
+   — ignore them rather than widening.
+5. **Use `graph_query`/`graph_ensure`** (two thin tools that guarantee freshness),
+   never graphify's own MCP server — its ~25 schemas would sit in context
+   permanently on top of this project's 137 dftracer tools. The `graphify` CLI is
+   a fallback, but it does not check freshness.
+
+Load [[dftracer-context-economy]] for the full rationale and limits.

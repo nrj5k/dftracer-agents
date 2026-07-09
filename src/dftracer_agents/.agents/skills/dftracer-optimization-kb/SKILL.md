@@ -31,3 +31,23 @@ Recorded: 1 system, 1 software, 2 workload entries.
    `session:<run_id>` marks a result measured in-house, never external evidence.
 3. Apply optimizations **one at a time** and measure each, or the attribution
    is worthless.
+
+
+---
+
+## Context economy: query the graph, don't read the tree
+
+Before any step that would open source files, use the `graphify` knowledge graph
+(project dependency `graphifyy`, CLI `graphify`):
+
+```bash
+graphify query "<target>" --budget 1200   # locate: NODE <sym> [src=file loc=Lnn]
+graphify explain <symbol>                 # definition + callers/callees
+graphify affected <symbol> --depth 2      # blast radius before you change it
+graphify update .                         # refresh after edits (~4s, no LLM)
+```
+
+Measured on this repo: locating cost 986 tokens vs 29,456 to read the three
+relevant files (3.3%). Run `affected` before editing any shared function and
+state the blast radius. Use the CLI, never `graphify-mcp` — its extra tool
+schemas would sit in context permanently. See [[dftracer-context-economy]].

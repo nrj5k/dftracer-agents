@@ -6,7 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "dftracer-agents"
 version = "0.1.0"
 description = "DFTracer MCP Services for Dataflow Analysis"
-requires-python = ">=3.9"
+# graphifyy (knowledge graph) requires >=3.10; the pipeline depends on it.
+requires-python = ">=3.10"
 dependencies = [
     "fastmcp>=0.1.0",
     "dftracer-utils @ git+https://github.com/llnl/dftracer-utils.git@develop",
@@ -15,6 +16,12 @@ dependencies = [
     "libclang>=18.1.0",
     "matplotlib",
     "requests",
+    # Codebase knowledge graph (tree-sitter AST extraction for C/C++/Fortran/
+    # Python — every language this pipeline annotates). Agents query the graph to
+    # locate code instead of reading whole files into context.
+    # PyPI name is `graphifyy`; the CLI it ships is `graphify`.
+    # https://github.com/safishamsi/graphify
+    "graphifyy>=0.9.11",
 ]
 
 [project.optional-dependencies]

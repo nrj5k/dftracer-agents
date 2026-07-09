@@ -202,3 +202,38 @@ validate_annotations(run_id=<run_id>, language="<c|cpp|python>")
 If it fails, STOP and report — do not build. Building an unvalidated tree wastes
 a compile cycle and, worse, can produce a binary that runs but emits a trace with
 no I/O in it because the checkpoint writer was never instrumented.
+
+
+## Context economy — locate, don't read (MANDATORY)
+
+The dominant token cost is **input**: source you read to orient yourself. This
+repo ships `graphify` (dep `graphifyy`), a tree-sitter knowledge graph over
+C/C++/Fortran/Python. Query it instead of reading files.
+
+```
+graph_query(question="<what you are looking for>", budget=1200)  # -> NODE <sym> [src=file loc=Lnn]
+graph_query(mode="explain",  symbol="<symbol>")                  # definition + callers/callees
+graph_query(mode="affected", symbol="<symbol>", depth=2)         # blast radius of a change
+graph_ensure(run_id=RUN_ID)                                      # build the target app's graph
+```
+
+Measured here: locating via the graph cost **986 tokens** where reading the three
+relevant files cost **29,456** (3.3%). `explain`/`affected` cost ~210 each.
+
+**Rules**
+
+1. **Locate before you read.** Do not `grep`/`Read` a tree to find where something
+   lives. Ask the graph, then open only the `file:line` it names.
+2. **Before editing any shared function, run `graphify affected <fn> --depth 2`**
+   and state the blast radius. A "local" fix that silently breaks a caller is the
+   failure this prevents.
+3. **Freshness is automatic** — the graph rebuilds when skills/agents/code change
+   (~5 s) and costs ~0.1 s to validate otherwise. Force with `graph_ensure(force=True)`.
+4. **Budget queries** (`--budget 1200`); BFS pulls in generic nodes (`_ok`, `json`)
+   — ignore them rather than widening.
+5. **Use `graph_query`/`graph_ensure`** (two thin tools that guarantee freshness),
+   never graphify's own MCP server — its ~25 schemas would sit in context
+   permanently on top of this project's 137 dftracer tools. The `graphify` CLI is
+   a fallback, but it does not check freshness.
+
+Load [[dftracer-context-economy]] for the full rationale and limits.

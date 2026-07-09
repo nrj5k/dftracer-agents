@@ -222,3 +222,23 @@ to log files, so a fully serialized run still shows all N ranks "writing"
 (observed: 384/384 pids issued writes while ONE rank held 91% of the bytes).
 Compare the top-1 rank's share of total bytes and the number of ranks writing
 >10 MB. See [[workload-flashx]] for the Flash-X serial-HDF5 case.
+
+
+---
+
+## Context economy: query the graph, don't read the tree
+
+Before any step that would open source files, use the `graphify` knowledge graph
+(project dependency `graphifyy`, CLI `graphify`):
+
+```bash
+graphify query "<target>" --budget 1200   # locate: NODE <sym> [src=file loc=Lnn]
+graphify explain <symbol>                 # definition + callers/callees
+graphify affected <symbol> --depth 2      # blast radius before you change it
+graphify update .                         # refresh after edits (~4s, no LLM)
+```
+
+Measured on this repo: locating cost 986 tokens vs 29,456 to read the three
+relevant files (3.3%). Run `affected` before editing any shared function and
+state the blast radius. Use the CLI, never `graphify-mcp` — its extra tool
+schemas would sit in context permanently. See [[dftracer-context-economy]].
