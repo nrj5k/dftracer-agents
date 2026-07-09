@@ -190,3 +190,41 @@ Format per entry:
 
 <!-- New failed-config entries are appended below by the optimization loop (Step 8d-iii-FAIL) -->
 
+---
+
+## Match Lustre stripe size to the collective buffer (2026-07-08, measured)
+
+Parallel HDF5 writes reach Lustre through ROMIO collective buffering. The size of
+each aggregated write is bounded by the **Lustre stripe size**, so widening the
+collective buffer alone does nothing if the stripe is small.
+
+Measured (Flash-X, 384 ranks, 18 checkpoints, ~6.7 GB):
+
+- 8 stripes × 1 MB → aggregated writes were **1.05 MB** each, 2 aggregators
+- 16 stripes × 4 MB (+ more aggregators) → aggregated writes **3.76 MB** each,
+  16 aggregators, critical-path write time 5.53 s → **1.45 s**
+
+**Rules:**
+
+1. `lfs setstripe` only affects **newly created files**. Stripe the output
+   DIRECTORY *before* the application creates its first checkpoint; you cannot
+   re-stripe existing files. Always write each optimization iteration to a fresh
+   directory.
+   ```bash
+   lfs setstripe -c 16 -S 4M /p/lustre5/$USER/<app>/<run>
+   lfs getstripe -d /p/lustre5/$USER/<app>/<run>   # verify
+   ```
+2. Keep `striping_unit` (MPI-IO hint) equal to the actual Lustre stripe size, and
+   set `cb_buffer_size` to a multiple of it.
+3. Stripe count should be >= the aggregator count; see [[software-mpi]] for why
+   `cb_nodes` alone will not raise aggregators on Cray MPICH.
+
+## Verify collective mode is really on — don't trust the app's flag
+
+An app-level "use collective HDF5" switch may never reach
+`H5Pset_dxpl_mpio(..., H5FD_MPIO_COLLECTIVE)`. Confirm from the trace instead:
+collective transfers show up as a small number of ranks issuing large (>= stripe
+size) `pwrite` calls. If ~one rank holds nearly all write bytes, the transfer is
+effectively serial regardless of the flag. See [[workload-flashx]] for a case
+where the serial HDF5 IO unit hardcodes the mode to independent in C.
+

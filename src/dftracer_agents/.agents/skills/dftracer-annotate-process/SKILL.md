@@ -243,3 +243,35 @@ would have caught the new pattern. If not, add a new check command.
 ```
 
 **The session is not complete until Steps 1–4 are done.**
+
+
+---
+
+## Mandatory final validation gate (ALWAYS — even after manual fixes)
+
+Annotation is not finished when files are written; it is finished when validation
+passes. Run this LAST on every path — MCP fast path, prose backup path, or a
+hand-edit after a tool failed:
+
+```
+validate_annotations(run_id=RUN_ID, language="python")   # or "c" / "cpp"
+```
+
+then dispatch the matching validator agent (`dftracer-validate-python` /
+`-c` / `-cpp`).
+
+`ml_annotate_project` already runs this internally (`validate=True`) and returns
+`validation.passed`. **That does not excuse the manual path.** The dangerous
+sequence is: MCP tool errors → agent hand-edits the file → nobody re-checks. A
+hand edit is the least-trusted change in the pipeline, and a tool that errored
+may have left a file half-written.
+
+Do not proceed to the build, and do not report success, until validation returns
+`passed: true` with zero findings and zero project issues. Otherwise report the
+findings verbatim (`file:line`, function, the uninstrumented critical call) and
+escalate.
+
+It enforces: every I/O / checkpoint / collective-comm function instrumented;
+init AND finalize present (a missing finalize truncates the trace); app-parameter
+metadata emitted; annotated functions pass the cost gate — with `dft_ai.*`
+AI-API regions exempt; and every file still parses.

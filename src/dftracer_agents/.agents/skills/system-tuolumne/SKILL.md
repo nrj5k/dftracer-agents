@@ -580,6 +580,20 @@ fi
   session HDF5 `lib/` and dftracer `lib64/`) to `LD_LIBRARY_PATH`. Do not rely on
   ldd-at-build-time being sufficient at run time.
 
+## Lustre striping for I/O optimization (L3, 2026-07-08 measured)
+
+- Stripe the OUTPUT DIRECTORY before the app creates its first file —
+  `lfs setstripe` does not affect already-created files:
+  `lfs setstripe -c 16 -S 4M /p/lustre5/$USER/<app>/<run>` then verify with
+  `lfs getstripe -d <dir>`. Give every optimization iteration a fresh directory.
+- Cray MPICH ignores `cb_nodes` on its own; pair it with
+  `CRAY_CB_NODES_MULTIPLIER` to actually raise the MPI-IO aggregator count, and
+  keep `striping_unit` equal to the real stripe size. Verified: aggregators
+  2 -> 16, critical-path write time 5.53 s -> 1.45 s. See [[software-mpi]] and
+  [[software-hdf5]].
+- Set `MPICH_MPIIO_HINTS_DISPLAY=1` to echo the hints, but do NOT trust it —
+  it prints the *requested* values, not what the runtime used.
+
 ## Permissions
 
 This skill uses:

@@ -1,0 +1,26 @@
+diff -ruN --no-dereference /usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/record/meta.json /usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_201403/opt1/record/meta.json
+--- /usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/record/meta.json	2026-07-08 19:59:59.859025000 -0700
++++ /usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_201403/opt1/record/meta.json	2026-07-08 19:59:59.878602000 -0700
+@@ -1,9 +1,9 @@
+ {
+-  "run_name": "annotated",
+-  "prev_run_name": null,
+-  "captured_at": "2026-07-09T02:59:59.858532+00:00",
++  "run_name": "opt1",
++  "prev_run_name": "annotated",
++  "captured_at": "2026-07-09T02:59:59.878479+00:00",
+   "source_path": "/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source",
+-  "notes": "baseline: serial HDF5 build (-auto), 384 ranks",
++  "notes": "L1: rebuild with +parallelIO (parallel HDF5 IO unit)",
+   "captured": {
+     "build_config": [
+       "setup_call",
+@@ -17,7 +17,7 @@
+       "run.sh"
+     ],
+     "logs": [
+-      "annotated_run.log"
++      "opt1_run.log"
+     ]
+   }
+ }

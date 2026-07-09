@@ -9,7 +9,7 @@ model: level_1
 model_level: level_1
 effort: low
 isolation: worktree
-tools: Read, Bash, mcp__dftracer__session_init_run, mcp__dftracer__session_run_with_dftracer, mcp__dftracer__session_split_traces, mcp__dftracer__split, mcp__dftracer__event_count, mcp__dftracer__session_get_run_paths, mcp__dftracer__skill_load, mcp__dftracer__session_read_file, Edit
+tools: Read, Bash, mcp__dftracer__session_init_run, mcp__dftracer__session_run_with_dftracer, mcp__dftracer__session_split_traces, mcp__dftracer__split, mcp__dftracer__event_count, mcp__dftracer__session_get_run_paths, mcp__dftracer__skill_load, mcp__dftracer__session_read_file, Edit, mcp__dftracer__session_capture_run_record, mcp__dftracer__session_snapshot_run_source
 skills: dftracer-preload-run, dftracer-trace-utils, dftracer-reference, flux-alloc
 ---
 
@@ -233,3 +233,42 @@ Capture learning aggressively, persist it safely:
    observation with the user, and only then is anything persisted. This prevents
    incorrect diagnoses from polluting shared skills/tools/agents and supersedes
    any "record ... immediately in the sibling lesson files" instruction above.
+
+
+## Logs go to `artifacts/` (MANDATORY)
+
+Every log you produce — build output, run stdout/stderr, saved Bash output,
+scratch diagnostics — is written under the session's `<WS>/artifacts/`
+directory. Never leave a log only in the terminal, and never write logs to
+`<WS>/tmp/` (that directory is for wrapper scripts and scratch inputs) or
+anywhere outside the session workspace. Name them `<step>_<what>.log` so the
+final report can collect them.
+
+
+## Capture the run record before you finish (MANDATORY)
+
+Optimization iterations overwrite build config, the parameter file, and the run
+wrapper **in place**, so that information is gone by the time the final report is
+assembled. At the END of your step, once the run has succeeded, call:
+
+```
+session_capture_run_record(
+    run_id=<run_id>,
+    run_name="<annotated|baseline|opt1|opt2|...>",
+    prev_run_name="<previous run, for the delta>",
+    source_path="<WS>/annotated/source",
+    run_script="<path to the wrapper you launched>",
+    run_log="<WS>/artifacts/<run>_run.log",
+    param_files="flash.par",        # or the app's parameter file(s)
+    notes="what this iteration changed and why",
+)
+```
+
+This snapshots `build_config/` (`setup_call`, `Units`, `Makefile.h` — where the
+decisive change lives on Make-based apps, invisible to a source diff), the
+parameter file(s), the run script, and writes
+`patches/from_<prev>.record.diff`. Also call `session_snapshot_run_source` when
+the run has its own source tree.
+
+Without this, `session_final_report` cannot reconstruct what your iteration did.
+Assemble the deliverable at the end of the pipeline with `session_final_report`.

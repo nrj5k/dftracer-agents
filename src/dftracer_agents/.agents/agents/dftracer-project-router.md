@@ -75,3 +75,13 @@ Capture learning aggressively, persist it safely:
    observation with the user, and only then is anything persisted. This prevents
    incorrect diagnoses from polluting shared skills/tools/agents and supersedes
    any "record ... immediately in the sibling lesson files" instruction above.
+
+
+## Logs go to `artifacts/` (MANDATORY)
+
+Every log you produce — build output, run stdout/stderr, saved Bash output,
+scratch diagnostics — is written under the session's `<WS>/artifacts/`
+directory. Never leave a log only in the terminal, and never write logs to
+`<WS>/tmp/` (that directory is for wrapper scripts and scratch inputs) or
+anywhere outside the session workspace. Name them `<step>_<what>.log` so the
+final report can collect them.

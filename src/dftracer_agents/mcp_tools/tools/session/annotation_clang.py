@@ -857,6 +857,14 @@ def register_clang_tools(mcp: FastMCP) -> None:
         ``ast`` module (for ``.py`` files) to count meaningful structural
         features — no regex or text scanning.
 
+        .. note::
+           The Python path here is weighted for HPC/POSIX/MPI code. On AI/ML
+           Python it under-scores framework I/O (``torch.load``, ``h5py.File``),
+           checkpointing (``state_dict``), ``DataLoader`` work, and
+           ``torch.distributed`` collectives — they all look like ordinary calls
+           worth 2 points. Use ``python_estimate_function_cost`` /
+           ``python_estimate_file_costs`` for ML workloads instead.
+
         **What is measured (from the AST):**
 
         * **I/O syscalls** — ``CallExpr`` nodes whose callee is in the POSIX /

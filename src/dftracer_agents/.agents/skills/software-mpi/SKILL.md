@@ -240,3 +240,46 @@ Format per entry:
 
 <!-- New failed-config entries are appended below by the optimization loop (Step 8d-iii-FAIL) -->
 
+---
+
+## Cray MPICH: `cb_nodes` is accepted but IGNORED (2026-07-08, measured)
+
+Setting `cb_nodes` via `MPICH_MPIIO_HINTS` (or a `ROMIO_HINTS` file) does **not**
+by itself increase the number of MPI-IO collective-buffering aggregators on Cray
+MPICH. `MPICH_MPIIO_HINTS_DISPLAY=1` will happily echo back `cb_nodes = 8`, while
+the runtime keeps using only **2** aggregators.
+
+**Do not trust the hints display — verify the real aggregator count from traces:**
+count the distinct ranks that issue writes `>= 1 MB` (the collective-buffer
+flushes). Tiny writes happen on every rank (logs), so counting "ranks that write"
+is useless; count ranks doing *large* writes.
+
+```bash
+dftracer_view -d <split_dir> --query 'cat == "POSIX"' --stream --no-metadata \
+  | python3 -c 'import sys,json;p=set()
+for l in sys.stdin:
+  if "\"name\":\"pwrite\"" not in l and "\"name\":\"write\"" not in l: continue
+  e=json.loads(l); r=e.get("args",{}).get("ret",0)
+  if isinstance(r,int) and r>=1048576: p.add(e["pid"])
+print("aggregators:",len(p))'
+```
+
+**What actually raises the aggregator count:** the Cray-specific
+`CRAY_CB_NODES_MULTIPLIER` env var (used together with `cb_nodes`), plus a Lustre
+stripe count wide enough to absorb them.
+
+Measured on Flash-X (384 ranks / 8 nodes, 18 checkpoints, ~6.7 GB, Lustre):
+
+| Config | aggregators | critical-path write | avg large write |
+| --- | --- | --- | --- |
+| parallel HDF5, no hints | 2 | 6.80 s | 1.05 MB |
+| `+ cb_nodes=8` (hint echoed, ignored) | 2 | 5.53 s | 1.05 MB |
+| `+ cb_nodes=16` + `CRAY_CB_NODES_MULTIPLIER=2` + 16×4 MB stripes | **16** | **1.45 s** | **3.76 MB** |
+
+Top-1 rank's share of write bytes fell 52% → 6.8% (balanced parallel I/O).
+
+**Ordering matters:** collective-buffering hints are worthless until the
+application actually performs parallel writes. If one rank holds ~all write
+bytes, fix that first (see [[workload-flashx]] serial-HDF5 case) — hints cannot
+parallelize a single writer.
+

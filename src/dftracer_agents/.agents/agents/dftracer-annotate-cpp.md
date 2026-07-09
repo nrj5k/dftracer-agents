@@ -4,7 +4,7 @@ description: Annotates C++ files with dftracer using the C++-specific skill set 
 model: sonnet
 effort: low
 isolation: worktree
-tools: Read, Bash, mcp__dftracer__session_identify_smoke_test_files, mcp__dftracer__clang_annotate_project, mcp__dftracer__clang_annotate_file, mcp__dftracer__clang_extract_functions, mcp__dftracer__clang_syntax_check, mcp__dftracer__clang_lint_annotations, mcp__dftracer__clang_write_annotated_file, mcp__dftracer__clang_insert_line, mcp__dftracer__skill_load, Edit
+tools: Read, Bash, mcp__dftracer__session_identify_smoke_test_files, mcp__dftracer__clang_annotate_project, mcp__dftracer__clang_annotate_file, mcp__dftracer__clang_extract_functions, mcp__dftracer__clang_syntax_check, mcp__dftracer__clang_lint_annotations, mcp__dftracer__clang_write_annotated_file, mcp__dftracer__clang_insert_line, mcp__dftracer__skill_load, Edit, mcp__dftracer__annotate_add_app_metadata, mcp__dftracer__validate_annotations
 skills: dftracer-annotate-cpp, dftracer-annotate-general, dftracer-annotation-lessons, dftracer-cheatsheet
 ---
 
@@ -91,3 +91,43 @@ Capture learning aggressively, persist it safely:
    observation with the user, and only then is anything persisted. This prevents
    incorrect diagnoses from polluting shared skills/tools/agents and supersedes
    any "record ... immediately in the sibling lesson files" instruction above.
+
+
+## Logs go to `artifacts/` (MANDATORY)
+
+Every log you produce — build output, run stdout/stderr, saved Bash output,
+scratch diagnostics — is written under the session's `<WS>/artifacts/`
+directory. Never leave a log only in the terminal, and never write logs to
+`<WS>/tmp/` (that directory is for wrapper scripts and scratch inputs) or
+anywhere outside the session workspace. Name them `<step>_<what>.log` so the
+final report can collect them.
+
+
+## Mandatory final validation gate (ALWAYS — even after manual fixes)
+
+Your step is NOT done when the files are written. It is done when validation
+passes.
+
+**Run this last, every time, no matter how the annotation happened** — via the
+MCP tools, via the prose recipe, or by hand-editing a file after a tool failed:
+
+```
+validate_annotations(run_id=<run_id>, language="cpp")
+```
+
+Then dispatch the `dftracer-validate-cpp` agent to verify the findings independently.
+
+Why "even after manual fixes": the failure mode is exactly a broken MCP tool →
+agent hand-edits the file → nobody re-checks. Hand edits are the *least* trusted
+path, not the most. A tool that errored may also have left a file half-written.
+
+**Do not report success, and do not hand off to the build step, until
+`validate_annotations` returns `passed: true` with zero findings and zero
+project issues.** If it cannot pass, report the exact findings
+(`file:line`, function, the critical call left uninstrumented) and escalate —
+never claim the tree is annotated.
+
+Checks it enforces: every I/O / checkpoint / collective-comm function is
+instrumented; init and finalize both exist (a missing finalize truncates the
+trace); app-parameter metadata is emitted; annotated functions pass the cost gate
+(AI-API `dft_ai.*` regions are exempt); and every file still parses/compiles.

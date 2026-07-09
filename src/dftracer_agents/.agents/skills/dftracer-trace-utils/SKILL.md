@@ -173,3 +173,52 @@ Only use bash/CLI to process traces if:
 
 Even then, prefer `dftracer_view` / `dftracer_comparator` CLI binaries over raw
 `gzip.open` + `json.loads` parsing.
+
+---
+
+## ALWAYS split before analyzing (2026-07-08, measured)
+
+`dfanalyzer` / `mcp__dftracer__analyze` **silently truncates a directory of raw
+per-rank `*.pfw.gz` files** — it reported `trace_event_count=1542` and
+`unique_process_count=1` on traces that actually held ~99,666 events across 8
+ranks (identical result whether pointed at the directory or at the single
+largest rank file). The numbers look plausible, so this fails silently.
+
+**Fix — run `dftracer_split` first, then analyze the SPLIT output:**
+
+```bash
+dftracer_split -d <raw_dir> --output <split_dir> \
+  --index-dir <split_dir>/idx --compress --app-name <run>
+dfanalyzer trace_path=<split_dir> analyzer/preset=posix cluster.n_workers=32
+```
+
+After splitting, the same traces analyze correctly (98,695 events / 8 processes
+/ 2 nodes). Verify `Total Processes` matches your rank count — if it shows 1
+process / ~1542 events you are still pointing at raw traces.
+(`mcp__dftracer__analyze` has since been patched to auto-split raw dirs.)
+
+## `dftracer_view` query DSL gotcha
+
+Compound queries with parentheses / `or` **silently match zero events** instead
+of erroring:
+
+```bash
+# WRONG — returns nothing, no error
+dftracer_view -d <dir> --query 'cat == "POSIX" and (name == "write" or name == "pwrite")'
+
+# RIGHT — filter on one predicate, narrow downstream
+dftracer_view -d <dir> --query 'cat == "POSIX"' --stream --no-metadata
+```
+
+Always sanity-check that a query returns a non-zero event count before trusting
+an "empty" result.
+
+## Measure write BYTES per rank, not write CALLS
+
+To detect a serialized / single-writer I/O pattern, aggregate `args.ret` (bytes
+actually written) per `pid` over POSIX `write`/`pwrite` events. Counting
+*distinct pids that issue a write* is misleading — every rank writes a few bytes
+to log files, so a fully serialized run still shows all N ranks "writing"
+(observed: 384/384 pids issued writes while ONE rank held 91% of the bytes).
+Compare the top-1 rank's share of total bytes and the number of ranks writing
+>10 MB. See [[workload-flashx]] for the Flash-X serial-HDF5 case.

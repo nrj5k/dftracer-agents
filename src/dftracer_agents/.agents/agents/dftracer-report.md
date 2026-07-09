@@ -4,7 +4,7 @@ model: level_3
 model_level: level_3
 effort: low
 isolation: worktree
-tools: Read, Bash, Edit, mcp__dftracer__session_read_file, mcp__dftracer__session_get_run_paths, mcp__dftracer__skill_load, mcp__dftracer__session_diagnose_bottlenecks, mcp__dftracer__session_generate_optimization_proposals, mcp__dftracer__comparator, mcp__dftracer__event_count, mcp__dftracer__reader
+tools: Read, Bash, Edit, mcp__dftracer__session_read_file, mcp__dftracer__session_get_run_paths, mcp__dftracer__skill_load, mcp__dftracer__session_diagnose_bottlenecks, mcp__dftracer__session_generate_optimization_proposals, mcp__dftracer__comparator, mcp__dftracer__event_count, mcp__dftracer__reader, mcp__dftracer__session_final_report, mcp__dftracer__session_capture_run_record
 skills: dftracer-io-optimization, dftracer-trace-utils, dftracer-planning
 ---
 
@@ -172,3 +172,13 @@ Capture learning aggressively, persist it safely:
    observation with the user, and only then is anything persisted. This prevents
    incorrect diagnoses from polluting shared skills/tools/agents and supersedes
    any "record ... immediately in the sibling lesson files" instruction above.
+
+
+## Logs go to `artifacts/` (MANDATORY)
+
+Every log you produce — build output, run stdout/stderr, saved Bash output,
+scratch diagnostics — is written under the session's `<WS>/artifacts/`
+directory. Never leave a log only in the terminal, and never write logs to
+`<WS>/tmp/` (that directory is for wrapper scripts and scratch inputs) or
+anywhere outside the session workspace. Name them `<step>_<what>.log` so the
+final report can collect them.

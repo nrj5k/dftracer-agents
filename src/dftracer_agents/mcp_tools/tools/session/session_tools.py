@@ -89,6 +89,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -773,15 +774,31 @@ def _session_run_with_dftracer_impl(
     # does not propagate module loads reliably inside flux proxy subprocesses.
     command = _ensure_flux_proxy_wrapper(command, ws, f"run_with_dftracer_{run_name}.sh")
 
-    # Allocation-aware run: wrap with flux proxy + flux run using all nodes
+    # Allocation-aware run: wrap with flux proxy + flux run using all nodes.
+    #
+    # Do NOT pass env vars as `-x VAR`: that is mpirun syntax. `flux run` does
+    # not accept -x, so it treats the variable NAME as the program to execute
+    # and the task dies with "DFTRACER_ENABLE: No such file or directory"
+    # (signal 127). Env also does not survive the `flux proxy` boundary. The
+    # only reliable pattern is a wrapper script that exports everything itself.
     if allocation_id:
         _nnodes = nnodes if nnodes else 1
         _ntasks = ntasks if ntasks else _nnodes
         flux_flags = f"-N {_nnodes} -n {_ntasks} --exclusive"
-        # Forward all DFTRACER env vars and LD_LIBRARY_PATH/LD_PRELOAD to ranks
-        for key in list(env.keys()):
-            flux_flags += f" -x {key}"
-        command = f"flux proxy {allocation_id} flux run {flux_flags} {command}"
+        tmp_dir = ws / "tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        wrapper = tmp_dir / f"dftracer_run_{run_name}.sh"
+        lines = ["#!/bin/bash", "set -e"]
+        for key, val in env.items():
+            lines.append(f"export {key}={shlex.quote(str(val))}")
+        if cwd:
+            lines.append(f"cd {shlex.quote(str(cwd))}")
+        lines.append(command)
+        wrapper.write_text("\n".join(lines) + "\n")
+        wrapper.chmod(0o755)
+        command = (
+            f"flux proxy {allocation_id} flux run {flux_flags} bash {wrapper}"
+        )
 
     # Prepend module-load preamble from the app's own scripts for ABI consistency.
     preamble = _build_module_preamble(ws / "source")
