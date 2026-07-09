@@ -1,0 +1,51 @@
+{
+  "run_id": "scaffold/20260709_081340",
+  "key": "STEP 3: dftracer-build-dftracer",
+  "index": 3,
+  "agent": "dftracer-build-dftracer",
+  "notes": "Retry: rebuild dftracer with ROCProfiler OFF, HIP OFF; fix RPATH to prioritize Python lib; preserve mpi4py",
+  "status": "ok",
+  "tries": 2,
+  "retries": 1,
+  "failed_attempts": 0,
+  "successful_attempts": 2,
+  "exec_s": 1797.296,
+  "wall_s": 6779.637,
+  "attempts": [
+    {
+      "number": 1,
+      "status": "ok",
+      "duration_s": 844.43,
+      "error": "",
+      "start_ns": 1783586170193120587,
+      "end_ns": 1783587014622759729
+    },
+    {
+      "number": 2,
+      "status": "ok",
+      "duration_s": 952.866,
+      "error": "",
+      "start_ns": 1783591996963890828,
+      "end_ns": 1783592949830043640
+    }
+  ],
+  "tokens_input": 0,
+  "tokens_output": 0,
+  "tokens_cache_read": 0,
+  "tokens_cache_creation": 0,
+  "cost_usd": 0.0,
+  "api_calls": 0,
+  "api_errors": 0,
+  "api_duration_ms": 0.0,
+  "tool_calls": 0,
+  "tool_failures": 0,
+  "tool_duration_ms": 0.0,
+  "mcp_tool_calls": 0,
+  "compactions": 0,
+  "prompts": 0,
+  "tools": {},
+  "models": {},
+  "agents": {},
+  "skills": {},
+  "tokens_total": 0
+}

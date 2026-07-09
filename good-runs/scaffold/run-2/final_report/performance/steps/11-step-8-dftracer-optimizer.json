@@ -1,0 +1,51 @@
+{
+  "run_id": "scaffold/20260709_081340",
+  "key": "## STEP 8: dftracer-optimizer",
+  "index": 11,
+  "agent": "dftracer-optimizer",
+  "notes": "ScaFFold scale-6 optimization; baseline_s6 total_train_time=1.972717s; attack dataloader workers + barrier/checkpoint stall",
+  "status": "ok",
+  "tries": 2,
+  "retries": 1,
+  "failed_attempts": 0,
+  "successful_attempts": 1,
+  "exec_s": 1257.212,
+  "wall_s": 1257.212,
+  "attempts": [
+    {
+      "number": 1,
+      "status": "superseded",
+      "duration_s": 880.007,
+      "error": "",
+      "start_ns": 1783613049623001160,
+      "end_ns": 1783613929630131061
+    },
+    {
+      "number": 2,
+      "status": "ok",
+      "duration_s": 377.205,
+      "error": "",
+      "start_ns": 1783613929630143071,
+      "end_ns": 1783614306834651700
+    }
+  ],
+  "tokens_input": 0,
+  "tokens_output": 0,
+  "tokens_cache_read": 0,
+  "tokens_cache_creation": 0,
+  "cost_usd": 0.0,
+  "api_calls": 0,
+  "api_errors": 0,
+  "api_duration_ms": 0.0,
+  "tool_calls": 0,
+  "tool_failures": 0,
+  "tool_duration_ms": 0.0,
+  "mcp_tool_calls": 0,
+  "compactions": 0,
+  "prompts": 0,
+  "tools": {},
+  "models": {},
+  "agents": {},
+  "skills": {},
+  "tokens_total": 0
+}

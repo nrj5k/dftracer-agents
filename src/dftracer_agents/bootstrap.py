@@ -33,7 +33,7 @@ def claude_memory_dir(project_root: Path) -> Path:
     """Where Claude Code looks for this project's memory.
 
     The slug is the absolute project path with every ``/`` turned into ``-``,
-    e.g. ``/usr/WS2/haridev/dftracer-agents`` -> ``-usr-WS2-haridev-dftracer-agents``.
+    e.g. ``/usr/WS2/$USER/dftracer-agents`` -> ``-usr-WS2-$USER-dftracer-agents``.
     """
     slug = str(Path(project_root).resolve()).replace("/", "-")
     return Path.home() / ".claude" / "projects" / slug / "memory"

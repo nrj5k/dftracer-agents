@@ -3,7 +3,8 @@ mounts:
         # msr-safe work
         # - "ro:/lib/modules"
         # - "ro:/usr/src"
-        - "rw:/usr/workspace/haridev/dftracer-agents/workspaces"
+        # Substitute $USER (and your checkout location) before use.
+        - "rw:/usr/workspace/$USER/dftracer-agents/workspaces"
         # gemma models
         # - "ro:/usr/workspace/lc-user/mapp/sandbox/models"
         # llama.cpp build

@@ -1,0 +1,51 @@
+{
+  "run_id": "scaffold/20260709_081340",
+  "key": "STEP 4: dftracer-annotate-python",
+  "index": 4,
+  "agent": "dftracer-annotate-python",
+  "notes": "Retry: fix logfile=None defect causing empty traces; verify multi-rank MPI case",
+  "status": "ok",
+  "tries": 2,
+  "retries": 1,
+  "failed_attempts": 0,
+  "successful_attempts": 2,
+  "exec_s": 1255.462,
+  "wall_s": 6728.971,
+  "attempts": [
+    {
+      "number": 1,
+      "status": "ok",
+      "duration_s": 361.708,
+      "error": "",
+      "start_ns": 1783587217479848762,
+      "end_ns": 1783587579188316906
+    },
+    {
+      "number": 2,
+      "status": "ok",
+      "duration_s": 893.754,
+      "error": "",
+      "start_ns": 1783593052697074189,
+      "end_ns": 1783593946450954960
+    }
+  ],
+  "tokens_input": 0,
+  "tokens_output": 0,
+  "tokens_cache_read": 0,
+  "tokens_cache_creation": 0,
+  "cost_usd": 0.0,
+  "api_calls": 0,
+  "api_errors": 0,
+  "api_duration_ms": 0.0,
+  "tool_calls": 0,
+  "tool_failures": 0,
+  "tool_duration_ms": 0.0,
+  "mcp_tool_calls": 0,
+  "compactions": 0,
+  "prompts": 0,
+  "tools": {},
+  "models": {},
+  "agents": {},
+  "skills": {},
+  "tokens_total": 0
+}

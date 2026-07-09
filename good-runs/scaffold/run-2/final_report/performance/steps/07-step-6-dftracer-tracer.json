@@ -1,0 +1,51 @@
+{
+  "run_id": "scaffold/20260709_081340",
+  "key": "STEP 6: dftracer-tracer",
+  "index": 7,
+  "agent": "dftracer-tracer",
+  "notes": "RETRY: Two-phase approach \u2014 PHASE A dataset pre-gen + PHASE B real multi-rank baseline",
+  "status": "failed",
+  "tries": 2,
+  "retries": 1,
+  "failed_attempts": 1,
+  "successful_attempts": 1,
+  "exec_s": 3417.288,
+  "wall_s": 3683.183,
+  "attempts": [
+    {
+      "number": 1,
+      "status": "completed",
+      "duration_s": 2731.196,
+      "error": "",
+      "start_ns": 1783595290701523744,
+      "end_ns": 1783598021897449244
+    },
+    {
+      "number": 2,
+      "status": "failed",
+      "duration_s": 686.092,
+      "error": "Multi-rank baseline cannot execute: dataset insufficient for distributed training. Attempts: 8N (failed: 28 train<32), 4N (failed: 12 val<16). App's data loading creates per-rank subset insufficient for required samples after val_split. Requires either n_instances > 50+ or architectural change to data distribution.",
+      "start_ns": 1783598287792359931,
+      "end_ns": 1783598973884602645
+    }
+  ],
+  "tokens_input": 0,
+  "tokens_output": 0,
+  "tokens_cache_read": 0,
+  "tokens_cache_creation": 0,
+  "cost_usd": 0.0,
+  "api_calls": 0,
+  "api_errors": 0,
+  "api_duration_ms": 0.0,
+  "tool_calls": 0,
+  "tool_failures": 0,
+  "tool_duration_ms": 0.0,
+  "mcp_tool_calls": 0,
+  "compactions": 0,
+  "prompts": 0,
+  "tools": {},
+  "models": {},
+  "agents": {},
+  "skills": {},
+  "tokens_total": 0
+}

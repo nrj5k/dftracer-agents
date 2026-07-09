@@ -1,0 +1,817 @@
+diff -ruN --no-dereference '--exclude=build' '--exclude=*.egg-info' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=*.npy' '--exclude=*.png' '--exclude=*.pth' source/ScaFFold/benchmark.py annotated/source/ScaFFold/benchmark.py
+--- source/ScaFFold/benchmark.py	2026-07-09 01:13:42.064069000 -0700
++++ annotated/source/ScaFFold/benchmark.py	2026-07-09 01:55:28.631470000 -0700
+@@ -23,8 +23,11 @@
+ from ScaFFold import worker
+ from ScaFFold.utils.distributed import get_world_rank
+ from ScaFFold.utils.perf_measure import adiak_init, adiak_value
++from dftracer.python import dftracer, dft_fn as DFTracerFn
++_dft = DFTracerFn("benchmark")
+ 
+ 
++@_dft.log
+ def create_run_directory(base_dir, combination_index, num_runs):
+     """
+     Create new directory for current run, named using unique combination_index
+@@ -36,6 +39,7 @@
+     return run_dir
+ 
+ 
++@_dft.log
+ def write_run_config(run_dir, iter, keys, combination):
+     """
+     Write run config to a yaml file, and create optional override yaml
+@@ -51,6 +55,7 @@
+     return run_config_path
+ 
+ 
++@_dft.log
+ def main(kwargs_dict: dict = {}):
+     args = Namespace(**kwargs_dict)
+ 
+diff -ruN --no-dereference '--exclude=build' '--exclude=*.egg-info' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=*.npy' '--exclude=*.png' '--exclude=*.pth' source/ScaFFold/cli.py annotated/source/ScaFFold/cli.py
+--- source/ScaFFold/cli.py	2026-07-09 01:13:42.066050000 -0700
++++ annotated/source/ScaFFold/cli.py	2026-07-09 01:55:29.827959000 -0700
+@@ -26,8 +26,11 @@
+ from ScaFFold.utils.collect_scheduler_info import collect_scheduler_metadata
+ from ScaFFold.utils.create_restart_script import create_restart_script
+ from ScaFFold.utils.utils import customlog
++from dftracer.python import dftracer, dft_fn as DFTracerFn
++_dft = DFTracerFn("cli")
+ 
+ 
++@_dft.log
+ def main():
+     """
+     Command line interface for ScaFFold.
+diff -ruN --no-dereference '--exclude=build' '--exclude=*.egg-info' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=*.npy' '--exclude=*.png' '--exclude=*.pth' source/ScaFFold/datagen/get_dataset.py annotated/source/ScaFFold/datagen/get_dataset.py
+--- source/ScaFFold/datagen/get_dataset.py	2026-07-09 01:13:42.093983000 -0700
++++ annotated/source/ScaFFold/datagen/get_dataset.py	2026-07-09 02:17:22.002047000 -0700
+@@ -27,6 +27,8 @@
+ from mpi4py import MPI
+ 
+ from ScaFFold.datagen import volumegen
++from dftracer.python import dftracer, dft_fn as DFTracerFn
++_dft = DFTracerFn("get_dataset")
+ 
+ META_FILENAME = "meta.yaml"
+ DATASET_FORMAT_VERSION = 2
+@@ -98,6 +100,7 @@
+         return "no-commit-id"
+ 
+ 
++@_dft.log
+ def get_dataset(
+     config: Namespace,
+     require_commit: bool = False,  # default: ignore commit mismatches for reuse
+diff -ruN --no-dereference '--exclude=build' '--exclude=*.egg-info' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=*.npy' '--exclude=*.png' '--exclude=*.pth' source/ScaFFold/datagen/instance.py annotated/source/ScaFFold/datagen/instance.py
+--- source/ScaFFold/datagen/instance.py	2026-07-09 01:13:42.109018000 -0700
++++ annotated/source/ScaFFold/datagen/instance.py	2026-07-09 02:17:03.709065000 -0700
+@@ -29,6 +29,8 @@
+ 
+ from ScaFFold.datagen.generate_fractal_points import generate_fractal_points
+ from ScaFFold.utils.config_utils import Config
++from dftracer.python import dftracer, dft_fn as DFTracerFn
++_dft = DFTracerFn("instance")
+ 
+ DEFAULT_NP_DTYPE = np.float64
+ 
+@@ -56,6 +58,7 @@
+     return points
+ 
+ 
++@_dft.log
+ def main(config: Config):
+     """
+     Generate fractal instances.
+diff -ruN --no-dereference '--exclude=build' '--exclude=*.egg-info' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=*.npy' '--exclude=*.png' '--exclude=*.pth' source/ScaFFold/datagen/volumegen.py annotated/source/ScaFFold/datagen/volumegen.py
+--- source/ScaFFold/datagen/volumegen.py	2026-07-09 01:13:42.114003000 -0700
++++ annotated/source/ScaFFold/datagen/volumegen.py	2026-07-09 02:17:10.421942000 -0700
+@@ -27,8 +27,11 @@
+ 
+ from ScaFFold.utils.config_utils import Config
+ from ScaFFold.utils.data_types import DEFAULT_NP_DTYPE, MASK_DTYPE, VOLUME_DTYPE
++from dftracer.python import dftracer, dft_fn as DFTracerFn
++_dft = DFTracerFn("volumegen")
+ 
+ 
++@_dft.log
+ def load_np_ptcloud(path: str) -> np.ndarray:
+     """
+     Read a .npy file and return an (N,3) array of dtype float64.
+@@ -65,6 +68,7 @@
+     return grid
+ 
+ 
++@_dft.log
+ def main(config: Dict):
+     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+ 
+diff -ruN --no-dereference '--exclude=build' '--exclude=*.egg-info' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=*.npy' '--exclude=*.png' '--exclude=*.pth' source/ScaFFold/generate_fractals.py annotated/source/ScaFFold/generate_fractals.py
+--- source/ScaFFold/generate_fractals.py	2026-07-09 01:13:42.232019000 -0700
++++ annotated/source/ScaFFold/generate_fractals.py	2026-07-09 07:34:28.205537000 -0700
+@@ -12,13 +12,22 @@
+ #
+ # SPDX-License-Identifier: (Apache-2.0)
+ 
++import os
+ from argparse import Namespace
+ 
+ from mpi4py import MPI
+ 
+ from ScaFFold.datagen import category_search, instance
++from dftracer.python import dftracer, dft_fn as DFTracerFn
++_dft = DFTracerFn("generate_fractals")
++# Do NOT call initialize_log() here. cli.py imports BOTH worker and
++# generate_fractals for either subcommand, and worker.py already initializes the
++# dftracer singleton at import. Initializing twice in one process makes the
++# matching finalize() double-free ("double free or corruption (!prev)").
++_dft_log = dftracer.get_instance()
+ 
+ 
++@_dft.log
+ def main(kwargs_dict: dict = {}):
+     args = Namespace(**kwargs_dict)
+     comm = MPI.COMM_WORLD
+@@ -43,6 +52,11 @@
+             f"generate_fractals.py({rank}): Fractal and instance generation has finished. Exiting..."
+         )
+ 
+-    MPI.Finalize()
++    # Finalize dftracer BEFORE MPI goes away: dftracer_core is built with MPI, so
++    # its exit-time flush calls MPI. Calling MPI.Finalize() here made that flush
++    # run after MPI teardown -> "double free or corruption (!prev)".
++    # We also do NOT call MPI.Finalize() explicitly; mpi4py finalizes at exit,
++    # after dftracer has already flushed.
++    dftracer.get_instance().finalize()
+ 
+     return 0
+diff -ruN --no-dereference '--exclude=build' '--exclude=*.egg-info' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=*.npy' '--exclude=*.png' '--exclude=*.pth' source/ScaFFold/utils/checkpointing.py annotated/source/ScaFFold/utils/checkpointing.py
+--- source/ScaFFold/utils/checkpointing.py	2026-07-09 01:13:42.376040000 -0700
++++ annotated/source/ScaFFold/utils/checkpointing.py	2026-07-09 14:53:16.575480000 -0700
+@@ -14,6 +14,7 @@
+ 
+ import math
+ import random
++import os
+ import shutil
+ from concurrent.futures import ThreadPoolExecutor
+ from pathlib import Path
+@@ -22,6 +23,8 @@
+ import numpy as np
+ import torch
+ import torch.distributed as dist
++from dftracer.python import dftracer, dft_fn as DFTracerFn
++_dft = DFTracerFn("checkpointing")
+ 
+ 
+ class CheckpointManager:
+@@ -34,6 +37,7 @@
+                            Requires sufficient CPU RAM to hold a full model copy.
+     """
+ 
++    @_dft.log_init
+     def __init__(
+         self,
+         *,
+@@ -46,6 +50,8 @@
+         world_rank: int = 0,
+         dist_enabled: bool = False,
+         async_save: bool = False,
++        hardlink_best: bool = False,
++        stage_dir: Optional[str] = None,
+     ) -> None:
+         self.model = model
+         self.optimizer = optimizer
+@@ -56,6 +62,11 @@
+         self.world_rank = world_rank
+         self.dist_enabled = dist_enabled
+         self.async_save = async_save
++        self.hardlink_best = hardlink_best
++        # Node-local staging dir for checkpoint writes (rank 0 only). Created lazily.
++        self.stage_dir = Path(stage_dir) if stage_dir else None
++        if self.stage_dir and world_rank == 0:
++            self.stage_dir.mkdir(parents=True, exist_ok=True)
+ 
+         # Paths
+         self.last_ckpt_path = self.base_dir / "checkpoint_last.pth"
+@@ -63,6 +74,9 @@
+ 
+         self.restored_extras: Dict[str, Any] = {}
+ 
++        # Cached best val loss (rank 0). None => not yet read from disk.
++        self._best_loss: Optional[float] = None
++
+         # Async handling
+         self.executor = None
+         self.future = None
+@@ -74,6 +88,7 @@
+         if self.world_rank == 0:
+             self.base_dir.mkdir(parents=True, exist_ok=True)
+ 
++    @_dft.log
+     def cleanup(self, train_from_scratch: bool) -> None:
+         """Clear existing checkpoints if training from scratch."""
+         # Ensure any pending async saves are finished before deleting
+@@ -93,6 +108,7 @@
+                         self._log(f"Failed to remove {p}: {e}")
+         self._barrier()
+ 
++    @_dft.log
+     def wait_for_save(self):
+         """Blocks until the background save (if any) is complete."""
+         if self.future is not None:
+@@ -105,6 +121,7 @@
+                 self._log(f"Background save failed with error: {e}")
+             self.future = None
+ 
++    @_dft.log
+     def snapshot_training_state(self) -> Dict[str, Any]:
+         """Capture mutable in-memory training state without writing a checkpoint."""
+         model_ref = self.model.module if hasattr(self.model, "module") else self.model
+@@ -125,6 +142,7 @@
+             **self._get_rng_snapshot(),
+         }
+ 
++    @_dft.log
+     def restore_training_state(self, snapshot: Dict[str, Any]) -> None:
+         """Restore an in-memory training snapshot."""
+         model_ref = self.model.module if hasattr(self.model, "module") else self.model
+@@ -145,6 +163,7 @@
+         if self.optimizer:
+             self.optimizer.zero_grad(set_to_none=True)
+ 
++    @_dft.log
+     def load_from_checkpoint(self) -> int:
+         """Load the latest checkpoint. Returns start_epoch (default 1)."""
+         self.wait_for_save()  # Safety: don't load while writing
+@@ -212,6 +231,7 @@
+         self._barrier()
+         return start_epoch
+ 
++    @_dft.log
+     def save_checkpoint(
+         self, epoch: int, val_loss_avg: float, extras: Optional[Dict[str, Any]] = None
+     ) -> bool:
+@@ -221,18 +241,23 @@
+         """
+         is_best = False
+         if self.world_rank == 0:
+-            current_best_loss = math.inf
+-            if self.best_ckpt_path.exists():
+-                try:
+-                    prev = torch.load(
+-                        self.best_ckpt_path, map_location="cpu", weights_only=False
+-                    )
+-                    current_best_loss = prev.get("val_loss_avg", math.inf)
+-                except Exception:
+-                    pass
++            # Read the previous best loss from disk at most ONCE. Deserializing the
++            # whole best checkpoint every epoch to recover a single float costs a
++            # full checkpoint read per epoch on the critical path.
++            if self._best_loss is None:
++                self._best_loss = math.inf
++                if self.best_ckpt_path.exists():
++                    try:
++                        prev = torch.load(
++                            self.best_ckpt_path, map_location="cpu", weights_only=False
++                        )
++                        self._best_loss = prev.get("val_loss_avg", math.inf)
++                    except Exception:
++                        pass
+ 
+-            if val_loss_avg < current_best_loss:
++            if val_loss_avg < self._best_loss:
+                 is_best = True
++                self._best_loss = val_loss_avg
+ 
+         if self.world_rank == 0:
+             # 1. Wait for previous async save to prevent OOM or race
+@@ -275,12 +300,15 @@
+                     self.last_ckpt_path,
+                     self.best_ckpt_path,
+                     is_best,
++                    self.hardlink_best,
++                    self.stage_dir,
+                 )
+                 self._log("Async checkpoint offloaded to background thread.")
+             else:
+                 # Synchronous Save
+                 self._write_to_disk(
+-                    state_dict, self.last_ckpt_path, self.best_ckpt_path, is_best
++                    state_dict, self.last_ckpt_path, self.best_ckpt_path, is_best,
++                    self.hardlink_best, self.stage_dir,
+                 )
+ 
+         # Broadcast result (for logging elsewhere)
+@@ -292,25 +320,50 @@
+         return is_best
+ 
+     @staticmethod
+-    def _write_to_disk(state_dict, last_path, best_path, is_best):
+-        """Worker function to perform actual disk I/O."""
+-        # Save 'last'
+-        try:
+-            torch.save(state_dict, last_path)
+-        except Exception as e:
+-            print("Saving checkpoint failed. Continuing...")
+-            print(e)
+-        # Save 'best' (copy logic)
+-        if is_best:
+-            # Copy is often faster than re-serializing
+-            if last_path.exists():
+-                shutil.copyfile(last_path, best_path)
+-            else:
+-                try:
+-                    torch.save(state_dict, best_path)
+-                except Exception as e:
+-                    print("Saving checkpoint failed. Continuing...")
+-                    print(e)
++    def _write_to_disk(state_dict, last_path, best_path, is_best,
++                       hardlink_best=False, stage_dir=None):
++        with DFTracerFn("checkpointing", name="_write_to_disk"):
++            """Worker function to perform actual disk I/O."""
++            # Q2: serialize to node-local flash first, then move to the PFS. A 256 MB
++            # torch.save to Lustre takes ~496 ms (~517 MB/s from one rank) and lands on
++            # the critical path every epoch; local flash is far faster and the move is
++            # a streaming copy off the training thread.
++            target = Path(stage_dir) / last_path.name if stage_dir else last_path
++
++            # Always serialize to a temp path and rename into place. rename() is atomic
++            # and yields a FRESH inode each epoch, which is what makes the 'best'
++            # hardlink below safe: torch.save truncates in place, so a hardlinked best
++            # would otherwise be corrupted by the next epoch's write.
++            tmp = target.with_suffix(target.suffix + ".tmp")
++            try:
++                torch.save(state_dict, tmp)
++                os.replace(tmp, target)
++                if stage_dir:
++                    shutil.move(str(target), str(last_path))
++            except Exception as e:
++                print("Saving checkpoint failed. Continuing...")
++                print(e)
++
++            if is_best:
++                # Q1: hardlink instead of copying 256 MB again. On the epochs where val
++                # loss improves (102/960 in a reference run) shutil.copyfile added a
++                # second full-size write -- 25.5 GB of duplicate I/O per run.
++                if hardlink_best and last_path.exists():
++                    try:
++                        if best_path.exists():
++                            best_path.unlink()
++                        os.link(last_path, best_path)
++                        return
++                    except OSError:
++                        pass  # cross-device or unsupported -> fall back to copy
++                if last_path.exists():
++                    shutil.copyfile(last_path, best_path)
++                else:
++                    try:
++                        torch.save(state_dict, best_path)
++                    except Exception as e:
++                        print("Saving checkpoint failed. Continuing...")
++                        print(e)
+ 
+     def _transfer_dict_to_cpu(self, obj):
+         """Recursively move tensors to CPU."""
+@@ -338,6 +391,7 @@
+         else:
+             return obj
+ 
++    @_dft.log
+     def _barrier(self):
+         if self.dist_enabled:
+             dist.barrier()
+diff -ruN --no-dereference '--exclude=build' '--exclude=*.egg-info' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=*.npy' '--exclude=*.png' '--exclude=*.pth' source/ScaFFold/utils/config_utils.py annotated/source/ScaFFold/utils/config_utils.py
+--- source/ScaFFold/utils/config_utils.py	2026-07-09 01:13:42.378965000 -0700
++++ annotated/source/ScaFFold/utils/config_utils.py	2026-07-09 01:56:15.013014000 -0700
+@@ -19,6 +19,8 @@
+ import yaml
+ 
+ import ScaFFold.paths
++from dftracer.python import dftracer, dft_fn as DFTracerFn
++_dft = DFTracerFn("config_utils")
+ 
+ 
+ class Config:
+@@ -102,6 +104,7 @@
+         self.run_iter = config_dict["run_iter"]
+ 
+ 
++@_dft.log
+ def load_config(file_path: str, config_type: str):
+     """
+     Load run config from yaml file
+diff -ruN --no-dereference '--exclude=build' '--exclude=*.egg-info' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=*.npy' '--exclude=*.png' '--exclude=*.pth' source/ScaFFold/utils/data_loading.py annotated/source/ScaFFold/utils/data_loading.py
+--- source/ScaFFold/utils/data_loading.py	2026-07-09 01:13:42.381050000 -0700
++++ annotated/source/ScaFFold/utils/data_loading.py	2026-07-09 01:55:32.032915000 -0700
+@@ -26,6 +26,8 @@
+ 
+ from ScaFFold.utils.data_types import MASK_DTYPE, VOLUME_DTYPE
+ from ScaFFold.utils.utils import customlog
++from dftracer.python import dftracer, dft_fn as DFTracerFn
++_dft = DFTracerFn("data_loading")
+ 
+ DATASET_FORMAT_VERSION = 2
+ LEGACY_DATASET_FORMAT_VERSION = 1
+@@ -40,6 +42,7 @@
+     num_shards: Tuple[int, ...]
+     shard_indices: Tuple[int, ...]
+ 
++    @_dft.log
+     def __post_init__(self):
+         if not (
+             len(self.shard_dims) == len(self.num_shards) == len(self.shard_indices)
+@@ -67,17 +70,19 @@
+ 
+     @staticmethod
+     def _chunk_slice(size: int, num_shards: int, shard_index: int) -> slice:
+-        """Match torch.chunk-style uneven shard boundaries."""
++        with DFTracerFn("data_loading", name="_chunk_slice"):
++            """Match torch.chunk-style uneven shard boundaries."""
+ 
+-        chunk_size = (size + num_shards - 1) // num_shards
+-        start = shard_index * chunk_size
+-        if start >= size:
+-            raise ValueError(
+-                f"Empty local shard: dim size {size}, num_shards {num_shards}, shard_index {shard_index}"
+-            )
+-        stop = min(size, start + chunk_size)
+-        return slice(start, stop)
++            chunk_size = (size + num_shards - 1) // num_shards
++            start = shard_index * chunk_size
++            if start >= size:
++                raise ValueError(
++                    f"Empty local shard: dim size {size}, num_shards {num_shards}, shard_index {shard_index}"
++                )
++            stop = min(size, start + chunk_size)
++            return slice(start, stop)
+ 
++    @_dft.log
+     def slice_array(
+         self, array: np.ndarray, axis_map: Dict[int, int], array_label: str
+     ) -> np.ndarray:
+@@ -103,6 +108,7 @@
+ 
+ 
+ class BasicDataset(Dataset):
++    @_dft.log_init
+     def __init__(
+         self,
+         images_dir: str,
+@@ -142,8 +148,10 @@
+ 
+     @staticmethod
+     def _load_numpy_array(path, mmap_mode=None):
+-        return np.load(path, allow_pickle=False, mmap_mode=mmap_mode)
++        with DFTracerFn("data_loading", name="_load_numpy_array"):
++            return np.load(path, allow_pickle=False, mmap_mode=mmap_mode)
+ 
++    @_dft.log
+     def _load_dataset_format_version(self):
+         meta_path = self.dataset_root / META_FILENAME
+         if not meta_path.exists():
+@@ -166,16 +174,17 @@
+ 
+     @staticmethod
+     def _prepare_legacy_mask(mask_values, mask):
+-        remapped = np.zeros(
+-            (mask.shape[0], mask.shape[1], mask.shape[2]), dtype=MASK_DTYPE
+-        )
+-        for i, value in enumerate(mask_values):
+-            if mask.ndim == 3:
+-                remapped[mask == value] = i
+-            else:
+-                remapped[(mask == value).all(-1)] = i
++        with DFTracerFn("data_loading", name="_prepare_legacy_mask"):
++            remapped = np.zeros(
++                (mask.shape[0], mask.shape[1], mask.shape[2]), dtype=MASK_DTYPE
++            )
++            for i, value in enumerate(mask_values):
++                if mask.ndim == 3:
++                    remapped[mask == value] = i
++                else:
++                    remapped[(mask == value).all(-1)] = i
+ 
+-        return remapped
++            return remapped
+ 
+     @staticmethod
+     def _prepare_optimized_image(img):
+@@ -202,6 +211,7 @@
+         axis_map = {2: 0, 3: 1, 4: 2}
+         return self.spatial_shard_spec.slice_array(mask, axis_map, "mask")
+ 
++    @_dft.log
+     def __getitem__(self, idx):
+         name = self.ids[idx]
+         mask_file = list(self.mask_dir.glob(name + self.mask_suffix + ".*"))
+@@ -235,6 +245,7 @@
+ 
+ 
+ class FractalDataset(BasicDataset):
++    @_dft.log_init
+     def __init__(
+         self,
+         images_dir,
+diff -ruN --no-dereference '--exclude=build' '--exclude=*.egg-info' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=*.npy' '--exclude=*.png' '--exclude=*.pth' source/ScaFFold/utils/dice_score.py annotated/source/ScaFFold/utils/dice_score.py
+--- source/ScaFFold/utils/dice_score.py	2026-07-09 01:13:42.383962000 -0700
++++ annotated/source/ScaFFold/utils/dice_score.py	2026-07-09 02:25:17.824619000 -0700
+@@ -17,8 +17,11 @@
+ from torch import Tensor
+ 
+ from ScaFFold.utils.perf_measure import annotate
++from dftracer.python import dftracer, dft_fn as DFTracerFn
++_dft = DFTracerFn("dice_score")
+ 
+ 
++@_dft.log
+ def dice_coeff(
+     input: Tensor,
+     target: Tensor,
+@@ -65,11 +68,12 @@
+ class SpatialAllReduce(torch.autograd.Function):
+     @staticmethod
+     def forward(ctx, input, spatial_mesh):
+-        output = input.clone()
+-        for mesh_dim in range(spatial_mesh.ndim):
+-            pg = spatial_mesh.get_group(mesh_dim)
+-            dist.all_reduce(output, op=dist.ReduceOp.SUM, group=pg)
+-        return output
++        with DFTracerFn("dice_score", name="forward"):
++            output = input.clone()
++            for mesh_dim in range(spatial_mesh.ndim):
++                pg = spatial_mesh.get_group(mesh_dim)
++                dist.all_reduce(output, op=dist.ReduceOp.SUM, group=pg)
++            return output
+ 
+     @staticmethod
+     def backward(ctx, grad_output):
+@@ -77,6 +81,7 @@
+ 
+ 
+ @annotate()
++@_dft.log
+ def compute_sharded_dice(
+     preds: torch.Tensor,
+     targets: torch.Tensor,
+diff -ruN --no-dereference '--exclude=build' '--exclude=*.egg-info' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=*.npy' '--exclude=*.png' '--exclude=*.pth' source/ScaFFold/utils/distributed.py annotated/source/ScaFFold/utils/distributed.py
+--- source/ScaFFold/utils/distributed.py	2026-07-09 01:13:42.385014000 -0700
++++ annotated/source/ScaFFold/utils/distributed.py	2026-07-09 01:55:33.464830000 -0700
+@@ -20,6 +20,8 @@
+ 
+ import torch
+ import torch.distributed
++from dftracer.python import dftracer, dft_fn as DFTracerFn
++_dft = DFTracerFn("distributed")
+ 
+ 
+ def get_num_gpus() -> int:
+@@ -27,6 +29,7 @@
+     return torch.cuda.device_count()
+ 
+ 
++@_dft.log
+ def get_local_rank(required: bool = False) -> int:
+     """Return the local MPI rank."""
+     if "LOCAL_RANK" in os.environ:
+@@ -44,6 +47,7 @@
+     return 0
+ 
+ 
++@_dft.log
+ def get_local_size(required: bool = False) -> int:
+     """Return the number of local MPI ranks."""
+     if "MV2_COMM_WORLD_LOCAL_SIZE" in os.environ:
+@@ -61,6 +65,7 @@
+     return 1
+ 
+ 
++@_dft.log
+ def get_world_rank(required: bool = False) -> int:
+     """Return the global MPI rank.."""
+     if "MV2_COMM_WORLD_RANK" in os.environ:
+@@ -76,6 +81,7 @@
+     return 0
+ 
+ 
++@_dft.log
+ def get_world_size(required: bool = False) -> int:
+     """Return the number of MPI ranks."""
+     if "MV2_COMM_WORLD_SIZE" in os.environ:
+@@ -142,6 +148,7 @@
+     return None
+ 
+ 
++@_dft.log
+ def initialize_dist(
+     init_file: Optional[str] = None, rendezvous: Literal["env", "tcp", "file"] = "env"
+ ) -> None:
+diff -ruN --no-dereference '--exclude=build' '--exclude=*.egg-info' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=*.npy' '--exclude=*.png' '--exclude=*.pth' source/ScaFFold/utils/losses.py annotated/source/ScaFFold/utils/losses.py
+--- source/ScaFFold/utils/losses.py	2026-07-09 01:13:42.387992000 -0700
++++ annotated/source/ScaFFold/utils/losses.py	2026-07-09 01:56:17.575888000 -0700
+@@ -19,6 +19,8 @@
+ import torch.nn.functional as F
+ 
+ from ScaFFold.utils.dice_score import SpatialAllReduce
++from dftracer.python import dftracer, dft_fn as DFTracerFn
++_dft = DFTracerFn("losses")
+ 
+ 
+ def _sample_ce_weight_indices(n_train, sample_fraction):
+@@ -39,6 +41,7 @@
+     return torch.linspace(0, n_train - 1, steps=sample_count).long().tolist()
+ 
+ 
++@_dft.log
+ def _compute_ce_class_weights(
+     train_set,
+     n_train,
+diff -ruN --no-dereference '--exclude=build' '--exclude=*.egg-info' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=*.npy' '--exclude=*.png' '--exclude=*.pth' source/ScaFFold/utils/trainer.py annotated/source/ScaFFold/utils/trainer.py
+--- source/ScaFFold/utils/trainer.py	2026-07-09 01:13:42.390990000 -0700
++++ annotated/source/ScaFFold/utils/trainer.py	2026-07-09 14:53:44.338948000 -0700
+@@ -43,6 +43,8 @@
+ )
+ from ScaFFold.utils.perf_measure import adiak_value, begin_code_region, end_code_region
+ from ScaFFold.utils.utils import gather_and_print_mem
++from dftracer.python import dftracer, dft_fn as DFTracerFn
++_dft = DFTracerFn("trainer")
+ 
+ 
+ class BaseTrainer:
+@@ -50,6 +52,7 @@
+     A class that encapsulates some basic functionality for training our model.
+     """
+ 
++    @_dft.log_init
+     def __init__(self, model, config, device, log):
+         self.model = model
+         self.config = config
+@@ -103,6 +106,7 @@
+         # Get initial mem state
+         gather_and_print_mem(self.log, "after_trainer_setup")
+ 
++    @_dft.log
+     def create_dataset(self):
+         """Create train and validation datasets."""
+         dataset_dir = Path(self.config.dataset_dir)
+@@ -156,6 +160,7 @@
+             self.train_sampler = torch.utils.data.RandomSampler(self.train_set)
+             self.val_sampler = torch.utils.data.SequentialSampler(self.val_set)
+ 
++    @_dft.log
+     def create_dataloaders(self):
+         """Create dataloaders for training and validation."""
+         self.create_dataset()
+@@ -187,6 +192,7 @@
+                 "Reduce batch_size or adjust validation sharding."
+             )
+ 
++    @_dft.log
+     def setup_training_components(self):
+         """Set up the optimizer, scheduler, gradient scaler, and loss function."""
+         # Set up optimizer
+@@ -274,6 +280,7 @@
+     A class for training our model with PyTorch.
+     """
+ 
++    @_dft.log_init
+     def __init__(self, model, config, device, log):
+         super().__init__(model, config, device, log)
+ 
+@@ -290,8 +297,13 @@
+             dist_enabled=self.config.dist,
+             # Check config for async setting, default to False
+             async_save=getattr(self.config, "async_save", False),
++            # Q1: hardlink 'best' instead of re-copying the full 256 MB checkpoint.
++            hardlink_best=getattr(self.config, "hardlink_best", False),
++            # Q2: stage checkpoint writes on node-local flash, then move to the PFS.
++            stage_dir=getattr(self.config, "ckpt_stage_dir", None) or None,
+         )
+ 
++    @_dft.log
+     def cleanup_or_resume(self):
+         """
+         Clean up existing train stats and checkpoints,
+@@ -350,6 +362,7 @@
+             with open(self.outfile_path, "a", newline="") as outfile:
+                 outfile.write(",".join(headers) + "\n")
+ 
++    @_dft.log
+     def _truncate_stats_file(self, start_epoch, path=None):
+         """
+         Scans the stats file and truncates it at the first occurrence of
+@@ -413,6 +426,7 @@
+         tensor_memory_gb = tensor_memory_bytes / (1024**3)
+         self.log.info(f"{tensor_label} size on GPU: {tensor_memory_gb:.2f} GB")
+ 
++    @_dft.log
+     def _run_training_batch(
+         self,
+         batch,
+@@ -544,6 +558,7 @@
+ 
+         return batch_size, detached_loss, batch_dice_score
+ 
++    @_dft.log
+     def _sync_gather_minibatch_timer(self, minibatch_events):
+         minibatch_events[-1][1].synchronize()
+         local_minibatch_times = torch.tensor(
+@@ -567,6 +582,7 @@
+         minibatch_time_s = statistics.median(minibatch_times.cpu().tolist())
+         return minibatch_time_s
+ 
++    @_dft.log
+     def warmup(self):
+         """Run warmup iterations before the main training loop."""
+         warmup_batches = self.config.warmup_batches
+@@ -627,6 +643,7 @@
+             torch.distributed.barrier()
+         self.log.info(f"Done warmup. Took {int(time.time() - start_warmup)}s")
+ 
++    @_dft.log
+     def train(self):
+         """
+         Execute model training
+diff -ruN --no-dereference '--exclude=build' '--exclude=*.egg-info' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=*.npy' '--exclude=*.png' '--exclude=*.pth' source/ScaFFold/viz/standard_viz.py annotated/source/ScaFFold/viz/standard_viz.py
+--- source/ScaFFold/viz/standard_viz.py	2026-07-09 01:13:42.397123000 -0700
++++ annotated/source/ScaFFold/viz/standard_viz.py	2026-07-09 02:17:14.949550000 -0700
+@@ -18,8 +18,11 @@
+ import matplotlib.pyplot as plt
+ 
+ from ScaFFold.utils.config_utils import RunConfig
++from dftracer.python import dftracer, dft_fn as DFTracerFn
++_dft = DFTracerFn("standard_viz")
+ 
+ 
++@_dft.log
+ def main(config: RunConfig):
+     figures_path = Path(config.run_dir) / "figures"
+     figures_path.mkdir()
+diff -ruN --no-dereference '--exclude=build' '--exclude=*.egg-info' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=*.npy' '--exclude=*.png' '--exclude=*.pth' source/ScaFFold/worker.py annotated/source/ScaFFold/worker.py
+--- source/ScaFFold/worker.py	2026-07-09 01:13:42.399996000 -0700
++++ annotated/source/ScaFFold/worker.py	2026-07-09 07:29:48.167214000 -0700
+@@ -47,6 +47,16 @@
+ from ScaFFold.utils.trainer import PyTorchTrainer
+ from ScaFFold.utils.utils import set_seeds, setup_mpi_logger
+ from ScaFFold.viz import standard_viz
++from dftracer.python import dftracer, dft_fn as DFTracerFn
++_dft = DFTracerFn("worker")
++# Initialize at import so events from cli.main/benchmark.main are captured too.
++# Requires torch/lib on LD_LIBRARY_PATH (see scripts/env.sh) because gotcha's
++# dlopen interception defeats torch's $ORIGIN-relative RPATH lookup.
++_dft_log = dftracer.initialize_log(
++    logfile=os.environ.get("DFTRACER_LOG_FILE"),
++    data_dir=os.environ.get("DFTRACER_DATA_DIR"),
++    process_id=-1,
++)
+ 
+ if hasattr(os, "sched_getaffinity"):
+     _orig_affinity = os.sched_getaffinity(0)
+@@ -54,6 +64,7 @@
+     _orig_affinity = None
+ 
+ 
++@_dft.log
+ def check_resource_utilization(log, rank, world_size):
+     """Check that we are properly utilizing resources"""
+ 
+@@ -84,6 +95,7 @@
+         log.debug(f"  Device Properties: {torch.cuda.get_device_properties(this_gpu)}")
+ 
+ 
++@_dft.log
+ def override_config(config) -> None:
+     """Override base run config if additional configs are provided."""
+     if "--config" in sys.argv:
+@@ -105,6 +117,7 @@
+ 
+ 
+ @annotate()
++@_dft.log
+ def main(kwargs_dict: dict = {}):
+     #
+     # Setup
+@@ -169,6 +182,15 @@
+     )
+     device = get_device()
+     log.info(f"Using device: {device}")
++
++    if _dft_log is not None:
++        _dft_log.log_metadata_event("batch_size", str(config.batch_size))
++        _dft_log.log_metadata_event("epochs", str(config.epochs))
++        _dft_log.log_metadata_event("problem_scale", str(config.problem_scale))
++        _dft_log.log_metadata_event("checkpoint_interval", str(config.checkpoint_interval))
++        _dft_log.log_metadata_event("num_workers", str(config.dataloader_num_workers))
++        _dft_log.log_metadata_event("distributed", str(config.dist))
++        _dft_log.log_metadata_event("model", "3D_UNet")
+     model = UNet(
+         n_channels=3,
+         n_classes=config.n_categories + 1,
+@@ -313,4 +335,6 @@
+     dist.barrier()
+     dist.destroy_process_group()
+ 
++    if _dft_log is not None:
++        _dft_log.finalize()
+     return 0

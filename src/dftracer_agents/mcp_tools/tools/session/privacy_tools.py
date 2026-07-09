@@ -35,17 +35,32 @@ from .workspace import _err, _ok
 #: Trees whose contents are committed and shared, relative to the project root.
 #: ``good-runs`` holds published reference artifacts — reports, run scripts, and
 #: the patches under each ``final*/`` folder — and leaks just as readily as a skill.
+#: ``scripts`` and the package source ship too: a sandbox mount path or a docstring
+#: example is as much of a leak as a skill, and neither was covered before.
 _PERSISTED = (
     "src/dftracer_agents/.agents/skills",
     "src/dftracer_agents/.agents/agents",
     "src/dftracer_agents/.agents/workspace",
     "good-runs",
+    "scripts",
+    "src/dftracer_agents",
 )
 
 _SUFFIXES = {
     ".md", ".yaml", ".yml", ".json", ".jsonc", ".txt",
     ".sh", ".patch", ".diff", ".par", ".log", ".cfg", ".ini",
+    ".py",
 }
+
+#: Files that legitimately CONTAIN the identifier patterns because they define or
+#: document them. Scanning these only ever produces false positives.
+_EXCLUDE_SUFFIXES = (
+    "src/dftracer_agents/privacy.py",
+    "src/dftracer_agents/mcp_tools/tools/session/privacy_tools.py",
+    "src/dftracer_agents/mcp_tools/tools/system/system_service.py",
+    "src/dftracer_agents/.agents/skills/dftracer-privacy-guard/SKILL.md",
+    "src/dftracer_agents/.agents/workspace/privacy_patterns.yaml",
+)
 
 
 def _package_root() -> Path:
@@ -93,7 +108,17 @@ def _targets(paths: List[str] | None) -> List[Path]:
             files.extend(
                 p for p in r.rglob("*") if p.is_file() and p.suffix in _SUFFIXES
             )
-    return sorted(f for f in set(files) if not _is_ignored(f))
+    return sorted(
+        f
+        for f in set(files)
+        if not _is_ignored(f) and not _defines_the_patterns(f)
+    )
+
+
+def _defines_the_patterns(path: Path) -> bool:
+    """True for files that document the identifier patterns they'd otherwise trip."""
+    posix = path.as_posix()
+    return any(posix.endswith(suffix) for suffix in _EXCLUDE_SUFFIXES)
 
 
 def register_privacy_tools(mcp: FastMCP) -> None:

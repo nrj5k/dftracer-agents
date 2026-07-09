@@ -1,0 +1,40 @@
+base_run_dir: "$LUSTRE_ROOT/workspaces/scaffold/runs"
+dataset_dir: "$LUSTRE_ROOT/workspaces/scaffold/datasets"
+fract_base_dir: "$LUSTRE_ROOT/workspaces/scaffold/fractals"
+n_categories: 20
+n_instances_used_per_fractal: 24
+problem_scale: 6
+unet_bottleneck_dim: 3
+seed: 42
+batch_size: 1
+dataloader_num_workers: 4
+optimizer: "ADAM"
+dc_num_shards: [1, 1, 1]
+dc_shard_dims: [2, 3, 4]
+checkpoint_interval: 1
+
+variance_threshold: 0.15
+n_fracts_per_vol: 3
+val_split: 30
+epochs: 350
+starting_learning_rate: 0.001
+min_learning_rate: 0.0001
+T_0: 100
+T_mult: 2
+disable_scheduler: 1
+more_determinism: 0
+datagen_from_scratch: 0
+train_from_scratch: 1
+dist: 1
+torch_amp: 0
+framework: "torch"
+checkpoint_dir: "checkpoints"
+loss_freq: 1
+normalize: 1
+group_norm_groups: 8
+warmup_batches: 1
+ce_weight_sample_fraction: 0.1
+dataset_reuse_enforce_commit_id: 0
+target_dice: 0.95
+async_save: 1
+hardlink_best: 1

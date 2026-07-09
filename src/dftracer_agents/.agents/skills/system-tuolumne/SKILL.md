@@ -692,3 +692,27 @@ to the core range of GPU i's die (verify with `flux run --verbose` / `hwloc-bind
 
 Always check a wall-clock win against event/byte counts first: reducing checkpoint frequency or
 epochs is *doing less*, not going faster.
+
+### MEASURED: affinity had no effect on ScaFFold (and how we nearly got it wrong)
+
+The APU reasoning above is sound, but on ScaFFold (32 ranks, MI300A) it produced **no measurable
+change**, tested as two separate halves against a CONCURRENT control:
+
+| change | train time delta (paired) |
+| --- | --- |
+| `torchrun-hpc -p cores_per_node=96 gpus_per_node=4` (24 cores/die) | +0.4% |
+| `OMP_NUM_THREADS=6 OMP_PROC_BIND=close OMP_PLACES=cores` | +1.8% |
+
+Both within noise. Reason: PyTorch's `pin_memory=True` was already set, and `torchrun-hpc`'s
+default binding was already adequate — there was no headroom to recover.
+
+**The trap.** Bundling both changes and comparing against a baseline from an hour earlier showed a
+**+22.5% regression** that does not exist. Two runs of the *identical* control config 30 minutes
+apart measured `train=140.96 s` and `train=293.46 s` — a 2x swing from cluster contention alone.
+
+Rules this cost us:
+- Change ONE thing per run, or you cannot attribute the result.
+- Always run the control CONCURRENTLY on a separate same-size allocation. See
+  [[dftracer-optimization-kb]].
+- Before proposing affinity work, check whether `pin_memory` is already enabled and whether the
+  launcher already binds sensibly (`hwloc-bind --get`, `flux run --verbose`).
