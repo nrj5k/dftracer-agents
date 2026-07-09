@@ -22,6 +22,7 @@ dependencies = [
     # PyPI name is `graphifyy`; the CLI it ships is `graphify`.
     # https://github.com/safishamsi/graphify
     "graphifyy>=0.9.11",
+    "mlflow>=2.9",
 ]
 
 [project.optional-dependencies]
@@ -32,10 +33,7 @@ dev = [
 ]
 # Pipeline profiling: MLflow tracking + UI for per-step AI cost, tokens, timing
 # and retries. The OTLP collector itself is stdlib-only, so a session's
-# performance/ directory is still written without this extra installed.
-profile = [
-    "mlflow>=2.9",
-]
+
 
 [project.scripts]
 dftracer_agents_stack   = "dftracer_agents.stack:main"
