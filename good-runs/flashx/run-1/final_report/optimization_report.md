@@ -82,7 +82,7 @@ export HDF5_COLL_METADATA_WRITE=1      # Collective metadata writes
 #### 2.2 Lustre Stripe Configuration
 ```bash
 # Set before running:
-lfs setstripe -c 8 -s 1M /p/lustre5/haridev/flashx/baseline_production/
+lfs setstripe -c 8 -s 1M $LUSTRE_ROOT/flashx/baseline_production/
 ```
 - **-c 8**: Stripe across 8 OSTs (matches 8 nodes)
 - **-s 1M**: 1MB stripe size (matches HDF5 chunk size)

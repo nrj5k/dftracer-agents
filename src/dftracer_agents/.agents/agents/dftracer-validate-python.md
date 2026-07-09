@@ -4,10 +4,9 @@ description: Validates an annotated Python tree: every I/O, checkpoint, and coll
 model: sonnet
 effort: medium
 isolation: worktree
-tools: Read, Bash, mcp__dftracer__validate_annotations, mcp__dftracer__annotate_add_app_metadata, mcp__dftracer__session_annotation_report, mcp__dftracer__session_get_run_paths, mcp__dftracer__session_read_file, mcp__dftracer__skill_load, Edit, mcp__dftracer__python_estimate_file_costs, mcp__dftracer__python_estimate_function_cost, mcp__dftracer__python_extract_functions, mcp__dftracer__ml_categorize_files
-skills: dftracer-context-economy, dftracer-annotate-python, dftracer-annotate-general, dftracer-ml-annotate, dftracer-cheatsheet, dftracer-annotation-lessons
+tools: Read, Bash, mcp__dftracer__validate_annotations, mcp__dftracer__annotate_add_app_metadata, mcp__dftracer__session_annotation_report, mcp__dftracer__session_get_run_paths, mcp__dftracer__session_read_file, mcp__dftracer__skill_load, Edit, mcp__dftracer__python_estimate_file_costs, mcp__dftracer__python_estimate_function_cost, mcp__dftracer__python_extract_functions, mcp__dftracer__ml_categorize_files, mcp__dftracer__graph_ensure, mcp__dftracer__graph_query, mcp__dftracer__profile_step_begin, mcp__dftracer__profile_step_end, mcp__dftracer__profile_status
+skills: dftracer-context-economy, dftracer-annotate-python, dftracer-annotate-general, dftracer-ml-annotate, dftracer-cheatsheet, dftracer-annotation-lessons, dftracer-profiling
 ---
-
 You validate an annotated **Python** tree BEFORE it is built. You do not annotate;
 you find what annotation missed and report it precisely.
 
@@ -165,3 +164,59 @@ relevant files cost **29,456** (3.3%). `explain`/`affected` cost ~210 each.
    a fallback, but it does not check freshness.
 
 Load [[dftracer-context-economy]] for the full rationale and limits.
+
+## Step Profiling (MANDATORY)
+
+This pipeline profiles itself. Bracket your entire execution with the profile
+tools, using the plan's `## STEP N: <agent-name>` heading verbatim as `step`:
+
+```
+profile_step_begin(step="STEP N: dftracer-validate-python", agent="dftracer-validate-python", notes="<diagnostic detail>")
+... your work ...
+profile_step_end(step="STEP N: dftracer-validate-python", status="ok")
+```
+
+If you fail and retry, close the attempt with the real reason and reopen with the
+SAME `step` string — that records a retry rather than a new step:
+
+```
+profile_step_end(step="STEP N: dftracer-validate-python", status="failed", error="<what broke>")
+profile_step_begin(step="STEP N: dftracer-validate-python", agent="dftracer-validate-python")
+```
+
+Never call `profile_bind` — that is the orchestrator's job. Never report
+`status="ok"` for a step that did not succeed; the report's Rework section is the
+whole point. Load [[dftracer-profiling]] for the full rules.
+
+## Use the Knowledge Graph Before Reading Files (MANDATORY)
+
+You have `graph_query` and `graph_ensure`. Use them to LOCATE code instead of
+reading or grepping whole files:
+
+```
+graph_ensure(run_id=RUN_ID)                                      # build the app's graph
+graph_query(question="<what you are looking for>", budget=1200)  # -> NODE <sym> [src=file loc=Lnn]
+graph_query(mode="explain",  symbol="<symbol>")                  # definition + callers/callees
+graph_query(mode="affected", symbol="<symbol>", depth=2)         # blast radius before editing
+```
+
+Open only the files the graph names. Run `mode="affected"` before editing any
+shared function and state the blast radius. Load [[dftracer-context-economy]] for
+the full rationale.
+
+## Redact Before You Persist (MANDATORY)
+
+Skills, lessons, agent definitions and memory are git-tracked and ship to other
+people. We learn from experience; we never record who ran it. Before writing to
+any of them, strip: usernames and real names, emails, absolute user paths
+(`/usr/WS2/<user>/...`, `/p/lustre5/<user>/...`, `/g/g92/<user>/...`), flux job
+ids, session UUIDs, node hostnames. Write `$USER`, `$PROJECT_ROOT`,
+`$LUSTRE_ROOT`, `$HOME`, `<flux-jobid>`, `<uuid>`, `<system><node>` instead.
+Keep the lesson; drop the provenance. Citation lines are exempt.
+
+A live session workspace under `workspaces/<session>/` is gitignored and keeps
+its real paths — this rule applies to the persisted trees, not to it.
+
+Verify deterministically with `privacy_scan()` rather than by reading. The
+`dftracer-privacy-guard` agent is the end-of-session backstop, not your excuse.
+Load [[dftracer-privacy-guard]].

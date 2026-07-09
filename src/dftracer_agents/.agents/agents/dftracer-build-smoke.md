@@ -10,9 +10,9 @@ model: level_3
 model_level: level_3
 effort: low
 isolation: worktree
-tools: Read, Bash, mcp__dftracer__session_build_annotated, mcp__dftracer__session_run_smoke_test, mcp__dftracer__session_annotation_report, mcp__dftracer__session_get_run_paths, mcp__dftracer__skill_load, mcp__dftracer__session_read_file, Edit, mcp__dftracer__session_capture_run_record, mcp__dftracer__validate_annotations
+tools: Read, Bash, mcp__dftracer__session_build_annotated, mcp__dftracer__session_run_smoke_test, mcp__dftracer__session_annotation_report, mcp__dftracer__session_get_run_paths, mcp__dftracer__skill_load, mcp__dftracer__session_read_file, Edit, mcp__dftracer__session_capture_run_record, mcp__dftracer__validate_annotations, mcp__dftracer__graph_ensure, mcp__dftracer__graph_query, mcp__dftracer__profile_step_begin, mcp__dftracer__profile_step_end, mcp__dftracer__profile_status
+skills: dftracer-context-economy, dftracer-profiling
 ---
-
 ## Load your plan section first (do this before anything else)
 The pipeline planner has written a detailed, self-contained plan into the
 session at `pipeline_plan.md`. Do NOT replan — execute what it says.
@@ -237,3 +237,59 @@ relevant files cost **29,456** (3.3%). `explain`/`affected` cost ~210 each.
    a fallback, but it does not check freshness.
 
 Load [[dftracer-context-economy]] for the full rationale and limits.
+
+## Step Profiling (MANDATORY)
+
+This pipeline profiles itself. Bracket your entire execution with the profile
+tools, using the plan's `## STEP N: <agent-name>` heading verbatim as `step`:
+
+```
+profile_step_begin(step="STEP N: dftracer-build-smoke", agent="dftracer-build-smoke", notes="<diagnostic detail>")
+... your work ...
+profile_step_end(step="STEP N: dftracer-build-smoke", status="ok")
+```
+
+If you fail and retry, close the attempt with the real reason and reopen with the
+SAME `step` string — that records a retry rather than a new step:
+
+```
+profile_step_end(step="STEP N: dftracer-build-smoke", status="failed", error="<what broke>")
+profile_step_begin(step="STEP N: dftracer-build-smoke", agent="dftracer-build-smoke")
+```
+
+Never call `profile_bind` — that is the orchestrator's job. Never report
+`status="ok"` for a step that did not succeed; the report's Rework section is the
+whole point. Load [[dftracer-profiling]] for the full rules.
+
+## Use the Knowledge Graph Before Reading Files (MANDATORY)
+
+You have `graph_query` and `graph_ensure`. Use them to LOCATE code instead of
+reading or grepping whole files:
+
+```
+graph_ensure(run_id=RUN_ID)                                      # build the app's graph
+graph_query(question="<what you are looking for>", budget=1200)  # -> NODE <sym> [src=file loc=Lnn]
+graph_query(mode="explain",  symbol="<symbol>")                  # definition + callers/callees
+graph_query(mode="affected", symbol="<symbol>", depth=2)         # blast radius before editing
+```
+
+Open only the files the graph names. Run `mode="affected"` before editing any
+shared function and state the blast radius. Load [[dftracer-context-economy]] for
+the full rationale.
+
+## Redact Before You Persist (MANDATORY)
+
+Skills, lessons, agent definitions and memory are git-tracked and ship to other
+people. We learn from experience; we never record who ran it. Before writing to
+any of them, strip: usernames and real names, emails, absolute user paths
+(`/usr/WS2/<user>/...`, `/p/lustre5/<user>/...`, `/g/g92/<user>/...`), flux job
+ids, session UUIDs, node hostnames. Write `$USER`, `$PROJECT_ROOT`,
+`$LUSTRE_ROOT`, `$HOME`, `<flux-jobid>`, `<uuid>`, `<system><node>` instead.
+Keep the lesson; drop the provenance. Citation lines are exempt.
+
+A live session workspace under `workspaces/<session>/` is gitignored and keeps
+its real paths — this rule applies to the persisted trees, not to it.
+
+Verify deterministically with `privacy_scan()` rather than by reading. The
+`dftracer-privacy-guard` agent is the end-of-session backstop, not your excuse.
+Load [[dftracer-privacy-guard]].

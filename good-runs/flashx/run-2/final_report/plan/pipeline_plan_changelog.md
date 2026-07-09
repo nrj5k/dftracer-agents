@@ -7,7 +7,7 @@
 **Status**: ✅ SUCCESS
 
 **Key Facts Resolved**:
-- Binary path: `/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/object/flashx`
+- Binary path: `$PROJECT_ROOT/workspaces/flash_x/20260708_201403/baseline/source/object/flashx`
 - Block size: NXB=NYB=NZB=8 (8³ zone blocks), MAXBLOCKS=200, 3D
 - Compilers: GNU 11.2 MPI wrappers at `/opt/cray/pe/mpich/9.0.1/ofi/gnu/11.2/`
 - **HDF5 Issue**: Binary linked against system HDF5 1.10.5 instead of planned session HDF5 1.14.5
@@ -33,10 +33,10 @@
 - Features enabled: ['mpi', 'hdf5=1.14.5', 'hwloc']
 - HIP disabled (CPU-only per user requirement)
 - Installation paths resolved:
-  - DFTRACER_LIB_DIR: /usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_201403/install/lib/python3.13/site-packages/dftracer/lib64
+  - DFTRACER_LIB_DIR: $PROJECT_ROOT/workspaces/flash_x/20260708_201403/install/lib/python3.13/site-packages/dftracer/lib64
   - DFTRACER_PRELOAD_LIB: ${DFTRACER_LIB_DIR}/libdftracer_preload.so
   - DFTRACER_CORE_LIB: ${DFTRACER_LIB_DIR}/libdftracer_core.so
-  - DFTRACER_INCLUDE_DIR: /usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_201403/install/lib/python3.13/site-packages/dftracer/include
+  - DFTRACER_INCLUDE_DIR: $PROJECT_ROOT/workspaces/flash_x/20260708_201403/install/lib/python3.13/site-packages/dftracer/include
 
 **Notes**:
 - MPI-IO tracing disabled (MPICH 9.0.1 not in dftracer's native compatible range 3.4.3-3.4.x or 4.2.3-4.2.x)

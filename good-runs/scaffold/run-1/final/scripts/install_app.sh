@@ -1,7 +1,7 @@
 #!/bin/bash
 # ScaFFold original-source install into session venv (follows scripts/install-tuolumne-torchpypi.sh)
 set -x
-WS=/usr/WS2/haridev/dftracer-agents/workspaces/scaffold/20260705_175606
+WS=$PROJECT_ROOT/workspaces/scaffold/20260705_175606
 source /usr/share/lmod/lmod/init/bash 2>/dev/null || source /etc/profile.d/z00_lmod.sh 2>/dev/null
 deactivate 2>/dev/null
 module load python/3.13.2 cce/21.0.1 cray-mpich/9.1.0 rocm/7.1.1 rccl/fast-env-slows-mpi 2>&1

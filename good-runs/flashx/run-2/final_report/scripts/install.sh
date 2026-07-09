@@ -11,7 +11,7 @@ test -f "$WS/hdf5_1.14/lib/libhdf5.so" || {
 
 # 2) dftracer (MPI + HDF5 on; HIP/ROCm OFF for CPU-only workloads).
 #    Installed prefix used by this session:
-#      /usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_201403/install/lib/python3.13/site-packages/dftracer/lib64
+#      $PROJECT_ROOT/workspaces/flash_x/20260708_201403/install/lib/python3.13/site-packages/dftracer/lib64
 
 # 3) Application build.
 #    Flash-X: the SERIAL HDF5 IO unit is the default and makes

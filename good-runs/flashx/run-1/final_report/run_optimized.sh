@@ -1,24 +1,24 @@
 #!/bin/bash
 # OPTIMIZED production run for Flash-X Sedov 3D
-# Allocation: f3Junw1CTMif (8 nodes, 48 cores/node = 384 cores total)
+# Allocation: <flux-jobid> (8 nodes, 48 cores/node = 384 cores total)
 #
 # OPTIMIZATIONS APPLIED:
 #   1. checkpointFileIntervalTime = 0.1 (was 0.03) → 3x fewer checkpoints
 #   2. Lustre striping: lfs setstripe -c 8 -s 1M (applied to output dir)
 #   3. HDF5 env vars: collective metadata, no file locking
 #
-# USAGE: flux proxy f3Junw1CTMif flux run -N 8 -n 384 --exclusive \
-#          --cwd /usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844/annotated/source/object \
-#          /usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844/run_optimized.sh
+# USAGE: flux proxy <flux-jobid> flux run -N 8 -n 384 --exclusive \
+#          --cwd $PROJECT_ROOT/workspaces/flash_x/20260708_063844/annotated/source/object \
+#          $PROJECT_ROOT/workspaces/flash_x/20260708_063844/run_optimized.sh
 
 set -e
 
-WS="/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844"
+WS="$PROJECT_ROOT/workspaces/flash_x/20260708_063844"
 FLASHX_DIR="${WS}/annotated/source/object"
-LUSTRE_OUT="/p/lustre5/haridev/flashx/baseline_production"
+LUSTRE_OUT="$LUSTRE_ROOT/flashx/baseline_production"
 
 # Environment
-export PATH="/usr/WS2/haridev/dftracer-agents/.venv/bin:$PATH"
+export PATH="$PROJECT_ROOT/.venv/bin:$PATH"
 export LD_LIBRARY_PATH="${WS}/hdf5_1.14/lib:${WS}/install/lib/python3.13/site-packages/dftracer/lib64:/opt/cray/pe/cce/20.0.0/cce/x86_64/lib:$LD_LIBRARY_PATH"
 
 # DFTracer setup — PRELOAD mode

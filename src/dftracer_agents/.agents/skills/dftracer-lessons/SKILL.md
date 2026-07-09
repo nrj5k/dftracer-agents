@@ -50,6 +50,31 @@ Route each learning to the right home:
 Prefer: generic skill = the general how-to; specific skill = only the
 workload/system/software deltas layered on top.
 
+## Redaction gate (MANDATORY)
+
+Lessons, skills, agent definitions and memory are git-tracked and ship to other
+people. **Redact before you persist.** We learn from experience; we never record
+who ran it.
+
+Never write into any of them: usernames or real names, email addresses, absolute
+user paths (`/usr/WS2/<user>/...`, `/p/lustre5/<user>/...`, `/g/g92/<user>/...`,
+`/home/<user>/...`), flux job ids, session UUIDs, or node hostnames. Write
+`$USER`, `$PROJECT_ROOT`, `$LUSTRE_ROOT`, `$HOME`, `<flux-jobid>`, `<uuid>`,
+`<system><node>` instead. Keep the lesson; drop the provenance.
+
+Verify with the deterministic tools rather than by reading:
+
+```
+privacy_scan()                 # report identifying content, read-only
+privacy_redact(dry_run=True)   # show what would change
+privacy_redact()               # rewrite in place
+```
+
+Citation lines (`**Citation:**`, `**Authors:**`) are public bibliography and are
+exempt. The `dftracer-privacy-guard` agent runs this as the last step of every
+session, but that is a backstop — do not rely on it to clean up after you. Load
+[[dftracer-privacy-guard]] for the full table and the known false positives.
+
 ## Confirmation gate (MANDATORY)
 
 Agents must NOT self-write skills, lesson files, agent definitions, or MCP

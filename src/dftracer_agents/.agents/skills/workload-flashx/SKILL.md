@@ -142,7 +142,7 @@ nend = 100000
 tmax = 0.5                          # longer runtime
 
 # Output to Lustre
-basenm = "/p/lustre5/haridev/flashx/sedov_"
+basenm = "$LUSTRE_ROOT/flashx/sedov_"
 ```
 
 ### Allocation-Aware Run Rules
@@ -171,7 +171,7 @@ cat > production_run.sh << 'EOF'
 set -e
 
 # Environment
-export PATH="/usr/WS2/haridev/dftracer-agents/.venv/bin:$PATH"
+export PATH="$PROJECT_ROOT/.venv/bin:$PATH"
 export LD_LIBRARY_PATH="${WS}/hdf5_1.14/lib:${WS}/install/lib/python3.13/site-packages/dftracer/lib64:/opt/cray/pe/cce/20.0.0/cce/x86_64/lib:$LD_LIBRARY_PATH"
 
 # DFTracer setup
@@ -409,7 +409,7 @@ After every production run, update this skill with:
   a correct link shows `<WS>/hdf5_1.14/lib/libhdf5.so.310`, never `/lib64/libhdf5.so.103`.
 
 
-- 2026-07-08 (dftracer install on Tuolumne): Successfully installed dftracer develop with session-built HDF5 1.14.5 and Cray MPICH 9.0.1 (GNU 11.2 wrappers). HIP disabled (CPU-only workload). All libraries (libdftracer_preload.so, libdftracer_core.so) verified clean with ldd. Session HDF5 1.14.5 and Cray MPI correctly linked. Installation paths resolved: $DFTRACER_LIB_DIR=/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_201403/install/lib/python3.13/site-packages/dftracer/lib64 (see artifacts/01_dftracer_install_verification.log for full details). NOTE: MPI is compatible on tuolumne — MPI-IO tracing should be enabled by passing the MPI version + headers; do not accept "auto-disabled/unsupported" (user-confirmed misdiagnosis).
+- 2026-07-08 (dftracer install on Tuolumne): Successfully installed dftracer develop with session-built HDF5 1.14.5 and Cray MPICH 9.0.1 (GNU 11.2 wrappers). HIP disabled (CPU-only workload). All libraries (libdftracer_preload.so, libdftracer_core.so) verified clean with ldd. Session HDF5 1.14.5 and Cray MPI correctly linked. Installation paths resolved: $DFTRACER_LIB_DIR=$PROJECT_ROOT/workspaces/flash_x/20260708_201403/install/lib/python3.13/site-packages/dftracer/lib64 (see artifacts/01_dftracer_install_verification.log for full details). NOTE: MPI is compatible on tuolumne — MPI-IO tracing should be enabled by passing the MPI version + headers; do not accept "auto-disabled/unsupported" (user-confirmed misdiagnosis).
 
 - 2026-07-08 (setup wipes object/): `bash setup Sedov -auto -3d` REGENERATES the `object/` build dir
   from scratch every time, wiping any hand-added files. → **Fix:** apply Makefile.h edits AND recreate

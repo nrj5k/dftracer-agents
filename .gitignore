@@ -41,3 +41,7 @@ copilot-instructions.md
 graphify-out/
 # knowledge-graph cache (rebuilt on demand, ~4s)
 workspaces/_graph/
+
+# Personal / machine-local. Never commit: these embed absolute user paths.
+.env
+src/dftracer_agents/.agents/workspace/setup-state.json

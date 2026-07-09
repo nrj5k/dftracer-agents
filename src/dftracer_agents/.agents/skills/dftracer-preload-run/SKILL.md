@@ -93,7 +93,7 @@ module load cce/20.0.0
 module load cray-mpich/9.0.1
 
 # Environment
-export PATH="/usr/WS2/haridev/dftracer-agents/.venv/bin:$PATH"
+export PATH="$PROJECT_ROOT/.venv/bin:$PATH"
 export LD_LIBRARY_PATH="${WS}/hdf5_1.14/lib:${WS}/install/lib/python3.13/site-packages/dftracer/lib64:/opt/cray/pe/cce/20.0.0/cce/x86_64/lib:$LD_LIBRARY_PATH"
 
 # DFTracer setup

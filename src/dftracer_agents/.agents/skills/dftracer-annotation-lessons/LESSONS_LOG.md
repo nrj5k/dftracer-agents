@@ -1073,12 +1073,12 @@ error: |
 root_cause: |
   Baseline dfanalyzer summary (after fixing the mAdd_avg_mean trace-noise
   issue, see prior lesson) showed 62,380 POSIX ops / 811.5MB / 740.6MB/s /
-  13KB avg transfer, running on NFS (/usr/WS2). Two concrete, safe
+  13KB avg transfer, running on NFS (the project's NFS filesystem). Two concrete, safe
   optimizations were available:
     L2: mProject.c/montageAdd.c call fits_read_pix()/fits_open_file() but
         never hint the kernel about the row-by-row sequential access
         pattern that follows.
-    L3: the whole session had been running on NFS (/usr/WS2), not Lustre,
+    L3: the whole session had been running on NFS (the project's NFS filesystem), not Lustre,
         despite Lustre being available at /p/lustre5/$USER.
   A third option (L1: rewrite mProject/mAdd's row-by-row fits_read_pix/
   fits_write_pix calls into larger batched multi-row reads) was considered

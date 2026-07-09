@@ -26,6 +26,7 @@ from typing import List, Optional
 import requests
 from fastmcp import FastMCP
 
+from ....privacy import anonymize
 from .workspace import _ok, _err, _workspaces_root
 from .annotation_ai import _LESSONS_REL, _LESSONS_ANCHOR
 
@@ -153,7 +154,9 @@ def register_lessons_sync_tools(mcp: FastMCP) -> None:
         staged_path = ws_root / _LESSONS_REL
         if not staged_path.exists():
             return _ok("No staged lessons file found — nothing to sync", new_entry_count=0, new_entries=[])
-        staged_text = staged_path.read_text(errors="replace")
+        # Lessons leave this machine here. Redact identity and machine-local
+        # paths at the read boundary so nothing unredacted can reach a PR.
+        staged_text = anonymize(staged_path.read_text(errors="replace"))
 
         repo_root = _find_local_git_root()
         cleanup_dir: Optional[Path] = None
@@ -214,7 +217,9 @@ def register_lessons_sync_tools(mcp: FastMCP) -> None:
         staged_path = ws_root / _LESSONS_REL
         if not staged_path.exists():
             return _ok("No staged lessons file found — nothing to sync", entry_count=0)
-        staged_text = staged_path.read_text(errors="replace")
+        # Lessons leave this machine here. Redact identity and machine-local
+        # paths at the read boundary so nothing unredacted can reach a PR.
+        staged_text = anonymize(staged_path.read_text(errors="replace"))
 
         repo_root = _find_local_git_root()
         cleanup_dir: Optional[Path] = None

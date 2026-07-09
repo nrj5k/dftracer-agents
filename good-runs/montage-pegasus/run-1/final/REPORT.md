@@ -232,5 +232,5 @@ final/
 | Optimized traces (Lustre + fadvise) | `../pegasus3/traces/` |
 | Lessons log (all pitfalls, full detail) | `../../../src/dftracer_agents/.agents/skills/dftracer-annotation-lessons/LESSONS_LOG.md` |
 | Pegasus workflow skill | `../../../src/dftracer_agents/.agents/skills/software-pegasus/SKILL.md` |
-| Pegasus/PMC install | `/usr/WS2/haridev/dftracer-agents/workspaces/pegasus_montage/` |
-| Final mosaic output | `/usr/WS2/haridev/dftracer-agents/workspaces/montage_workflow_v3/20260706_062326/source/wf-output/1-mosaic.fits` |
+| Pegasus/PMC install | `$PROJECT_ROOT/workspaces/pegasus_montage/` |
+| Final mosaic output | `$PROJECT_ROOT/workspaces/montage_workflow_v3/20260706_062326/source/wf-output/1-mosaic.fits` |

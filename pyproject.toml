@@ -57,6 +57,10 @@ where = ["src"]
     ".agents/workspace/**/*.md",
     ".agents/workspace/**/*.json",
     ".agents/workspace/**/*.jsonc",
+    # models.yaml (the model map) and privacy_patterns.yaml (redaction rules the
+    # privacy guard has learned). Without this glob neither ships in a wheel.
+    ".agents/workspace/**/*.yaml",
+    ".agents/skills/**/*.yaml",
     ".agents/workspace/.claude/*.json",
     ".agents/workspace/.opencode/*.jsonc",
     ".agents/workspace/.vscode/*.json",

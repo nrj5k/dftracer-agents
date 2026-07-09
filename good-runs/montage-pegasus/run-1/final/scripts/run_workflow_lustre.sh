@@ -8,8 +8,8 @@
 #   - Flux allocation already running (flux alloc / flux alloc --bg)
 set -e
 
-ALLOC_JOBID="$1"          # e.g. f3JSbA6awcdD
-RUN_DIR="$2"              # e.g. .../work_lustre/haridev/pegasus/montage/run0001
+ALLOC_JOBID="$1"          # e.g. <flux-jobid>
+RUN_DIR="$2"              # e.g. .../work_lustre/$USER/pegasus/montage/run0001
 PEGASUS_BIN="$3"          # e.g. .../pegasus_montage/pegasus/bin
 DFTRACER_LIB="$4"         # e.g. .../montage/<run>/venv/lib/python3.13/site-packages/dftracer/lib64
 TRACES_DIR="$5"           # e.g. /p/lustre5/$USER/dftracer-pegasus-montage/traces

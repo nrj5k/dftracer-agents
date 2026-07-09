@@ -42,7 +42,7 @@
     "nodes": 8,
     "cores": 384,
     "mpi_ranks": 384,
-    "storage_path": "/p/lustre5/haridev/flashx/baseline_production/",
+    "storage_path": "$LUSTRE_ROOT/flashx/baseline_production/",
     "hdf5_version": "1.14.3"
   },
   "trace_summary": {

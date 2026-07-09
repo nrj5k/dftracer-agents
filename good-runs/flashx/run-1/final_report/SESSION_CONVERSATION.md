@@ -3,9 +3,9 @@
 ## Session Metadata
 - **Session ID**: `flash_x/20260708_063844`
 - **Date**: 2026-07-08
-- **Workspace**: `/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844`
+- **Workspace**: `$PROJECT_ROOT/workspaces/flash_x/20260708_063844`
 - **Platform**: Tuolumne (LLNL)
-- **Allocation**: `f3Junw1CTMif` (8 nodes, 384 cores, 48 cores/node)
+- **Allocation**: `<flux-jobid>` (8 nodes, 384 cores, 48 cores/node)
 - **Application**: Flash-X Sedov 3D (git@github.com:Flash-X/Flash-X.git @ main)
 - **Test Problem**: Sedov blast wave, tmax=0.5, Paramesh AMR
 - **Compiler**: GNU MPI wrappers (mpif90, mpicc, mpicxx)
@@ -32,7 +32,7 @@ Built annotated binary with dftracer. Verified smoke test.
 **User**: "ok now run the ananlysis diagnostic and optimization pipeline"
 **Agent**: Submitted baseline production run via Flux:
 ```bash
-flux proxy f3Junw1CTMif flux run -N 8 -n 384 --exclusive --cwd ... ./run_production_baseline.sh
+flux proxy <flux-jobid> flux run -N 8 -n 384 --exclusive --cwd ... ./run_production_baseline.sh
 ```
 
 Run completed at ~11:59. Results:
@@ -60,7 +60,7 @@ Generated `diagnosis.json` and `optimization_report.md` with L1/L2/L3 proposals.
 ### Phase 5: Optimized Run (2026-07-08 ~12:29–12:34)
 **Agent**: Submitted optimized run:
 ```bash
-flux proxy f3Junw1CTMif flux run -N 8 -n 384 --exclusive --cwd ... ./run_optimized.sh
+flux proxy <flux-jobid> flux run -N 8 -n 384 --exclusive --cwd ... ./run_optimized.sh
 ```
 
 Run completed at ~12:34. Results:

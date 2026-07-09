@@ -9,10 +9,9 @@ model: level_1
 model_level: level_1
 effort: low
 isolation: worktree
-tools: Read, Bash, mcp__dftracer__session_create, mcp__dftracer__session_detect, mcp__dftracer__session_configure, mcp__dftracer__session_get_run_paths, mcp__dftracer__session_status, mcp__dftracer__system_detect, mcp__dftracer__skill_load, mcp__dftracer__session_read_file, Edit
-skills: dftracer-context-economy, dftracer-install, system-tuolumne, dftracer-system-detect
+tools: Read, Bash, mcp__dftracer__session_create, mcp__dftracer__session_detect, mcp__dftracer__session_configure, mcp__dftracer__session_get_run_paths, mcp__dftracer__session_status, mcp__dftracer__system_detect, mcp__dftracer__skill_load, mcp__dftracer__session_read_file, Edit, mcp__dftracer__graph_ensure, mcp__dftracer__graph_query, mcp__dftracer__profile_bind, mcp__dftracer__profile_step_begin, mcp__dftracer__profile_step_end, mcp__dftracer__profile_status
+skills: dftracer-context-economy, dftracer-install, system-tuolumne, dftracer-system-detect, dftracer-profiling
 ---
-
 ## Load your plan section first (do this before anything else)
 The pipeline planner has written a detailed, self-contained plan into the
 session at `pipeline_plan.md`. Do NOT replan — execute what it says.
@@ -31,6 +30,7 @@ session at `pipeline_plan.md`. Do NOT replan — execute what it says.
 attempt every relevant MCP tool in this order:
 
 1. `mcp__dftracer__session_create` — create the session workspace and clone source
+1. `mcp__dftracer__profile_bind` — bind the profile IMMEDIATELY after create succeeds
 2. `mcp__dftracer__session_detect` — detect language, build tool, features
 3. `mcp__dftracer__session_configure` — configure cmake/autotools/pip
 4. `mcp__dftracer__session_get_run_paths` — get canonical paths (NEVER hand-build paths)
@@ -59,6 +59,10 @@ points at them.
 ## Steps (stop and report on any failure — do NOT improvise past a hard error)
 
 1. `session_create(url=..., ref=...)` → capture run_id + workspace.
+   - **Immediately call `profile_bind(run_id=<run_id>, app=<app>, system=<system>)`.**
+     Session creation is the first moment a directory exists to dump the profile
+     into, so it is the moment the profile must start. Do not defer this to a later
+     step. See [[dftracer-profiling]].
    - **If `session_create` fails during the source→baseline/annotated copy**
      (e.g. `FileNotFoundError` on a dangling symlink like Flash-X's
      `physics/.../StirMain/TurbGen.h`), this is a TOOL bug, not your fault: the
@@ -184,3 +188,60 @@ relevant files cost **29,456** (3.3%). `explain`/`affected` cost ~210 each.
    a fallback, but it does not check freshness.
 
 Load [[dftracer-context-economy]] for the full rationale and limits.
+
+## Step Profiling (MANDATORY)
+
+This pipeline profiles itself. Bracket your entire execution with the profile
+tools, using the plan's `## STEP N: <agent-name>` heading verbatim as `step`:
+
+```
+profile_step_begin(step="STEP N: dftracer-session-setup", agent="dftracer-session-setup", notes="<diagnostic detail>")
+... your work ...
+profile_step_end(step="STEP N: dftracer-session-setup", status="ok")
+```
+
+If you fail and retry, close the attempt with the real reason and reopen with the
+SAME `step` string — that records a retry rather than a new step:
+
+```
+profile_step_end(step="STEP N: dftracer-session-setup", status="failed", error="<what broke>")
+profile_step_begin(step="STEP N: dftracer-session-setup", agent="dftracer-session-setup")
+```
+
+You are the ONE exception to the no-bind rule: because you call `session_create`,
+you must call `profile_bind` immediately after it succeeds (see above). Never bind
+twice. Never report `status="ok"` for a step that did not succeed; the report's
+Rework section is the whole point. Load [[dftracer-profiling]] for the full rules.
+
+## Use the Knowledge Graph Before Reading Files (MANDATORY)
+
+You have `graph_query` and `graph_ensure`. Use them to LOCATE code instead of
+reading or grepping whole files:
+
+```
+graph_ensure(run_id=RUN_ID)                                      # build the app's graph
+graph_query(question="<what you are looking for>", budget=1200)  # -> NODE <sym> [src=file loc=Lnn]
+graph_query(mode="explain",  symbol="<symbol>")                  # definition + callers/callees
+graph_query(mode="affected", symbol="<symbol>", depth=2)         # blast radius before editing
+```
+
+Open only the files the graph names. Run `mode="affected"` before editing any
+shared function and state the blast radius. Load [[dftracer-context-economy]] for
+the full rationale.
+
+## Redact Before You Persist (MANDATORY)
+
+Skills, lessons, agent definitions and memory are git-tracked and ship to other
+people. We learn from experience; we never record who ran it. Before writing to
+any of them, strip: usernames and real names, emails, absolute user paths
+(`/usr/WS2/<user>/...`, `/p/lustre5/<user>/...`, `/g/g92/<user>/...`), flux job
+ids, session UUIDs, node hostnames. Write `$USER`, `$PROJECT_ROOT`,
+`$LUSTRE_ROOT`, `$HOME`, `<flux-jobid>`, `<uuid>`, `<system><node>` instead.
+Keep the lesson; drop the provenance. Citation lines are exempt.
+
+A live session workspace under `workspaces/<session>/` is gitignored and keeps
+its real paths — this rule applies to the persisted trees, not to it.
+
+Verify deterministically with `privacy_scan()` rather than by reading. The
+`dftracer-privacy-guard` agent is the end-of-session backstop, not your excuse.
+Load [[dftracer-privacy-guard]].

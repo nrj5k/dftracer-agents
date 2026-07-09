@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-WS=/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_201403
+WS=$PROJECT_ROOT/workspaces/flash_x/20260708_201403
 OBJ=$WS/annotated/source/object
 export LD_LIBRARY_PATH="$WS/hdf5_1.14/lib:$WS/install/lib/python3.13/site-packages/dftracer/lib64:/opt/cray/pe/mpich/9.0.1/ofi/gnu/11.2/lib:/opt/cray/pe/lib64:/opt/cray/pe/cce/20.0.0/cce/x86_64/lib:/opt/cray/pe/cce/20.0.0/cce/x86_64/lib/default64:/usr/lib64:$LD_LIBRARY_PATH"
 export DFTRACER_ENABLE=1

@@ -49,7 +49,7 @@ zr_boundary_type = "outflow"
 cfl= 0.8
 
 # Output to Lustre
-basenm          = "/p/lustre5/haridev/flashx/baseline_production/sedov_"
+basenm          = "$LUSTRE_ROOT/flashx/baseline_production/sedov_"
 restart         = .false.
 
 # =============================================================================

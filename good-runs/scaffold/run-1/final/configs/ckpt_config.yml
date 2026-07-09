@@ -1,7 +1,7 @@
 # External/user-facing
-base_run_dir: "/p/lustre5/haridev/workspaces/scaffold/s7big/runs"
-dataset_dir: "/p/lustre5/haridev/workspaces/scaffold/s7big/datasets"
-fract_base_dir: "/p/lustre5/haridev/workspaces/scaffold/fractals"
+base_run_dir: "$LUSTRE_ROOT/workspaces/scaffold/s7big/runs"
+dataset_dir: "$LUSTRE_ROOT/workspaces/scaffold/s7big/datasets"
+fract_base_dir: "$LUSTRE_ROOT/workspaces/scaffold/fractals"
 n_categories: 5                    # Number of fractal categories present in the dataset.
 n_instances_used_per_fractal: 145
 problem_scale: 7

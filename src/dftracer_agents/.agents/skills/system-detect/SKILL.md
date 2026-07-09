@@ -8,7 +8,7 @@ Detect the current HPC/container system and load appropriate configuration.
    ```
    mcp__dftracer__system_detect()
    ```
-   This strips trailing digits from the hostname (e.g. `tuolumne1003` → `tuolumne`),
+   This strips trailing digits from the hostname (e.g. `tuolumne<node>` → `tuolumne`),
    looks up the system in `resources/systems.yaml`, and returns the module load
    order, env vars, MPI launcher, and notes.
 

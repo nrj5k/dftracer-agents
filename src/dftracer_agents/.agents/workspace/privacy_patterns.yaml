@@ -1,0 +1,6 @@
+patterns:
+- name: slurm-jobid
+  regex: \bslurm-\d{6,}\b
+  replacement: <slurm-jobid>
+  structure_safe: true
+  note: SLURM job ids appear in log filenames

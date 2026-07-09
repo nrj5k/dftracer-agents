@@ -1,6 +1,6 @@
-diff -ruN --no-dereference /usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_201403/opt1/record/meta.json /usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_201403/opt2/record/meta.json
---- /usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_201403/opt1/record/meta.json	2026-07-08 19:59:59.878602000 -0700
-+++ /usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_201403/opt2/record/meta.json	2026-07-08 19:59:59.920660000 -0700
+diff -ruN --no-dereference /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/opt1/record/meta.json /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/opt2/record/meta.json
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/opt1/record/meta.json	2026-07-08 19:59:59.878602000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/opt2/record/meta.json	2026-07-08 19:59:59.920660000 -0700
 @@ -1,9 +1,9 @@
  {
 -  "run_name": "opt1",
@@ -9,7 +9,7 @@ diff -ruN --no-dereference /usr/WS2/haridev/dftracer-agents/workspaces/flash_x/2
 +  "run_name": "opt2",
 +  "prev_run_name": "opt1",
 +  "captured_at": "2026-07-09T02:59:59.920639+00:00",
-   "source_path": "/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source",
+   "source_path": "/usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source",
 -  "notes": "L1: rebuild with +parallelIO (parallel HDF5 IO unit)",
 +  "notes": "L2: ROMIO romio_cb_write=enable, cb_nodes=8, cb_buffer_size=16MB",
    "captured": {

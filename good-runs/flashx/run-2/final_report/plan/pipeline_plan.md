@@ -3,7 +3,7 @@
 ## Overview
 
 - **run_id**: `flash_x/20260708_201403`
-- **Workspace**: `/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_201403`
+- **Workspace**: `$PROJECT_ROOT/workspaces/flash_x/20260708_201403`
   Subdirs present: `source/`, `baseline/`, `annotated/`, `artifacts/`, `tmp/`, `dataset/`, `build/`, `install/`
 - **App**: Flash-X (`git@github.com:Flash-X/Flash-X.git`, ref `main`), Sedov 3D test problem.
 - **System**: Tuolumne (AMD MI300A, Cray PE, no sudo). Launcher: `flux run` (direct `flux run -x VAR...` on a single node; wrap in a bash script + `flux proxy <alloc>` for multi-node — see Flux Proxy Run Pattern below). ROCm present but HIP tracing not needed for this CPU-bound I/O objective (HIP tracing flag can stay ON in dftracer build per detection defaults, just unused).
@@ -53,10 +53,10 @@
 
 **Installation paths**:
 ```
-DFTRACER_LIB_DIR=/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_201403/install/lib/python3.13/site-packages/dftracer/lib64
+DFTRACER_LIB_DIR=$PROJECT_ROOT/workspaces/flash_x/20260708_201403/install/lib/python3.13/site-packages/dftracer/lib64
 DFTRACER_PRELOAD_LIB=${DFTRACER_LIB_DIR}/libdftracer_preload.so
 DFTRACER_CORE_LIB=${DFTRACER_LIB_DIR}/libdftracer_core.so
-DFTRACER_INCLUDE_DIR=/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_201403/install/lib/python3.13/site-packages/dftracer/include
+DFTRACER_INCLUDE_DIR=$PROJECT_ROOT/workspaces/flash_x/20260708_201403/install/lib/python3.13/site-packages/dftracer/include
 ```
 
 **Artifacts**: `<WS>/artifacts/01_dftracer_install_verification.log`
