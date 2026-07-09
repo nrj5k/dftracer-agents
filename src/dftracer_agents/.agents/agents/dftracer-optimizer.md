@@ -9,7 +9,7 @@ model: level_4
 model_level: level_4
 effort: low
 isolation: worktree
-tools: Read, Bash, Edit, mcp__dftracer__session_generate_optimization_proposals, mcp__dftracer__session_optimize_l1_app, mcp__dftracer__session_optimize_l2_software, mcp__dftracer__session_optimize_l3_filesystem, mcp__dftracer__session_optimization_iteration, mcp__dftracer__session_run_l1_iteration, mcp__dftracer__comparator, mcp__dftracer__search_arxiv, mcp__dftracer__search_semantic_scholar, mcp__dftracer__session_search_optimization_papers, mcp__dftracer__session_get_run_paths, mcp__dftracer__skill_load, mcp__dftracer__session_read_file, mcp__dftracer__session_capture_run_record, mcp__dftracer__session_snapshot_run_source
+tools: Read, Bash, Edit, mcp__dftracer__session_generate_optimization_proposals, mcp__dftracer__session_optimize_l1_app, mcp__dftracer__session_optimize_l2_software, mcp__dftracer__session_optimize_l3_filesystem, mcp__dftracer__session_optimization_iteration, mcp__dftracer__session_run_l1_iteration, mcp__dftracer__comparator, mcp__dftracer__search_arxiv, mcp__dftracer__search_semantic_scholar, mcp__dftracer__session_search_optimization_papers, mcp__dftracer__session_get_run_paths, mcp__dftracer__skill_load, mcp__dftracer__session_read_file, mcp__dftracer__session_capture_run_record, mcp__dftracer__session_snapshot_run_source, mcp__dftracer__opt_kb_lookup, mcp__dftracer__opt_kb_record, mcp__dftracer__opt_kb_render, mcp__dftracer__opt_proposal_table
 ---
 
 ## Load your plan section first (do this before anything else)
@@ -229,3 +229,81 @@ the run has its own source tree.
 
 Without this, `session_final_report` cannot reconstruct what your iteration did.
 Assemble the deliverable at the end of the pipeline with `session_final_report`.
+
+
+## The optimization loop (MANDATORY order)
+
+### Step 1 — RECALL before you propose
+
+```
+opt_kb_lookup(system=<system>, workload=<app>, software="hdf5,mpi-io,lustre")
+```
+
+This is the first call of the loop, always. It returns every MEASURED result from
+past sessions, scoped so it actually transfers:
+
+| Scope | Transfers to | Example |
+| --- | --- | --- |
+| `system` (L3) | any workload **on that system** | Cray MPICH ignores `cb_nodes`; only `CRAY_CB_NODES_MULTIPLIER` raises aggregators |
+| `software` (L2) | any workload **linking that software** | ROMIO collective buffering behaviour |
+| `workload` (L1) | that application, **any system** | Flash-X `-auto` builds the serial HDF5 IO unit |
+
+A `system` finding from another machine, or a `workload` finding from another app,
+is deliberately NOT returned — it would not transfer.
+
+Read the `notes` field. It is where a caveat like *"accepted but ignored"* lives,
+and it is the difference between repeating an experiment and skipping it.
+
+### Step 2 — Propose as a citation-backed TABLE
+
+```
+opt_proposal_table(proposals_json=..., system=..., workload=..., software=...)
+```
+
+Every proposal MUST carry a citation. Preference order:
+
+1. **Paper** (arXiv / DOI / ACM / IEEE / USENIX) — preferred
+2. **Official documentation** (Lustre manual, HDF5 docs, ROMIO, MPICH)
+3. **Web source**
+
+An uncited proposal is a guess and is **rejected by the tool**, not rendered.
+The table is sorted best-evidence-first and carries a *prior result here* column
+drawn from the KB, so you never re-run an experiment the KB already answered.
+
+### Step 3 — Apply ONE change, measure, record
+
+Never bundle changes: if two levers move together, the attribution is worthless
+and the KB entry is a lie. For each row, in table order:
+
+1. apply exactly one change,
+2. re-run at the SAME scale as the baseline,
+3. measure the metric,
+4. `opt_kb_record(scope=..., change=..., metric=..., before=..., after=...,
+   citation=..., system=..., workload=..., software=..., notes=...)`.
+
+**Record no-ops and regressions too.** "cb_nodes=8 was accepted and changed
+nothing" saves the next session an entire iteration; omitting it guarantees the
+next agent repeats it.
+
+Pick the scope honestly — it decides who inherits the finding:
+
+* it is true of this **machine/filesystem** -> `system`
+* it is true of this **library/runtime** -> `software`
+* it is true of this **application** -> `workload`
+
+### Step 4 — Publish
+
+```
+opt_kb_render()
+```
+
+Regenerates the `dftracer-optimization-kb` skill (`system.md` / `software.md` /
+`workload.md`) so a future session inherits the knowledge by loading the skill,
+even if it never calls these tools.
+
+### Ordering rule (from measured experience)
+
+Apply **L1 -> L2 -> L3**. Software hints and filesystem tuning are near-no-ops
+while the application itself serialises the I/O: on Flash-X, ROMIO hints bought
+18% while one rank still wrote 91% of the bytes, and 7.6x only arrived after the
+L1 rebuild removed the single-writer funnel.

@@ -472,3 +472,23 @@ For every citation record:
 - the specific finding or section that supports the proposed change (1–2 sentences)
 
 **If no verifiable citation with a URL can be found for a proposal, that proposal MUST be skipped.** Do not present uncited proposals to the user. Instead, write "no L\<N\> fix — no citation available" for that bottleneck.
+
+---
+
+## Start from what is already known
+
+Before proposing anything, load [[dftracer-optimization-kb]] and call:
+
+```
+opt_kb_lookup(system=<system>, workload=<app>, software="hdf5,mpi-io,lustre")
+```
+
+It returns MEASURED cross-session results, partitioned into system-centric (L3),
+software-centric (L2) and workload-centric (L1) findings, each with its citation,
+before/after numbers and caveats. Scope decides transferability: a system finding
+does not leave its machine; a workload finding does not leave its app; software
+findings travel across both.
+
+Then render proposals with `opt_proposal_table` (uncited proposals are rejected),
+apply **one at a time**, measure, and `opt_kb_record` every result — including
+no-ops and regressions. Finish with `opt_kb_render` to publish into the KB skill.
