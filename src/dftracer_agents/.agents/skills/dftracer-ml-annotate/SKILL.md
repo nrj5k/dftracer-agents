@@ -135,7 +135,49 @@ Print: "Files: entry=<N> train=<N> data=<N> ckpt=<N> comm=<N> other=<N>"
 
 
 ══════════════════════════════════════════════════════════════════════
-STEP 4 — AI/ML REGION ANNOTATION  (python_annotate_ai_file)
+STEP 4 — AI/ML REGION ANNOTATION
+══════════════════════════════════════════════════════════════════════
+
+### FAST PATH (default) — one MCP call for the whole project
+
+The per-file recipe in 4a–4g below is now implemented as deterministic MCP
+tools. Use them first; they are faster, reproducible, and do not drift.
+
+    ml_annotate_plan(run_id=RUN_ID, threshold=20)      # review, writes nothing
+    ml_annotate_project(run_id=RUN_ID, threshold=20)   # execute everything
+
+`ml_annotate_project` categorizes every file (Step 3b), then runs the AI/ML cost
+estimator on EVERY file and passes its allow-list down. Semantic buckets
+(entry / train / data / ckpt / comm) go through `python_annotate_ai_file`, the
+leftovers through `python_annotate_file`.
+
+**The cost gate always runs. The one exception is the AI API**: functions that
+map to a `dft_ai.*` region (data item, checkpoint, training step, comm, forward,
+backward) are annotated for what they MEAN and are kept regardless of score.
+Everything else must clear the threshold, so a training script does not get a
+decorator on every getter. `ml_categorize_files` exposes the bucketing alone.
+
+It also validates at the end (`validate=True`) and returns `validation.passed`.
+
+Then ALWAYS:
+
+    annotate_add_app_metadata(run_id=RUN_ID, filepath=<entry file>,
+      language="python",
+      params_json='{"app":"...","ranks":"...","batch_size":"..."}')
+
+    validate_annotations(run_id=RUN_ID, language="python")
+
+Do not proceed to the build until `validate_annotations` passes. Also dispatch
+the `dftracer-validate-python` agent for an independent check.
+
+### BACKUP PATH — the manual recipe (4a–4g)
+
+Use the steps below ONLY when: a tool is missing or errors; a file needs
+judgement the classifier cannot make; or you are repairing a file the tools got
+wrong. They document exactly what the fast path does.
+
+══════════════════════════════════════════════════════════════════════
+STEP 4 (manual) — AI/ML REGION ANNOTATION  (python_annotate_ai_file)
 ══════════════════════════════════════════════════════════════════════
 
 MANDATORY: Use `python_annotate_ai_file` for all files. NEVER manually
@@ -350,16 +392,60 @@ rendezvous/coordination files, datagen scripts, logging helpers.
       dist.broadcast(...)    → with dft_ai.comm.broadcast(): ...
       dist.all_gather(...)   → with dft_ai.comm.all_gather(): ...
 
-### 4g. Generic expensive functions  (python_extract_functions + cost estimation)
+### 4g. Generic expensive functions  (COST-GATED — python_estimate_file_costs)
 
-For every remaining file in OTHER_FILES:
+**Scope.** Sections 4a–4f above are *semantic*: data loading, model init,
+checkpoint, training step, and distributed comm are annotated because of what
+they mean, not what they cost. **Always annotate those — never gate them on a
+cost score.** This section (4g) is the only place where annotation is
+*selective*, and it covers the generic `@_dlp.log` / `dlp.init` instrumentation
+of everything left over in OTHER_FILES.
 
-    python_extract_functions(run_id=RUN_ID, filepath=<file>)
+Annotating every remaining function drowns the trace in getters, `__repr__`,
+and one-line helpers. Use the AI/ML-aware cost estimator — the Python
+counterpart of `clang_estimate_function_cost` — to pick only the functions
+worth instrumenting:
 
-    For each function with lines > 10 or that calls I/O:
-      python_annotate_file(run_id=RUN_ID, filepath=<file>,
-        category=<module_stem>)
-      → uses @_dlp.log / @_dlp.log_init / @_dlp.log_static
+    python_estimate_file_costs(run_id=RUN_ID, filepath=<file>, threshold=20)
+      → { "annotate": [names...], "skip": [names...], "functions": [ ... ] }
+
+    # single function, when you need the breakdown:
+    python_estimate_function_cost(run_id=RUN_ID, filepath=<file>,
+                                  function_name=<fn>, threshold=20)
+
+Then annotate ONLY the returned `annotate` list:
+
+    python_annotate_file(run_id=RUN_ID, filepath=<file>,
+      category=<module_stem>)
+    → uses @_dlp.log / @_dlp.log_init / @_dlp.log_static
+
+**What the estimator scores** (from the AST — no regex): framework I/O
+(`torch.load`/`save`, `h5py.File`, `np.load`, `read_parquet`, `pickle`),
+checkpoint/persistence (`state_dict`, `load_state_dict`, `from_pretrained`),
+distributed comm (`all_reduce`, `barrier`, `broadcast`), data pipeline
+(`DataLoader`, `collate`), host↔device transfers (`.to()`, `.cuda()`,
+`.numpy()`), autograd/compute (`backward`, `step`, `zero_grad`), loops,
+branches, calls, body size.
+
+Weights: io×30, checkpoint×35, comm×25, data×20, xfer×12, compute×10, loop×8,
+branch×3, call×2, size bonus ≤20. Default threshold 20.
+
+**Overrides (first match wins) — these beat the score:**
+
+| Condition | Result |
+|---|---|
+| `@property` / `__repr__`,`__str__`,`__len__`,… **and no I/O** | **skip** (Rule 0) |
+| `__getitem__`, `__iter__`, `__next__` | **annotate** (data pipeline) |
+| any checkpoint / file-I/O / comm call present | **annotate** (R6/R7) |
+| name contains `_load`,`_save`,`_read`,`_write`,`checkpoint`,`train_step`,… | **annotate** |
+| ≤5 statements, no loop, no I/O | **skip** (Rule 0) |
+| otherwise | score ≥ threshold → annotate |
+
+A `@property` that performs I/O is **not** skipped — the I/O signal wins.
+
+Raise `threshold` to trace less (e.g. 60 keeps only real I/O/comm/checkpoint
+work); lower it to trace more. Changing the threshold never disables the
+semantic overrides above.
 
 ### 4h. PyTorch / Framework-specific rules
 
@@ -979,6 +1065,13 @@ TOOL REFERENCE
 | Annotate Python file (AI/ML regions)  | python_annotate_ai_file           |
 | Annotate Python file (generic)        | python_annotate_file              |
 | Extract function list                 | python_extract_functions          |
+| Cost-gate generic fns (whole file)    | python_estimate_file_costs        |
+| Cost-gate one function (breakdown)    | python_estimate_function_cost     |
+| Categorize files (Step 3b)            | ml_categorize_files               |
+| Plan whole project (no writes)        | ml_annotate_plan                  |
+| Annotate whole project (fast path)    | ml_annotate_project               |
+| Emit app parameters as metadata       | annotate_add_app_metadata         |
+| Validate annotation coverage          | validate_annotations              |
 | Annotation coverage report            | session_annotation_report         |
 | Build annotated version               | session_build_annotated           |
 | Smoke test                            | session_run_smoke_test            |
@@ -1042,9 +1135,61 @@ Step meta:  `ai.update(step=batch_idx, epoch=epoch_num)` inside batch loop
 
 This skill uses:
 
-- **MCP (session + AI/Python annotation):** `session_create`, `session_configure`, `session_detect_ml_workload`, `session_install_dftracer`, `session_build_install`, `session_build_annotated`, `session_copy_annotated`, `session_annotation_report`, `session_run_smoke_test`, `session_run_with_dftracer`, `session_run_pipeline`, `session_analyze_traces`, `session_split_traces`, `session_optimization_iteration`, `session_search_local_papers`, `session_ml_append_lesson`, `session_lessons_sync_preview`, `session_lessons_sync_pr`; `python_annotate_ai_file`, `python_annotate_file`, `python_extract_functions`; `analyze`, `reader`, `split`, `stats`, `view`
+- **MCP (session + AI/Python annotation):** `session_create`, `session_configure`, `session_detect_ml_workload`, `session_install_dftracer`, `session_build_install`, `session_build_annotated`, `session_copy_annotated`, `session_annotation_report`, `session_run_smoke_test`, `session_run_with_dftracer`, `session_run_pipeline`, `session_analyze_traces`, `session_split_traces`, `session_optimization_iteration`, `session_search_local_papers`, `session_ml_append_lesson`, `session_lessons_sync_preview`, `session_lessons_sync_pr`; `python_annotate_ai_file`, `python_annotate_file`, `python_extract_functions`, `python_estimate_file_costs`, `python_estimate_function_cost`, `ml_categorize_files`, `ml_annotate_plan`, `ml_annotate_project`, `annotate_add_app_metadata`, `validate_annotations`; `analyze`, `reader`, `split`, `stats`, `view`
 - **Bash (in `workspaces/<session>/...` only):** `module`, `pip`, `torchrun-hpc`
 - **Write / Edit:** `workspaces/<session>/*` only (dftracer and app share one venv; traces → `workspaces/<session>/traces/`)
 - **Network (only via `session_lessons_sync_pr`, and only with `confirm=True`):** pushes a branch and opens a PR against `github.com/llnl/dftracer-agents` — requires `GITHUB_TOKEN`/`GH_TOKEN` set; never runs automatically
 
 Auto-update the lessons file with new pitfalls via `session_ml_append_lesson`; sync them to the source repo with `session_lessons_sync_preview`/`session_lessons_sync_pr` (confirmation required — never automatic). Never `sudo`; never write outside the project root.
+
+
+---
+
+## Mandatory final validation gate (ALWAYS — even after manual fixes)
+
+Annotation is not finished when files are written; it is finished when validation
+passes. Run this LAST on every path — MCP fast path, prose backup path, or a
+hand-edit after a tool failed:
+
+```
+validate_annotations(run_id=RUN_ID, language="python")   # or "c" / "cpp"
+```
+
+then dispatch the matching validator agent (`dftracer-validate-python` /
+`-c` / `-cpp`).
+
+`ml_annotate_project` already runs this internally (`validate=True`) and returns
+`validation.passed`. **That does not excuse the manual path.** The dangerous
+sequence is: MCP tool errors → agent hand-edits the file → nobody re-checks. A
+hand edit is the least-trusted change in the pipeline, and a tool that errored
+may have left a file half-written.
+
+Do not proceed to the build, and do not report success, until validation returns
+`passed: true` with zero findings and zero project issues. Otherwise report the
+findings verbatim (`file:line`, function, the uninstrumented critical call) and
+escalate.
+
+It enforces: every I/O / checkpoint / collective-comm function instrumented;
+init AND finalize present (a missing finalize truncates the trace); app-parameter
+metadata emitted; annotated functions pass the cost gate — with `dft_ai.*`
+AI-API regions exempt; and every file still parses.
+
+
+---
+
+## Context economy: query the graph, don't read the tree
+
+Before any step that would open source files, use the `graphify` knowledge graph
+(project dependency `graphifyy`, CLI `graphify`):
+
+```bash
+graphify query "<target>" --budget 1200   # locate: NODE <sym> [src=file loc=Lnn]
+graphify explain <symbol>                 # definition + callers/callees
+graphify affected <symbol> --depth 2      # blast radius before you change it
+graphify update .                         # refresh after edits (~4s, no LLM)
+```
+
+Measured on this repo: locating cost 986 tokens vs 29,456 to read the three
+relevant files (3.3%). Run `affected` before editing any shared function and
+state the blast radius. Use the CLI, never `graphify-mcp` — its extra tool
+schemas would sit in context permanently. See [[dftracer-context-economy]].

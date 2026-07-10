@@ -1,0 +1,43 @@
+{
+  "run_id": "scaffold/20260709_081340",
+  "key": "STEP 1: dftracer-session-setup",
+  "index": 2,
+  "agent": "dftracer-session-setup",
+  "notes": "reconcile ScaFFold module versions against system_detect defaults",
+  "status": "ok",
+  "tries": 1,
+  "retries": 0,
+  "failed_attempts": 0,
+  "successful_attempts": 1,
+  "exec_s": 281.181,
+  "wall_s": 281.181,
+  "attempts": [
+    {
+      "number": 1,
+      "status": "ok",
+      "duration_s": 281.181,
+      "error": "",
+      "start_ns": 1783585019009480757,
+      "end_ns": 1783585300190051044
+    }
+  ],
+  "tokens_input": 0,
+  "tokens_output": 0,
+  "tokens_cache_read": 0,
+  "tokens_cache_creation": 0,
+  "cost_usd": 0.0,
+  "api_calls": 0,
+  "api_errors": 0,
+  "api_duration_ms": 0.0,
+  "tool_calls": 0,
+  "tool_failures": 0,
+  "tool_duration_ms": 0.0,
+  "mcp_tool_calls": 0,
+  "compactions": 0,
+  "prompts": 0,
+  "tools": {},
+  "models": {},
+  "agents": {},
+  "skills": {},
+  "tokens_total": 0
+}

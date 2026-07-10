@@ -1,0 +1,2221 @@
+Binary files /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/bin/__pycache__/createParfile.cpython-313.pyc and /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/bin/__pycache__/createParfile.cpython-313.pyc differ
+Binary files /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/bin/__pycache__/genFiles.cpython-313.pyc and /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/bin/__pycache__/genFiles.cpython-313.pyc differ
+Binary files /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/bin/__pycache__/genLinesPrelude.cpython-313.pyc and /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/bin/__pycache__/genLinesPrelude.cpython-313.pyc differ
+Binary files /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/bin/__pycache__/globals.cpython-313.pyc and /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/bin/__pycache__/globals.cpython-313.pyc differ
+Binary files /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/bin/__pycache__/lazyFile.cpython-313.pyc and /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/bin/__pycache__/lazyFile.cpython-313.pyc differ
+Binary files /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/bin/__pycache__/libCfg.cpython-313.pyc and /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/bin/__pycache__/libCfg.cpython-313.pyc differ
+Binary files /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/bin/__pycache__/libUtils.cpython-313.pyc and /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/bin/__pycache__/libUtils.cpython-313.pyc differ
+Binary files /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/bin/__pycache__/linkFiles.cpython-313.pyc and /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/bin/__pycache__/linkFiles.cpython-313.pyc differ
+Binary files /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/bin/__pycache__/macroProcessor.cpython-313.pyc and /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/bin/__pycache__/macroProcessor.cpython-313.pyc differ
+Binary files /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/bin/__pycache__/macroProcessorHelper.cpython-313.pyc and /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/bin/__pycache__/macroProcessorHelper.cpython-313.pyc differ
+Binary files /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/bin/__pycache__/parseCmd.cpython-313.pyc and /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/bin/__pycache__/parseCmd.cpython-313.pyc differ
+Binary files /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/bin/__pycache__/preProcess.cpython-313.pyc and /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/bin/__pycache__/preProcess.cpython-313.pyc differ
+Binary files /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/bin/__pycache__/rpUtils.cpython-313.pyc and /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/bin/__pycache__/rpUtils.cpython-313.pyc differ
+Binary files /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/bin/__pycache__/tplUtils.cpython-313.pyc and /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/bin/__pycache__/tplUtils.cpython-313.pyc differ
+Binary files /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/bin/__pycache__/unitCfg.cpython-313.pyc and /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/bin/__pycache__/unitCfg.cpython-313.pyc differ
+Binary files /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/bin/__pycache__/unitMods.cpython-313.pyc and /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/bin/__pycache__/unitMods.cpython-313.pyc differ
+Binary files /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/bin/__pycache__/unitUtils.cpython-313.pyc and /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/bin/__pycache__/unitUtils.cpython-313.pyc differ
+Binary files /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/bin/__pycache__/utils.cpython-313.pyc and /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/bin/__pycache__/utils.cpython-313.pyc differ
+Binary files /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/bin/__pycache__/varUtils.cpython-313.pyc and /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/bin/__pycache__/varUtils.cpython-313.pyc differ
+Binary files /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/lib/mpi/__pycache__/libinfo.cpython-313.pyc and /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/lib/mpi/__pycache__/libinfo.cpython-313.pyc differ
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/sites/Prototypes/Linux/Makefile.h /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/sites/Prototypes/Linux/Makefile.h
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/sites/Prototypes/Linux/Makefile.h	2026-07-08 13:14:10.069990000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/sites/Prototypes/Linux/Makefile.h	2026-07-08 19:05:48.400532000 -0700
+@@ -3,11 +3,13 @@
+ # Set the HDF5/MPI library paths -- these need to be updated for your system
+ #----------------------------------------------------------------------------
+ 
+-MPI_PATH   = /usr/local/mpich2/
++MPI_PATH   = /opt/cray/pe/mpich/9.0.1/ofi/gnu/11.2
+ HDF4_PATH  =
+-HDF5_PATH  = /usr/local/hdf5
++HDF5_PATH  = /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/hdf5_1.14
+ HYPRE_PATH = /usr/local/hypre
+ 
++DFTRACER_PATH = /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/install/lib/python3.13/site-packages/dftracer
++
+ ZLIB_PATH  =
+ 
+ PAPI_PATH  =
+@@ -48,7 +50,7 @@
+ 
+ OPENMP = -fopenmp
+ 
+-FFLAGS_OPT = -ggdb -c -O2 -fdefault-real-8 -fdefault-double-8 \
++FFLAGS_OPT = -ggdb -c -O2 -fdefault-real-8 -fdefault-double-8 -fallow-argument-mismatch \
+ -Wuninitialized
+ 
+ #I explictly add -O0 because I found that compiling source files without
+@@ -56,13 +58,13 @@
+ #files with -O2.  The -O0 is required so that gdb no longer shows
+ #"<value optimized out>" for certain function arguments.
+ 
+-FFLAGS_DEBUG = -ggdb -c -O0 -fdefault-real-8 -fdefault-double-8 \
++FFLAGS_DEBUG = -ggdb -c -O0 -fdefault-real-8 -fdefault-double-8 -fallow-argument-mismatch \
+ -pedantic -Wall -Waliasing \
+ -Wsurprising -Wconversion -Wunderflow \
+ -ffpe-trap=invalid,zero,overflow -fbounds-check \
+ -fimplicit-none -fstack-protector-all
+ 
+-FFLAGS_TEST = -ggdb -c -O0 -fdefault-real-8 -fdefault-double-8
++FFLAGS_TEST = -ggdb -c -O0 -fdefault-real-8 -fdefault-double-8 -fallow-argument-mismatch
+ 
+ FFLAGS_HYPRE = -I${HYPRE_PATH}/include
+ 
+@@ -73,7 +75,7 @@
+ #The macro _FORTIFY_SOURCE adds some lightweight checks for buffer
+ #overflows at both compile time and run time (only active at -O1 or higher)
+ #http://gcc.gnu.org/ml/gcc-patches/2004-09/msg02055.html
+-CFLAGS_OPT = -ggdb -c -O2 -Wuninitialized -D_FORTIFY_SOURCE=2
++CFLAGS_OPT = -ggdb -c -O2 -Wuninitialized -D_FORTIFY_SOURCE=2 -I${DFTRACER_PATH}/include
+ 
+ CFLAGS_DEBUG = -ggdb -c -O0 -Wno-div-by-zero -Wundef \
+ -Wconversion -Wstrict-prototypes -Wunreachable-code \
+@@ -85,7 +87,7 @@
+ CFLAGS_HYPRE = -I${HYPRE_PATH}/include
+ 
+ # if we are using HDF5, we need to specify the path to the include files
+-CFLAGS_HDF5 = -I${HDF5_PATH}/include -DH5_USE_18_API
++CFLAGS_HDF5 = -I${HDF5_PATH}/include -DH5_USE_18_API -I${DFTRACER_PATH}/include
+ CFLAGS_NCMPI = -I${NCMPI_PATH}/include
+ 
+ #----------------------------------------------------------------------------
+@@ -111,9 +113,9 @@
+ #  depending on how FLASH was setup.
+ #----------------------------------------------------------------------------
+ 
+-LIB_OPT   =
+-LIB_DEBUG =
+-LIB_TEST  =
++LIB_OPT   = -L${DFTRACER_PATH}/lib64 -Wl,-rpath,${DFTRACER_PATH}/lib64 -ldftracer_core
++LIB_DEBUG = -L${DFTRACER_PATH}/lib64 -Wl,-rpath,${DFTRACER_PATH}/lib64 -ldftracer_core
++LIB_TEST  = -L${DFTRACER_PATH}/lib64 -Wl,-rpath,${DFTRACER_PATH}/lib64 -ldftracer_core
+ 
+ LIB_HDF4  =
+ LIB_HDF5  = -L ${HDF5_PATH}/lib -lhdf5 -lz
+@@ -138,7 +140,7 @@
+ #  when FLASH is built.
+ #----------------------------------------------------------------------------
+ 
+-MACHOBJ =
++MACHOBJ = dftracer_init_fini.o
+ 
+ #----------------------------------------------------------------------------
+ # Additional commands
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_comp_decomp.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_comp_decomp.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_comp_decomp.c	2026-07-08 13:14:12.621066000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_comp_decomp.c	2026-07-08 14:00:17.105774000 -0700
+@@ -1,6 +1,7 @@
+ 
+ #include "io_comp_decomp.h"
+ #include <stdlib.h>
++#include <dftracer/dftracer.h>
+ 
+ 
+ comp_type *io_compress(double* data, /* pointer to array of doubles*/
+@@ -8,6 +9,8 @@
+                     compress_t *comp_info /*Compression info */
+                    )
+ {
++    DFTRACER_C_FUNCTION_START();
++    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+ comp_type *comp_data;
+ int ctr;
+ double vmin,vmax,vstep;
+@@ -30,11 +33,19 @@
+   /* ctr has been set to 1 or 2 */
+   for (; ctr < size; ctr += 2) {
+      if (data[ctr] < data[ctr+1]) {
++        {
+         if (data[ctr] < vmin) vmin = data[ctr];
++        }
++        {
+         if (data[ctr+1] > vmax) vmax = data[ctr+1];
++        }
+      } else {
++        {
+         if (data[ctr+1] < vmin) vmin = data[ctr+1];
++        }
++        {
+         if (data[ctr] > vmax) vmax = data[ctr];
++        }
+      }
+   }
+ 
+@@ -55,9 +66,12 @@
+ 
+   /* Populate the array */
+   for (ctr=0; ctr < size; ctr++)
++     {
+      comp_data[ctr] = ( (data[ctr]-vmin)/(vstep) + 0.5); /* Round to nearest integer */
++     }
+ 
+   return comp_data;
++    DFTRACER_C_FUNCTION_END();
+ }
+ 
+ 
+@@ -66,6 +80,8 @@
+                     compress_t *comp_info /*Compression info */
+                    )
+ {
++    DFTRACER_C_FUNCTION_START();
++    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "mem");
+ double *data;
+ double vmin,vstep;
+ int ctr;
+@@ -76,8 +92,11 @@
+    vmin = comp_info->min;
+    data = (double *) malloc( (*size) * sizeof(double));
+    for (ctr=0; ctr < *size; ctr++) 
++       {
+        data[ctr] = comp_data[ctr]*vstep + vmin;
++       }
+ 
++   DFTRACER_C_FUNCTION_END();
+    return data;
+ }
+ 
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5_attribute.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5_attribute.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5_attribute.c	2026-07-08 13:14:12.626054000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5_attribute.c	2026-07-08 14:00:17.363829000 -0700
+@@ -1,5 +1,6 @@
+ #include "io_h5_attribute.h"
+ #include "Simulation.h"
++#include <dftracer/dftracer.h>
+ 
+ /* WARNING: The caller must null-terminate all strings */
+ #ifdef FLASH_IO_ASYNC_HDF5
+@@ -14,6 +15,8 @@
+ 			    const char datasetName[],
+ 			    const char attDatasetName[])
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   const hid_t hFileID = fileID;
+   hsize_t hDiskSize[IO_MAX_DIMS];
+   hid_t hDiskType, dsetID, attID, attDataspace;
+@@ -92,6 +95,7 @@
+       io_h5_type_free_string(hDiskType);
+     }
+   }
++  DFTRACER_C_FUNCTION_END();
+ }
+ 
+ 
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5create_dataset.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5create_dataset.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5create_dataset.c	2026-07-08 13:14:12.651035000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5create_dataset.c	2026-07-08 14:00:19.222107000 -0700
+@@ -1,5 +1,6 @@
+ #include "io_h5create_dataset.h"
+ #include "Simulation.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -12,6 +13,8 @@
+ 			 const int diskSize[],
+ 			 const char datasetName[])
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   const hid_t hFileID = fileID;
+   hsize_t hDiskSize[IO_MAX_DIMS];
+   hid_t hDiskType, dataspace, dataset;
+@@ -87,4 +90,5 @@
+   if (diskType == IO_FLASH_STRING) {
+     io_h5_type_free_string(hDiskType);
+   }
++  DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5create_dataset_protons.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5create_dataset_protons.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5create_dataset_protons.c	2026-07-08 13:14:12.654999000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5create_dataset_protons.c	2026-07-08 14:00:19.523265000 -0700
+@@ -2,6 +2,7 @@
+ #include "mangle_names.h"
+ #include "constants.h"
+ #include <hdf5.h>
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -9,6 +10,8 @@
+ 
+ void FTOC(io_h5create_dataset_protons)(const hid_t * const pFileID)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   /* Create the data space with unlimited 1st dimension,
+      since we don't know how many protons will be written
+      to the plot file. The 2nd dimension contains the
+@@ -52,4 +55,5 @@
+ #else
+   H5Dclose (datasetID);
+ #endif  
++  DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5create_raydset.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5create_raydset.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5create_raydset.c	2026-07-08 13:14:12.656987000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5create_raydset.c	2026-07-08 14:00:19.835218000 -0700
+@@ -3,6 +3,7 @@
+ #include "constants.h"
+ #include <hdf5.h>
+ #include "Simulation.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -10,6 +11,8 @@
+ 
+ void FTOC(io_h5create_raydset)(const hid_t * const pFileID)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   /* Create the data space with unlimited dimensions. */
+   hsize_t dims[2] = {0, 5};
+   hsize_t maxdims[2] = {H5S_UNLIMITED, 5};
+@@ -39,4 +42,5 @@
+   H5Dclose(dsetid);
+ #endif
+ 
++  DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5read_generic_int_arr.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5read_generic_int_arr.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5read_generic_int_arr.c	2026-07-08 13:14:12.658983000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5read_generic_int_arr.c	2026-07-08 14:00:20.215115000 -0700
+@@ -8,6 +8,7 @@
+ #include "hdf5_flash.h"
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -72,6 +73,8 @@
+ 				     char* dataset_name, 
+ 				     int* name_len)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "mem");
+   hid_t dataspace, dataset, memspace;
+   herr_t status;
+ 
+@@ -146,4 +149,5 @@
+ #endif
+   free(dataset_name_new);
+ 
++  DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5read_generic_real_arr.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5read_generic_real_arr.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5read_generic_real_arr.c	2026-07-08 13:14:12.660034000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5read_generic_real_arr.c	2026-07-08 14:00:20.590188000 -0700
+@@ -8,6 +8,7 @@
+ #include "hdf5_flash.h"
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -70,6 +71,8 @@
+ 				     char* dataset_name, 
+ 				     int* name_len)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "mem");
+   hid_t dataspace, dataset, memspace;
+   herr_t status;
+ 
+@@ -145,4 +148,5 @@
+ #endif
+   free(dataset_name_new);
+ 
++  DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5read_header.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5read_header.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5read_header.c	2026-07-08 13:14:12.662977000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5read_header.c	2026-07-08 14:00:21.025006000 -0700
+@@ -13,6 +13,7 @@
+ #include "hdf5_flash.h"
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ int Driver_abortC(char* message);
+ 
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5read_lists.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5read_lists.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5read_lists.c	2026-07-08 13:14:12.664057000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5read_lists.c	2026-07-08 14:00:21.402010000 -0700
+@@ -18,6 +18,7 @@
+ #include "hdf5_flash.h"
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -41,6 +42,8 @@
+    int log_values[],
+    char* dataset_names[])
+ {
++    DFTRACER_C_FUNCTION_START();
++    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+ 
+   hsize_t dimens_1d, maxdimens_1d;
+ 
+@@ -408,6 +411,7 @@
+   H5Dclose(dataset);
+ #endif
+   H5Tclose(string_type);
++    DFTRACER_C_FUNCTION_END();
+ }
+ 
+ 
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5_read_present_dims.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5_read_present_dims.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5_read_present_dims.c	2026-07-08 13:14:12.629991000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5_read_present_dims.c	2026-07-08 14:00:17.679831000 -0700
+@@ -3,6 +3,7 @@
+ #include "mangle_names.h"
+ #include "constants.h"
+ #include "Simulation.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -11,6 +12,8 @@
+ void FTOC(io_h5read_present_dims)(const hid_t * const pFileID,
+ 				  int *pDims)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   hsize_t dimens_2d[2], maxdimens_2d[2];
+   hid_t fileID, dataspace, dataset;
+   herr_t herr;
+@@ -44,4 +47,5 @@
+   assert (herr >= 0);
+ 
+   *pDims = dimens_2d[1];
++  DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5read_unknowns.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5read_unknowns.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5read_unknowns.c	2026-07-08 13:14:12.666066000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5read_unknowns.c	2026-07-08 14:00:21.772974000 -0700
+@@ -9,6 +9,7 @@
+ /*#include <mpi.h>*/
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ 
+ int Driver_abortC(char* message);
+@@ -29,6 +30,8 @@
+                    int* total_blocks,
+                    int* global_offset)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   hid_t dataspace, dataset = 0, memspace, dxfer_template;
+   herr_t status;
+ 
+@@ -170,4 +173,5 @@
+     H5Sclose(dataspace);
+     H5Dclose(dataset);
+   }
++  DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5_report_xfer_method.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5_report_xfer_method.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5_report_xfer_method.c	2026-07-08 13:14:12.632039000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5_report_xfer_method.c	2026-07-08 14:00:17.909725000 -0700
+@@ -1,4 +1,5 @@
+ #include "io_h5_report_xfer_method.h"
++#include <dftracer/dftracer.h>
+ 
+ int io_h5_report_xfer_method(const int myPE, const hid_t hXferList,
+ 			     const char datasetName[])
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5_type.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5_type.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5_type.c	2026-07-08 13:14:12.636043000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5_type.c	2026-07-08 14:00:18.155762000 -0700
+@@ -1,6 +1,7 @@
+ #include "io_h5_type.h"
+ #define N_FLASH_PRIM_TYPES 4
+ #include "mangle_names.h"
++#include <dftracer/dftracer.h>
+ 
+ hid_t io_h5_type_hid_primitive(const int flashType)
+ {
+@@ -27,6 +28,8 @@
+ 
+ int io_h5_type_flash_primitive(const hid_t hType)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   hid_t hPrimitiveTypes[N_FLASH_PRIM_TYPES];
+   int fPrimitiveTypes[N_FLASH_PRIM_TYPES];
+   int i;
+@@ -45,10 +48,12 @@
+ 
+   for(i=0; i<N_FLASH_PRIM_TYPES; ++i) {
+     if (H5Tequal(hPrimitiveTypes[i],hType) > 0) {
++      DFTRACER_C_FUNCTION_END();
+       return fPrimitiveTypes[i];
+     }
+   }
+   Driver_abortC("[io_h5_type]: unknown type");
++  DFTRACER_C_FUNCTION_END();
+   return -1;
+ }
+ 
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5_type_matched_xfer.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5_type_matched_xfer.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5_type_matched_xfer.c	2026-07-08 13:14:12.639968000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5_type_matched_xfer.c	2026-07-08 14:00:18.435676000 -0700
+@@ -1,5 +1,6 @@
+ #include "io_h5_type_matched_xfer.h"
+ #include "Simulation.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -19,6 +20,8 @@
+ 			const hsize_t hDiskStart[], const hsize_t hDiskCount[],
+ 			const int dims, const int numFileBlks[], void * pData)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "mem");
+   hid_t hMatchedMemType;
+   hsize_t hPackedSize;
+   herr_t herr;
+@@ -140,6 +143,7 @@
+   pTmpDblBuf = NULL;
+   pHdf5Buf = NULL;
+ 
++  DFTRACER_C_FUNCTION_END();
+   return 0;
+ }
+ 
+@@ -152,6 +156,8 @@
+ io_h5_use_extra_float_buffer(const int myPE, const hid_t hFileID,
+ 			     const char datasetName[], const hid_t hMemType)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   htri_t cmp1, cmp2, cmp3;
+   hid_t dataset, hDiskType, hDiskTypeNative;
+   int useExtraFloatBuffer;
+@@ -204,5 +210,6 @@
+   assert(herr >= 0);
+ 
+ 
++  DFTRACER_C_FUNCTION_END();
+   return useExtraFloatBuffer;
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5write_generic_int_arr.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5write_generic_int_arr.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5write_generic_int_arr.c	2026-07-08 13:14:12.668996000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5write_generic_int_arr.c	2026-07-08 14:00:22.146018000 -0700
+@@ -5,6 +5,7 @@
+ #include "constants.h"
+ #include <string.h>
+ #include <stdlib.h>
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -72,6 +73,8 @@
+ 				      char* dataset_name, 
+ 				      int* name_len)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "mem");
+   hid_t dataspace, dataset, memspace, dataset_plist;
+   herr_t status;
+ 
+@@ -215,6 +218,7 @@
+ #endif 
+   free(dataset_name_new);
+   
++  DFTRACER_C_FUNCTION_END();
+ }
+ 
+ 
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5write_generic_real_arr.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5write_generic_real_arr.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5write_generic_real_arr.c	2026-07-08 13:14:12.672064000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5write_generic_real_arr.c	2026-07-08 14:00:22.558015000 -0700
+@@ -5,6 +5,7 @@
+ #include "constants.h"
+ #include <string.h>
+ #include <stdlib.h>
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -23,6 +24,8 @@
+ 				       char* dataset_name, 
+ 				       int* name_len)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "mem");
+   hid_t dataspace, dataset, memspace, dataset_plist;
+   herr_t status;
+ 
+@@ -166,6 +169,7 @@
+ #endif 
+   free(dataset_name_new);
+   
++  DFTRACER_C_FUNCTION_END();
+ }
+ 
+ 
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5write_header.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5write_header.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5write_header.c	2026-07-08 13:14:12.674083000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5write_header.c	2026-07-08 14:00:22.944914000 -0700
+@@ -18,6 +18,7 @@
+ #include "hdf5_flash.h"
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -124,6 +125,8 @@
+                        int* io_outputSplitNum)
+ 
+ {
++    DFTRACER_C_FUNCTION_START();
++    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+ 
+ 
+   hid_t dataspace, dataset;
+@@ -361,6 +364,7 @@
+   }
+ #endif
+ 
++    DFTRACER_C_FUNCTION_END();
+ }
+ 
+ 
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5write_lists.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5write_lists.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5write_lists.c	2026-07-08 13:14:12.676011000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5write_lists.c	2026-07-08 14:00:23.349981000 -0700
+@@ -17,6 +17,7 @@
+ #include "hdf5_flash.h"
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -51,6 +52,8 @@
+    int* io_outputSplitNum)
+      
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   hid_t dataspace, dataset;
+   herr_t status;
+ 
+@@ -355,6 +358,7 @@
+     H5Sclose(dataspace);
+   }
+   H5Tclose(string_type);
++  DFTRACER_C_FUNCTION_END();
+ }
+ 
+ 
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5write_protondata.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5write_protondata.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5write_protondata.c	2026-07-08 13:14:12.678032000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5write_protondata.c	2026-07-08 14:00:23.703887000 -0700
+@@ -5,6 +5,7 @@
+ #include "constants.h"
+ #include "hdf5_flash.h"
+ #include "Simulation.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+ extern hid_t io_es_id;
+@@ -21,6 +22,8 @@
+ 			         double y[], 
+ 			         double z[])
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "mem");
+   /* Open the 'ProtonData' dataset inside the HDF5 plot file.
+      It should already exist */
+ #ifdef FLASH_IO_ASYNC_HDF5
+@@ -33,6 +36,7 @@
+       {
+        printf (" Error in opening HDF5 dataset: ProtonData");
+        *error = dataset;
++       DFTRACER_C_FUNCTION_END();
+        return;
+       }
+ 
+@@ -46,6 +50,7 @@
+       {
+        printf (" Error in getting HDF5 dataspace for: ProtonData");
+        *error = dataspace;
++       DFTRACER_C_FUNCTION_END();
+        return;
+       }
+ 
+@@ -54,6 +59,7 @@
+   if (*error < 0)
+       {
+        printf (" Error in getting HDF5 dimensions for dataspace: ProtonData");
++       DFTRACER_C_FUNCTION_END();
+        return;
+       }
+ 
+@@ -71,6 +77,7 @@
+   if (*error < 0)
+       {
+        printf (" Error in extending HDF5 dimensions for dataspace: ProtonData");
++       DFTRACER_C_FUNCTION_END();
+        return;
+       }
+ 
+@@ -79,6 +86,7 @@
+       {
+        printf (" Error in getting HDF5 extended dataspace for: ProtonData");
+        *error = dataspace;
++       DFTRACER_C_FUNCTION_END();
+        return;
+       }
+ 
+@@ -106,6 +114,7 @@
+   if (*error < 0)
+       {
+        printf (" Error in selecting HDF5 hyperslab for: ProtonData");
++       DFTRACER_C_FUNCTION_END();
+        return;
+       }
+ 
+@@ -114,6 +123,7 @@
+       {
+        printf (" Error in creating memory space in HDF5 hyperslab for: ProtonData");
+        *error = memspace;
++       DFTRACER_C_FUNCTION_END();
+        return;
+       }
+ 
+@@ -175,6 +185,7 @@
+   if (*error < 0)
+       {
+        printf (" Error in writing local slab to HDF5 dataset -> ProtonData");
++       DFTRACER_C_FUNCTION_END();
+        return;
+       }
+ 
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5write_raydata.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5write_raydata.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5write_raydata.c	2026-07-08 13:14:12.680037000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5write_raydata.c	2026-07-08 14:00:24.051021000 -0700
+@@ -5,6 +5,7 @@
+ #include <stdlib.h>
+ #include "hdf5_flash.h"
+ #include "Simulation.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -22,6 +23,8 @@
+ 			      double power[],
+ 			      int *rank)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "mem");
+   /* Open the ray dataset, it should already exist */
+ #ifdef FLASH_IO_ASYNC_HDF5
+   hid_t dset = H5Dopen_async(*pFileID, "RayData", H5P_DEFAULT, io_es_id);
+@@ -30,6 +33,7 @@
+ #endif  
+   if(dset < 0) {
+     *ierr = dset;
++    DFTRACER_C_FUNCTION_END();
+     return;
+   }
+ 
+@@ -38,11 +42,13 @@
+   hid_t filespace = H5Dget_space (dset);
+   if(filespace < 0) {
+     *ierr = filespace;
++    DFTRACER_C_FUNCTION_END();
+     return;
+   }
+ 
+   *ierr = H5Sget_simple_extent_dims (filespace, dims, NULL);
+   if(*ierr < 0) {
++    DFTRACER_C_FUNCTION_END();
+     return;
+   }
+ 
+@@ -57,6 +63,7 @@
+   hsize_t offset[2] = {dims[0] + *startPos, 0};
+   if(filespace < 0) {
+     *ierr = filespace;
++    DFTRACER_C_FUNCTION_END();
+     return;
+   }
+   
+@@ -70,13 +77,17 @@
+ 
+   *ierr = H5Sselect_hyperslab (filespace, H5S_SELECT_SET, offset, NULL,
+ 			       slab_size, NULL);
++  {
++  DFTRACER_C_FUNCTION_END();
+   if(*ierr < 0) return;
++  }
+ 
+   /* Define memory space */
+   hsize_t max_size[2] = {H5S_UNLIMITED, 5};
+   hid_t dataspace = H5Screate_simple (2, slab_size, max_size);
+   if(dataspace < 0) {
+     *ierr = dataspace;
++    DFTRACER_C_FUNCTION_END();
+     return;
+   }
+ 
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5write_unknowns.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5write_unknowns.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5write_unknowns.c	2026-07-08 13:14:12.681996000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5write_unknowns.c	2026-07-08 14:00:24.421914000 -0700
+@@ -7,6 +7,7 @@
+ #include "constants.h"
+ #include "io_flash.h"
+ #include "io_h5_attribute.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -41,6 +42,8 @@
+ 			       int* total_blocks,
+ 			       int* global_offset)
+ {
++    DFTRACER_C_FUNCTION_START();
++    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+ 
+   hid_t dataspace, dataset, memspace, dxfer_template, dataset_plist;
+ 
+@@ -94,10 +97,14 @@
+   dimens_4d[3] = *nxb;
+ 
+   dataspace = H5Screate_simple(rank, dimens_4d, NULL);
++  {
+   if(dataspace < 0) Driver_abortC("Error: negative return from dataspace H5Screate_simple");
++  }
+ 
+   dataset_plist = H5Pcreate(H5P_DATASET_CREATE);
++  {
+   if(dataset_plist < 0) Driver_abortC("Error: negative return from dataset_plist H5Pcreate");
++  }
+ 
+   if ((*myPE == MASTER_PE) && (*global_offset != 0)) {
+     
+@@ -172,11 +179,15 @@
+ 
+ 
+   memspace = H5Screate_simple(rank, dimens_5d, NULL);
++  {
+   if(memspace < 0) Driver_abortC("Error: negative return from memspace H5Screate_simple");
++  }
+ 
+   /* obtain a copy of the file transfer property list */ 
+   dxfer_template = H5Pcreate(H5P_DATASET_XFER);
++  {
+   if(dxfer_template < 0) Driver_abortC("Error: negative return from dxfer_template H5Pcreate");
++  }
+ #ifdef IO_HDF5_PARALLEL
+   if (HDF5_MODE == COLLECTIVE) {
+     herr = H5Pset_dxpl_mpio(dxfer_template, H5FD_MPIO_COLLECTIVE);
+@@ -264,4 +275,5 @@
+     io_h5_attribute_write(*myPE, *file_identifier, attType,
+ 			  record_label_new, maxLabel, varMax);
+   }
++    DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5write_unknowns_sp.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5write_unknowns_sp.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5write_unknowns_sp.c	2026-07-08 13:14:12.686057000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5write_unknowns_sp.c	2026-07-08 14:00:24.813899000 -0700
+@@ -10,6 +10,7 @@
+ #include "constants.h"
+ #include "io_flash.h"
+ #include "io_h5_attribute.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -49,6 +50,8 @@
+                           int* total_blocks,
+                           int* global_offset)
+ {
++    DFTRACER_C_FUNCTION_START();
++    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+ 
+ 
+   hid_t dataspace, dataset, memspace, dxfer_template, dataset_plist;
+@@ -100,7 +103,9 @@
+   dimens_4d[3] = *nxb;
+   
+   dataspace = H5Screate_simple(rank, dimens_4d, NULL);
++  {
+   if(dataspace < 0) Driver_abortC("Error: negative return from dataspace H5Screate_simple");
++  }
+ 
+ #ifdef DEBUG_IO
+   printf("UNKNOWNS: dataspace = %d\n", (int) dataspace);
+@@ -206,7 +211,9 @@
+   }
+     
+   memspace = H5Screate_simple(rank, dimens_5d, NULL);
++  {
+   if(memspace < 0) Driver_abortC("Error: negative return from memspace H5Screate_simple");
++  }
+ 
+   /* setting the transfer template */
+   dxfer_template = H5Pcreate(H5P_DATASET_XFER);
+@@ -303,4 +310,5 @@
+     io_h5_attribute_write(*myPE, *file_identifier, attType,
+ 			  record_label_new, maxLabel, varMax);
+   }
++    DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5_xfer.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5_xfer.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5_xfer.c	2026-07-08 13:14:12.643981000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5_xfer.c	2026-07-08 14:00:18.689770000 -0700
+@@ -1,5 +1,6 @@
+ #include "io_h5_xfer.h"
+ #include "mangle_names.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -12,6 +13,8 @@
+ 	       const hsize_t hDiskStart[], const hsize_t hDiskCount[],
+          const int dims, const int numFileBlks[], void * pData)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   herr_t (*old_func)(void*) = NULL;
+   void *old_client_data = NULL;
+   hsize_t hDummyMemSize[IO_MAX_DIMS];
+@@ -25,7 +28,9 @@
+     /* This function only deals with primitive types so following assert
+        must be true */
+     assert (hMemCount[i] == hDiskCount[i]);
++    {
+     if (hMemCount[i] == 0 || hDiskCount[i] == 0) zeroSize = 1;
++    }
+   }
+ 
+   // search for the dataset
+@@ -143,5 +148,6 @@
+     ierr = 0;
+   }
+ 
++  DFTRACER_C_FUNCTION_END();
+   return ierr;
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5_xfer_wrapper.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5_xfer_wrapper.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/io_h5_xfer_wrapper.c	2026-07-08 13:14:12.647049000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/io_h5_xfer_wrapper.c	2026-07-08 14:00:18.950121000 -0700
+@@ -1,4 +1,5 @@
+ #include "io_h5_xfer_wrapper.h"
++#include <dftracer/dftracer.h>
+ 
+ int io_h5_xfer_wrapper(const int myPE, const io_fileID_t fileID, const int xferType,
+ 		       const int typeMatchedXfer,
+@@ -7,6 +8,8 @@
+ 		       const int memCount[], const int diskStart[],
+ 		       const int diskCount[], const int dims, const int numFileBlks[], void * pData)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   hsize_t hDiskStart[IO_MAX_DIMS], hDiskCount[IO_MAX_DIMS],
+     hMemSize[IO_MAX_DIMS], hMemStart[IO_MAX_DIMS], hMemCount[IO_MAX_DIMS],
+     hStrLen;
+@@ -146,5 +149,6 @@
+     }
+   } /* if (parallelIO || (!parallelIO && myPE == MASTER_PE)) */
+ 
++  DFTRACER_C_FUNCTION_END();
+   return errRtn;
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/io_h5file_interface.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/io_h5file_interface.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/io_h5file_interface.c	2026-07-08 13:14:12.789968000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/io_h5file_interface.c	2026-07-08 14:00:28.358730000 -0700
+@@ -13,6 +13,7 @@
+ #include <sys/time.h>
+ #include <sys/resource.h>
+ #include <unistd.h>
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -94,6 +95,8 @@
+ 		    int* io_outputSplitNum,
+ 		    int* existing)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "comm");
+   MPI_Comm io_comm = MPI_Comm_f2c(*io_comm_);
+   int ierr;
+ 
+@@ -228,6 +231,7 @@
+   ierr = H5Pclose(acc_template);
+ 
+     
++  DFTRACER_C_FUNCTION_END();
+ }
+ 
+ 
+@@ -264,6 +268,8 @@
+                            MPI_Fint* io_comm_,
+                            int* io_outputSplitNum)
+ {
++    DFTRACER_C_FUNCTION_START();
++    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "comm");
+ 
+   hid_t acc_template;
+   MPI_Comm io_comm = MPI_Comm_f2c(*io_comm_);
+@@ -318,6 +324,7 @@
+     ierr = MPI_Abort(MPI_COMM_WORLD, FAIL);
+   }
+ 
++    DFTRACER_C_FUNCTION_END();
+ }
+ 
+ /* xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx */
+@@ -344,6 +351,8 @@
+ 
+ void FTOC(io_h5close_file)(hid_t* file_identifier)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "comm");
+   int ierr;
+ 
+ 
+@@ -355,6 +364,7 @@
+ #endif
+   ierr = MPI_Info_free(&FILE_INFO_TEMPLATE);
+   
++  DFTRACER_C_FUNCTION_END();
+ }
+ 
+ void FTOC(io_h5_close_async)()
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/io_h5read_unknowns.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/io_h5read_unknowns.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/io_h5read_unknowns.c	2026-07-08 13:14:12.791000000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/io_h5read_unknowns.c	2026-07-08 14:00:28.727703000 -0700
+@@ -9,6 +9,7 @@
+ /*#include <mpi.h>*/
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -33,6 +34,8 @@
+                    int* global_offset,
+                    int* doread)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   hid_t dataspace, dataset = 0, memspace, dxfer_template;
+   herr_t status;
+ 
+@@ -106,7 +109,9 @@
+     printf("couldn't find variable '%s' in the file, so skipping it\n", record_label_new);
+   } else {
+     dataspace = H5Dget_space(dataset);
++    {
+     if(dataspace < 0) Driver_abortC("Error: negative return from dataspace H5Dget_space");
++    }
+ 
+     if (*local_blocks > 0) {
+       /* create the hyperslab -- this will differ on the different processors */
+@@ -151,7 +156,9 @@
+       dimens_5d[4] = 1;
+     }
+     memspace = H5Screate_simple(rank, dimens_5d, NULL);
++    {
+     if(memspace < 0) Driver_abortC("Error: negative return from memspace H5Screate_simple");
++    }
+ 
+     /*
+     start_5d[0] = 0;
+@@ -211,4 +218,5 @@
+   H5Dclose(dataset);
+ #endif  
+   }
++  DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/io_h5write_unknowns.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/io_h5write_unknowns.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/io_h5write_unknowns.c	2026-07-08 13:14:12.792981000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/io_h5write_unknowns.c	2026-07-08 14:00:29.093706000 -0700
+@@ -7,6 +7,7 @@
+ #include "constants.h"
+ #include "io_flash.h"
+ #include "io_h5_attribute.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -42,6 +43,8 @@
+ 			       int* global_offset,
+ 			       int* dowrite)
+ {
++    DFTRACER_C_FUNCTION_START();
++    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+ 
+   hid_t dataspace, dataset, memspace, dxfer_template, dataset_plist;
+ 
+@@ -95,10 +98,14 @@
+   dimens_4d[3] = *nxb;
+ 
+   dataspace = H5Screate_simple(rank, dimens_4d, NULL);
++  {
+   if(dataspace < 0) Driver_abortC("Error: negative return from dataspace H5Screate_simple");
++  }
+ 
+   dataset_plist = H5Pcreate(H5P_DATASET_CREATE);
++  {
+   if(dataset_plist < 0) Driver_abortC("Error: negative return from dataset_plist H5Pcreate");
++  }
+ 
+   if ((*myPE == MASTER_PE) && (*global_offset != 0)) {
+     
+@@ -169,11 +176,15 @@
+   }
+ 
+   memspace = H5Screate_simple(rank, dimens_5d, NULL);
++  {
+   if(memspace < 0) Driver_abortC("Error: negative return from memspace H5Screate_simple");
++  }
+ 
+   /* obtain a copy of the file transfer property list */ 
+   dxfer_template = H5Pcreate(H5P_DATASET_XFER);
++  {
+   if(dxfer_template < 0) Driver_abortC("Error: negative return from dxfer_template H5Pcreate");
++  }
+ #ifdef IO_HDF5_PARALLEL
+   if (HDF5_MODE == COLLECTIVE) {
+     herr = H5Pset_dxpl_mpio(dxfer_template, H5FD_MPIO_COLLECTIVE);
+@@ -268,4 +279,5 @@
+     io_h5_attribute_write(*myPE, *file_identifier, attType,
+ 			  record_label_new, maxLabel, varMax);
+   }
++    DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/io_h5write_unknowns_sp.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/io_h5write_unknowns_sp.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/io_h5write_unknowns_sp.c	2026-07-08 13:14:12.794021000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/io_h5write_unknowns_sp.c	2026-07-08 14:00:29.470152000 -0700
+@@ -10,6 +10,7 @@
+ #include "constants.h"
+ #include "io_flash.h"
+ #include "io_h5_attribute.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -50,6 +51,8 @@
+                           int* global_offset,
+                           int* dowrite)
+ {
++    DFTRACER_C_FUNCTION_START();
++    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+ 
+ 
+   hid_t dataspace, dataset, memspace, dxfer_template, dataset_plist;
+@@ -101,7 +104,9 @@
+   dimens_4d[3] = *nxb;
+   
+   dataspace = H5Screate_simple(rank, dimens_4d, NULL);
++  {
+   if(dataspace < 0) Driver_abortC("Error: negative return from dataspace H5Screate_simple");
++  }
+ 
+ #ifdef DEBUG_IO
+   printf("UNKNOWNS: dataspace = %d\n", (int) dataspace);
+@@ -206,7 +211,9 @@
+   }
+ 
+   memspace = H5Screate_simple(rank, dimens_5d, NULL);
++  {
+   if(memspace < 0) Driver_abortC("Error: negative return from memspace H5Screate_simple");
++  }
+ 
+   /* setting the transfer template */
+   dxfer_template = H5Pcreate(H5P_DATASET_XFER);
+@@ -317,4 +324,5 @@
+     io_h5_attribute_write(*myPE, *file_identifier, attType,
+ 			  record_label_new, maxLabel, varMax);
+   }
++    DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/NoFbs/io_h5read_facevars.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/NoFbs/io_h5read_facevars.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/NoFbs/io_h5read_facevars.c	2026-07-08 13:14:12.713970000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/NoFbs/io_h5read_facevars.c	2026-07-08 14:00:25.185801000 -0700
+@@ -8,6 +8,7 @@
+ /*#include <mpi.h>*/
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ 
+ int Driver_abortC(char* message);
+@@ -31,6 +32,8 @@
+ 		   double* unknowns,     /* [mblk][NZB][NYB][NXB][var] */
+                    char record_label[5]) /* add char--null termination */
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   hid_t dataspace, dataset, memspace;
+   herr_t status;
+ 
+@@ -143,4 +146,5 @@
+     H5Sclose(dataspace);
+     H5Dclose(dataset);
+   }
++  DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/NoFbs/io_h5read_unknowns.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/NoFbs/io_h5read_unknowns.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/NoFbs/io_h5read_unknowns.c	2026-07-08 13:14:12.715964000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/NoFbs/io_h5read_unknowns.c	2026-07-08 14:00:25.565895000 -0700
+@@ -8,6 +8,7 @@
+ /*#include <mpi.h>*/
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ 
+ int Driver_abortC(char* message);
+@@ -33,6 +34,8 @@
+     char record_label[5], /* add char--null termination */
+     int *doread)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   hid_t dataspace, dataset, memspace;
+   herr_t status;
+   size_t spaceTrimLen;
+@@ -153,4 +156,5 @@
+     H5Sclose(dataspace);
+     H5Dclose(dataset);
+   }
++  DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/NoFbs/io_h5write_facevars.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/NoFbs/io_h5write_facevars.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/NoFbs/io_h5write_facevars.c	2026-07-08 13:14:12.717975000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/NoFbs/io_h5write_facevars.c	2026-07-08 14:00:25.908794000 -0700
+@@ -6,6 +6,7 @@
+ #include "constants.h"
+ #include "io_flash.h"
+ #include "io_h5_attribute.h"
++#include <dftracer/dftracer.h>
+ 
+ int Driver_abortC(char* message);
+ 
+@@ -45,6 +46,8 @@
+ 			       double* varMax,       /* maximum value of unknown */
+                                char record_label[5]) /* add char-null termination */
+ {
++    DFTRACER_C_FUNCTION_START();
++    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+ 
+   hid_t dataspace, dataset, memspace, dxfer_template, dataset_plist;
+ 
+@@ -251,4 +254,5 @@
+ 			 diskSize, record_label_new, maxLabel);
+   io_h5_attribute_write(*myPE, (int)*file_identifier, attType,
+ 			record_label_new, maxLabel, varMax);
++    DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/NoFbs/io_h5write_unknowns.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/NoFbs/io_h5write_unknowns.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/NoFbs/io_h5write_unknowns.c	2026-07-08 13:14:12.719952000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/NoFbs/io_h5write_unknowns.c	2026-07-08 14:00:26.253914000 -0700
+@@ -6,6 +6,7 @@
+ #include "constants.h"
+ #include "io_flash.h"
+ #include "io_h5_attribute.h"
++#include <dftracer/dftracer.h>
+ 
+ int Driver_abortC(char* message);
+ 
+@@ -42,6 +43,8 @@
+   char record_label[5], /* add char-null termination */
+   int* dowrite          /* T/F (1/0) bool to send the data */
+ ) {
++    DFTRACER_C_FUNCTION_START();
++    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+ 
+   hid_t dataspace, dataset, memspace, dxfer_template, dataset_plist;
+ 
+@@ -101,7 +104,9 @@
+     
+   /* create a parallel hdf5 dataset */
+   dataset = H5Dcreate(*file_identifier, record_label_new, H5T_NATIVE_DOUBLE, dataspace, H5P_DEFAULT, dataset_plist, H5P_DEFAULT); 
++  {
+   if(dataset < 0) Driver_abortC("dataset Error: H5Dcreate io_h5write_unk\n");
++  }
+ 
+   start_4d[0] = 0;
+   start_4d[1] = *nzbOffset; /*number of z zones to the 'left' of myPE -- do this by copying functionality in Particles_getOffset */
+@@ -210,4 +215,5 @@
+ 			 diskSize, record_label_new, maxLabel);
+   io_h5_attribute_write(*myPE, *file_identifier, attType,
+ 			record_label_new, maxLabel, varMax);
++    DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/NoFbs/io_h5write_unknowns_sp.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/NoFbs/io_h5write_unknowns_sp.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/NoFbs/io_h5write_unknowns_sp.c	2026-07-08 13:14:12.721961000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/NoFbs/io_h5write_unknowns_sp.c	2026-07-08 14:00:26.572803000 -0700
+@@ -6,6 +6,7 @@
+ #include "constants.h"
+ #include "io_flash.h"
+ #include "io_h5_attribute.h"
++#include <dftracer/dftracer.h>
+ 
+ int Driver_abortC(char* message);
+ 
+@@ -42,6 +43,8 @@
+   char record_label[5],/* add char-null termination */
+   int* dowrite         /* T/F (1/0) bool to send data */
+ ) {
++    DFTRACER_C_FUNCTION_START();
++    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+ 
+   hid_t dataspace, dataset, memspace, dxfer_template, dataset_plist;
+ 
+@@ -215,4 +218,5 @@
+ 			 diskSize, record_label_new, maxLabel);
+   io_h5_attribute_write(*myPE, *file_identifier, attType,
+ 			record_label_new, maxLabel, varMax);
++    DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/UG/io_h5read_unknowns.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/UG/io_h5read_unknowns.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/UG/io_h5read_unknowns.c	2026-07-08 13:14:12.778981000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/UG/io_h5read_unknowns.c	2026-07-08 14:00:26.939832000 -0700
+@@ -9,6 +9,7 @@
+ /*#include <mpi.h>*/
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ 
+ int Driver_abortC(char* message);
+@@ -30,6 +31,8 @@
+                    int* global_offset,
+                    int* doread)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   hid_t dataspace, dataset = 0, memspace, dxfer_template;
+   herr_t status;
+ 
+@@ -177,4 +180,5 @@
+     H5Sclose(dataspace);
+     H5Dclose(dataset);
+   }
++  DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/UG/io_h5write_unknowns.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/UG/io_h5write_unknowns.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/UG/io_h5write_unknowns.c	2026-07-08 13:14:12.780017000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/UG/io_h5write_unknowns.c	2026-07-08 14:00:27.296788000 -0700
+@@ -7,6 +7,7 @@
+ #include "constants.h"
+ #include "io_flash.h"
+ #include "io_h5_attribute.h"
++#include <dftracer/dftracer.h>
+ 
+ int Driver_abortC(char* message);
+ 
+@@ -38,6 +39,8 @@
+ 			       int* global_offset,
+ 			       int* dowrite)
+ {
++    DFTRACER_C_FUNCTION_START();
++    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+ 
+   hid_t dataspace, dataset, memspace, dxfer_template, dataset_plist;
+ 
+@@ -91,10 +94,14 @@
+   dimens_4d[3] = *nxb;
+ 
+   dataspace = H5Screate_simple(rank, dimens_4d, NULL);
++  {
+   if(dataspace < 0) Driver_abortC("Error: negative return from dataspace H5Screate_simple");
++  }
+ 
+   dataset_plist = H5Pcreate(H5P_DATASET_CREATE);
++  {
+   if(dataset_plist < 0) Driver_abortC("Error: negative return from dataset_plist H5Pcreate");
++  }
+ 
+   if ((*myPE == MASTER_PE) && (*global_offset != 0)) {
+     
+@@ -147,11 +154,15 @@
+ 
+ 
+   memspace = H5Screate_simple(rank, dimens_5d, NULL);
++  {
+   if(memspace < 0) Driver_abortC("Error: negative return from memspace H5Screate_simple");
++  }
+ 
+   /* obtain a copy of the file transfer property list */ 
+   dxfer_template = H5Pcreate(H5P_DATASET_XFER);
++  {
+   if(dxfer_template < 0) Driver_abortC("Error: negative return from dxfer_template H5Pcreate");
++  }
+ #ifdef IO_HDF5_PARALLEL
+   if (HDF5_MODE == COLLECTIVE) {
+     herr = H5Pset_dxpl_mpio(dxfer_template, H5FD_MPIO_COLLECTIVE);
+@@ -237,4 +248,5 @@
+     io_h5_attribute_write(*myPE, *file_identifier, attType,
+ 			  record_label_new, maxLabel, varMax);
+   }
++    DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/UG/io_h5write_unknowns_sp.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/UG/io_h5write_unknowns_sp.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/parallel/UG/io_h5write_unknowns_sp.c	2026-07-08 13:14:12.781999000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/parallel/UG/io_h5write_unknowns_sp.c	2026-07-08 14:00:27.668818000 -0700
+@@ -10,6 +10,7 @@
+ #include "constants.h"
+ #include "io_flash.h"
+ #include "io_h5_attribute.h"
++#include <dftracer/dftracer.h>
+ 
+ 
+ int Driver_abortC(char* message);
+@@ -47,6 +48,8 @@
+                           int* global_offset,
+                           int* dowrite)
+ {
++    DFTRACER_C_FUNCTION_START();
++    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+ 
+ 
+   hid_t dataspace, dataset, memspace, dxfer_template, dataset_plist;
+@@ -286,4 +289,5 @@
+     io_h5_attribute_write(*myPE, *file_identifier, attType,
+ 			  record_label_new, maxLabel, varMax);
+   }
++    DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/serial/io_h5file_interface.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/serial/io_h5file_interface.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/hdf5/serial/io_h5file_interface.c	2026-07-08 13:14:12.842385000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/hdf5/serial/io_h5file_interface.c	2026-07-08 14:00:29.850753000 -0700
+@@ -6,6 +6,7 @@
+ #include "mangle_names.h"
+ #include <hdf5.h>
+ #include "hdf5_flash.h"
++#include <dftracer/dftracer.h>
+ /*#include <mpi.h>*/
+ /*#include "driverAPI.h"*/
+ 
+@@ -111,6 +112,8 @@
+ 
+ void FTOC(io_h5open_file_for_read)(hid_t* file_identifier, char filename[MAX_STRING_LENGTH+1])
+ {
++    DFTRACER_C_FUNCTION_START();
++    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+ 
+ 
+   /* make the filename pretty -- cutoff any trailing white space */
+@@ -135,6 +138,7 @@
+     printf("[H5_OPEN_FILE_FOR_READ] ERROR: opening file %s for input", local_filename);
+     /*abort_flash("[H5_OPEN_FILE_FOR_READ] ERROR: opening file for input\n");*/
+   }
++    DFTRACER_C_FUNCTION_END();
+ }
+ 
+ /* xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx */
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/io_attribute.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/io_attribute.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/io_attribute.c	2026-07-08 13:14:12.859957000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/io_attribute.c	2026-07-08 14:00:30.016845000 -0700
+@@ -1,4 +1,5 @@
+ #include "io_attribute.h"
++#include <dftracer/dftracer.h>
+ 
+ /*
+    We require the calling code to pass the length of each string
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/io_compressDecompress.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/io_compressDecompress.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/io_compressDecompress.c	2026-07-08 13:14:12.867994000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/io_compressDecompress.c	2026-07-08 14:00:30.191788000 -0700
+@@ -1,6 +1,7 @@
+ 
+ #include "io_compressDecompress.h"
+ #include <stdlib.h>
++#include <dftracer/dftracer.h>
+ 
+ 
+ char *io_compress(double* data, /* pointer to array of doubles*/
+@@ -8,6 +9,8 @@
+                     compress_t *comp_info /*Compression info */
+                    )
+ {
++    DFTRACER_C_FUNCTION_START();
++    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "mem");
+ char *comp_data;
+ int ctr;
+ double vmin,vmax,vstep;
+@@ -30,11 +33,19 @@
+   /* ctr has been set to 1 or 2 */
+   for (; ctr < *size; ctr += 2) {
+      if (data[ctr] < data[ctr+1]) {
++        {
+         if (data[ctr] < vmin) vmin = data[ctr];
++        }
++        {
+         if (data[ctr+1] > vmax) vmax = data[ctr+1];
++        }
+      } else {
++        {
+         if (data[ctr+1] < vmin) vmin = data[ctr+1];
++        }
++        {
+         if (data[ctr] > vmax) vmax = data[ctr];
++        }
+      }
+   }
+ 
+@@ -54,8 +65,11 @@
+ 
+   /* Populate the array */
+   for (ctr=0; ctr < *size; ctr++)
++     {
+      comp_data[ctr] = ( (data[ctr]-vmin)/(vstep) + 0.5); /* Round to nearest integer */
++     }
+ 
++  DFTRACER_C_FUNCTION_END();
+   return comp_data;
+ }
+ 
+@@ -67,6 +81,8 @@
+                     compress_t *comp_info /*Compression info */
+                    )
+ {
++    DFTRACER_C_FUNCTION_START();
++    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "mem");
+ double *data;
+ double vmin,vstep;
+ int ctr,j,idata,base;
+@@ -77,8 +93,11 @@
+    vmin = comp_info->min;
+    data = (double *) malloc( (*size) * sizeof(double));
+    for (ctr=0; ctr < *size; ctr++) 
++       {
+        data[ctr] = comp_data[ctr]*vstep + vmin;
++       }
+ 
++   DFTRACER_C_FUNCTION_END();
+    return data;
+ }
+ 
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/io_create_dataset.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/io_create_dataset.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/io_create_dataset.c	2026-07-08 13:14:12.871951000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/io_create_dataset.c	2026-07-08 14:00:30.355764000 -0700
+@@ -1,4 +1,5 @@
+ #include "io_create_dataset.h"
++#include <dftracer/dftracer.h>
+ 
+ void FTOC(io_create_dataset)(const int * const pMyPE,
+ 			     const io_fileID_t * const pFileID,
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/io_mpi_type.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/io_mpi_type.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/io_mpi_type.c	2026-07-08 13:14:12.890948000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/io_mpi_type.c	2026-07-08 14:00:30.460850000 -0700
+@@ -1,5 +1,6 @@
+ #include "io_mpi_type.h"
+ #include "mangle_names.h"
++#include <dftracer/dftracer.h>
+ 
+ MPI_Datatype io_mpi_type_primitive(const int flashType)
+ {
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/io_repack_data.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/io_repack_data.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/io_repack_data.c	2026-07-08 13:14:12.898975000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/io_repack_data.c	2026-07-08 14:00:30.603778000 -0700
+@@ -1,4 +1,5 @@
+ #include "io_repack_data.h"
++#include <dftracer/dftracer.h>
+ 
+ /* This is currently a copy of ncmpii_data_repack */
+ 
+@@ -9,6 +10,8 @@
+ 		   int outcount,
+ 		   MPI_Datatype outtype)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "comm");
+   int intypesz, outtypesz;
+   int packsz;
+   void *packbuf;
+@@ -23,11 +26,16 @@
+ 
+     /* for rescue, guarantee output data amount <= input data amount */
+     if (incount*intypesz < outcount*outtypesz)
++      {
+       outcount = incount*intypesz/outtypesz;
++      }
+   }
+ 
+   if (incount == 0)
++    {
++    DFTRACER_C_FUNCTION_END();
+     return 0;
++    }
+ 
+   /* local pack-n-unpack, using MPI_COMM_SELF */
+   MPI_Pack_size(incount, intype, MPI_COMM_SELF, &packsz);
+@@ -38,5 +46,6 @@
+   MPI_Unpack(packbuf, packsz, &packpos, outbuf, outcount, outtype, MPI_COMM_SELF);
+   free(packbuf);
+ 
++  DFTRACER_C_FUNCTION_END();
+   return 0;
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/io_xfer_cont_slab.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/io_xfer_cont_slab.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOMain/io_xfer_cont_slab.c	2026-07-08 13:14:12.906956000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOMain/io_xfer_cont_slab.c	2026-07-08 14:00:30.742798000 -0700
+@@ -1,4 +1,5 @@
+ #include "io_xfer_cont_slab.h"
++#include <dftracer/dftracer.h>
+ 
+ /* Write a fully-contiguous section */
+ void FTOC(io_xfer_cont_slab)(const int * const pMyPE,
+@@ -19,6 +20,8 @@
+                              const int numFileBlks[],
+ 			     int * const pErr)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   const int myPE = *pMyPE;
+   const io_fileID_t fileID = *pFileID;
+   const int libType = *pLibType;
+@@ -79,4 +82,5 @@
+     Driver_abortC("[io_xfer_cont_slab]: Unknown I/O");
+   }
+   *pErr = err;
++  DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/io_h5read_blk_particle_info.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/io_h5read_blk_particle_info.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/io_h5read_blk_particle_info.c	2026-07-08 13:14:12.941939000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/io_h5read_blk_particle_info.c	2026-07-08 14:00:31.099122000 -0700
+@@ -7,6 +7,7 @@
+ #include "hdf5_flash.h"
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -63,6 +64,8 @@
+                int* total_blocks,
+                int* global_offset)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   hid_t dataspace, dataset, memspace;
+   herr_t status;
+ 
+@@ -128,4 +131,5 @@
+ #else
+   H5Dclose(dataset);
+ #endif    
++  DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/io_h5read_globalintvect.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/io_h5read_globalintvect.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/io_h5read_globalintvect.c	2026-07-08 13:14:12.942979000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/io_h5read_globalintvect.c	2026-07-08 14:00:31.557066000 -0700
+@@ -10,6 +10,7 @@
+ #include "hdf5_flash.h"
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -22,6 +23,8 @@
+ 				   int* intvect,
+                                    char dataset_name[],
+                                     int* num_elts){
++    DFTRACER_C_FUNCTION_START();
++    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+ 
+   hid_t dataset,dataspace;
+   herr_t status;
+@@ -87,5 +90,6 @@
+ #else
+   H5Dclose(dataset);
+ #endif    
++  DFTRACER_C_FUNCTION_END();
+   return;
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/io_h5read_globalstrvect.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/io_h5read_globalstrvect.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/io_h5read_globalstrvect.c	2026-07-08 13:14:12.944977000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/io_h5read_globalstrvect.c	2026-07-08 14:00:31.914130000 -0700
+@@ -10,6 +10,7 @@
+ #include "hdf5_flash.h"
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -22,6 +23,8 @@
+                                    char strvect[][OUTPUT_PROP_LENGTH],
+                                    char dataset_name[],
+                                     int* num_elts){
++    DFTRACER_C_FUNCTION_START();
++    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+ 
+   hid_t dataset,dataspace;
+   herr_t status;
+@@ -100,5 +103,6 @@
+   H5Dclose(dataset);
+ #endif    
+   
++  DFTRACER_C_FUNCTION_END();
+   return;
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/io_h5read_localnp.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/io_h5read_localnp.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/io_h5read_localnp.c	2026-07-08 13:14:12.946967000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/io_h5read_localnp.c	2026-07-08 14:00:32.225044000 -0700
+@@ -4,6 +4,7 @@
+ /*#include <mpi.h>*/
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -23,6 +24,8 @@
+                        int* total_blocks,
+                        int* global_offset)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   hid_t dataspace, dataset, memspace;
+   herr_t status;
+   
+@@ -100,6 +103,7 @@
+   H5Dclose(dataset);
+ #endif  
+ 
++  DFTRACER_C_FUNCTION_END();
+ }
+ 
+ 
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/io_h5read_num_props.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/io_h5read_num_props.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/io_h5read_num_props.c	2026-07-08 13:14:12.947975000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/io_h5read_num_props.c	2026-07-08 14:00:32.585000000 -0700
+@@ -7,6 +7,7 @@
+ #include "hdf5_flash.h"
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/io_h5read_particle_names.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/io_h5read_particle_names.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/io_h5read_particle_names.c	2026-07-08 13:14:12.949964000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/io_h5read_particle_names.c	2026-07-08 14:00:32.934966000 -0700
+@@ -10,6 +10,7 @@
+ #include "hdf5_flash.h"
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -21,6 +22,8 @@
+ void FTOC(io_h5read_particle_names)(hid_t* file_identifier,
+                                    char part_names[][OUTPUT_PROP_LENGTH],
+                                     int* num_part_props){
++    DFTRACER_C_FUNCTION_START();
++    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+ 
+   hid_t dataset;
+   herr_t status;
+@@ -75,5 +78,6 @@
+     Driver_abortC("Error: Free string type\n");
+   }
+ 
++  DFTRACER_C_FUNCTION_END();
+   return;
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/io_h5read_single_part_prop.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/io_h5read_single_part_prop.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/io_h5read_single_part_prop.c	2026-07-08 13:14:12.951944000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/io_h5read_single_part_prop.c	2026-07-08 14:00:33.290935000 -0700
+@@ -8,6 +8,7 @@
+ #include "hdf5_flash.h"
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -25,6 +26,8 @@
+                                     int *current_npart_props,
+                                     int *particle_offset)
+ {
++    DFTRACER_C_FUNCTION_START();
++    DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+ 
+   hid_t    dataspace, dataset, memspace, xfer_plist;
+   herr_t   status, herr;
+@@ -34,6 +37,7 @@
+ 
+   if(*localnp <= 0){
+     /*we shouldn't have to do anything here*/
++    DFTRACER_C_FUNCTION_END();
+     return;
+   }
+ 
+@@ -123,6 +127,7 @@
+   H5Dclose(dataset);
+ #endif
+ 
++  DFTRACER_C_FUNCTION_END();
+   return;
+   
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/io_h5write_blk_particle_info.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/io_h5write_blk_particle_info.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/io_h5write_blk_particle_info.c	2026-07-08 13:14:12.952959000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/io_h5write_blk_particle_info.c	2026-07-08 14:00:33.652905000 -0700
+@@ -8,6 +8,7 @@
+ #include "hdf5_flash.h"
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -24,6 +25,8 @@
+                     int* total_blocks,
+                     int* global_offset)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   hid_t dataspace, dataset, memspace, dxfer_template;
+   herr_t status;
+ 
+@@ -121,6 +124,7 @@
+   H5Dclose(dataset);
+ #endif  
+ 
++  DFTRACER_C_FUNCTION_END();
+ }
+ 
+ 
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/io_h5write_localnp.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/io_h5write_localnp.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/io_h5write_localnp.c	2026-07-08 13:14:12.954975000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/io_h5write_localnp.c	2026-07-08 14:00:34.043896000 -0700
+@@ -4,6 +4,7 @@
+ /*#include <mpi.h>*/
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -21,6 +22,8 @@
+                         int* total_blocks,
+                         int* global_offset)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   hid_t dataspace, dataset, memspace, dataset_plist, dxfer_template;
+   herr_t status;
+ 
+@@ -130,6 +133,7 @@
+   H5Dclose(dataset);
+ #endif  
+   
++  DFTRACER_C_FUNCTION_END();
+ }
+ 
+ 
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/parallel/io_h5write_particles.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/parallel/io_h5write_particles.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/parallel/io_h5write_particles.c	2026-07-08 13:14:12.962008000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/parallel/io_h5write_particles.c	2026-07-08 14:00:34.388741000 -0700
+@@ -4,6 +4,7 @@
+ /*#include <mpi.h>*/
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef FLASH_IO_ASYNC_HDF5
+   extern hid_t io_es_id;
+@@ -23,6 +24,8 @@
+                         double* particles,
+                         char particle_labels[][OUTPUT_PROP_LENGTH + 1])      /* particle labels */
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   
+   hid_t    dataspace, dataset, memspace, dataset_plist, dxfer_template;
+   herr_t   status, ierr;
+@@ -257,6 +260,7 @@
+ #else
+   status = H5Dclose(dataset); 
+ #endif  
++  DFTRACER_C_FUNCTION_END();
+ }
+     
+ 
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/serial/io_h5write_particles.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/serial/io_h5write_particles.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/hdf5/serial/io_h5write_particles.c	2026-07-08 13:14:12.971313000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/hdf5/serial/io_h5write_particles.c	2026-07-08 14:00:34.726868000 -0700
+@@ -3,6 +3,7 @@
+ #include "hdf5_flash.h"
+ /*#include <mpi.h>*/
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ 
+ int Driver_abortC(char* message);
+@@ -19,6 +20,8 @@
+                         double* particles,
+                         char particle_labels[][OUTPUT_PROP_LENGTH + 1])      /* particle labels */
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   
+   hid_t    dataspace, dataset, memspace, dataset_plist;
+   herr_t   status, ierr;
+@@ -187,6 +190,7 @@
+   /* release resources */
+   status = H5Sclose(dataspace);
+ 
++  DFTRACER_C_FUNCTION_END();
+ }
+     
+ 
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/pnetcdf/io_ncmpi_write_part_dims.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/pnetcdf/io_ncmpi_write_part_dims.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOParticles/pnetcdf/io_ncmpi_write_part_dims.c	2026-07-08 13:14:12.990003000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOParticles/pnetcdf/io_ncmpi_write_part_dims.c	2026-07-08 14:00:35.085778000 -0700
+@@ -8,6 +8,7 @@
+ #include <mpi.h>
+ #include "Simulation.h"
+ #include "constants.h"
++#include <dftracer/dftracer.h>
+ 
+ 
+ int Driver_abortC(char* message);
+@@ -24,6 +25,8 @@
+                             char propNames[][OUTPUT_PROP_LENGTH])
+ 
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   int ncid, status, dim_particles, dim_npart_props, dim_mdim, rank, dim_tot_blocks;
+   int dimids[2]; 
+   MPI_Offset start_2d[2], count_2d[2], stride_2d[2];
+@@ -142,4 +145,5 @@
+       Driver_abortC("Error io_ncmpi_write_part_dims: enddef\n");
+     }
+ 
++  DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/hdf5/io_h5_read_file_format.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/hdf5/io_h5_read_file_format.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/hdf5/io_h5_read_file_format.c	2026-07-08 13:14:13.012043000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/hdf5/io_h5_read_file_format.c	2026-07-08 14:00:35.320825000 -0700
+@@ -1,10 +1,13 @@
+ #include "io_h5_read_file_format.h"
++#include <dftracer/dftracer.h>
+ #define DEBUG_IO
+ 
+ void FTOC(io_h5_read_file_format)(const int * const pMyPE,
+ 				  const hid_t * const pFileID,
+ 				  int *pFileFormat)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   const int myPE = *pMyPE;
+   const hid_t fileID = *pFileID;
+   hid_t dset, dtypeInt;
+@@ -38,4 +41,5 @@
+ 	     __FILE__, *pFileFormat);
+     }
+   }
++  DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/hdf5/io_h5_xfer_mesh_dataset.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/hdf5/io_h5_xfer_mesh_dataset.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/hdf5/io_h5_xfer_mesh_dataset.c	2026-07-08 13:14:13.016080000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/hdf5/io_h5_xfer_mesh_dataset.c	2026-07-08 14:00:35.565801000 -0700
+@@ -1,4 +1,5 @@
+ #include "io_h5_xfer_mesh_dataset.h"
++#include <dftracer/dftracer.h>
+ 
+ void io_h5_xfer_mesh_dataset(const int myPE,
+ 			     const hid_t fileID,
+@@ -16,6 +17,8 @@
+ 			     const char datasetName[],
+ 			     double * pData)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   const hid_t hFileID = fileID;
+   herr_t (*old_func)(void*) = NULL;
+   void *old_client_data = NULL;
+@@ -47,10 +50,18 @@
+ 	 gridDataStruct == SCRATCH);
+ 
+   if (debugIO) {
++    {
+     if (fileType == CHECKPOINTFILE) fileTypeText = "checkpoint file";
++    }
++    {
+     if (fileType == PLOTFILE) fileTypeText = "plot file";
++    }
++    {
+     if (xferType == IO_WRITE_XFER) xferTypeText = "write";
++    }
++    {
+     if (xferType == IO_READ_XFER) xferTypeText = "read";
++    }
+     if (myPE == MASTER_PE) {
+       printf(" [%s]: About to %s dataset %s in %s.\n",
+ 	     __FILE__, xferTypeText, datasetName, fileTypeText);
+@@ -227,4 +238,5 @@
+     err = H5Dclose(dataSet);
+     assert(err >= 0);
+   }
++  DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/hdf5/io_h5_xfer_packed_mesh_dataset.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/hdf5/io_h5_xfer_packed_mesh_dataset.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/hdf5/io_h5_xfer_packed_mesh_dataset.c	2026-07-08 13:14:13.019073000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/hdf5/io_h5_xfer_packed_mesh_dataset.c	2026-07-08 14:00:35.702811000 -0700
+@@ -1,4 +1,5 @@
+ #include "io_h5_xfer_packed_mesh_dataset.h"
++#include <dftracer/dftracer.h>
+ 
+   /* This subroutine manually packs the data into a contiguous buffer
+      so that it is a simple write operation for HDF5.  It requires
+@@ -23,6 +24,8 @@
+ 				    const int localSubSize[],
+ 				    double * pData)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "mem");
+   const hid_t hFileID = fileID;
+   MPI_Datatype *pMPI_DataType = NULL;
+   void *pHdf5Buf = NULL;
+@@ -54,10 +57,18 @@
+ 	 gridDataStruct == SCRATCH);
+ 
+   if (debugIO) {
++    {
+     if (fileType == CHECKPOINTFILE) fileTypeText = "checkpoint file";
++    }
++    {
+     if (fileType == PLOTFILE) fileTypeText = "plot file";
++    }
++    {
+     if (xferType == IO_WRITE_XFER) xferTypeText = "write";
++    }
++    {
+     if (xferType == IO_READ_XFER) xferTypeText = "read";
++    }
+     if (myPE == MASTER_PE) {
+       printf(" [%s]: About to %s dataset %s in %s.\n",
+ 	     __FILE__, xferTypeText, datasetName, fileTypeText);
+@@ -170,4 +181,5 @@
+   free (pTmpDbleBuf);
+   free (pTmpFltBuf);
+   pHdf5Buf = NULL;
++  DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/io_set_grid_mpi_types.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/io_set_grid_mpi_types.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/io_set_grid_mpi_types.c	2026-07-08 13:14:13.033023000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/io_set_grid_mpi_types.c	2026-07-08 14:00:35.844543000 -0700
+@@ -1,4 +1,5 @@
+ #include "io_set_grid_mpi_types.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef INDEXREORDER
+ # error [FLASH message] Derived datatype I/O incompatible with -index-reorder!
+@@ -17,6 +18,8 @@
+ 				  const int plotVarArr[],
+ 				  const int * const pNumPlotVar)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   const int myPE = *pMyPE;
+   const int gridDataStruct = *pGridDataStruct;
+   const int numGridVar = *pNumGridVar;
+@@ -222,6 +225,7 @@
+   /* ----------------------------------------------------------------------- */
+ 
+ 
++  DFTRACER_C_FUNCTION_END();
+ }
+ 
+ 
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/io_use_grid_mpi_types.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/io_use_grid_mpi_types.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/io_use_grid_mpi_types.c	2026-07-08 13:14:13.042004000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/io_use_grid_mpi_types.c	2026-07-08 14:00:35.985534000 -0700
+@@ -1,5 +1,6 @@
+ #include "io_use_grid_mpi_types.h"
+ #include <stdio.h>
++#include <dftracer/dftracer.h>
+ 
+ /* Returns a pointer to the global MPI type describing the
+    particular file type / grid type combination */
+@@ -7,6 +8,8 @@
+ 				    const int fileType,
+ 				    const int gridDataStruct)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   MPI_Datatype *pMPI_DataType = NULL;
+ 
+   assert(fileFmt <= 10);
+@@ -31,4 +34,5 @@
+ 
+   assert(*pMPI_DataType != MPI_DATATYPE_NULL);
+   return pMPI_DataType;
++  DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/io_xfer_mesh_dataset.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/io_xfer_mesh_dataset.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/io_xfer_mesh_dataset.c	2026-07-08 13:14:13.047056000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/io_xfer_mesh_dataset.c	2026-07-08 14:00:36.088759000 -0700
+@@ -1,4 +1,5 @@
+ #include "io_xfer_mesh_dataset.h"
++#include <dftracer/dftracer.h>
+ 
+ /* pData is void * to be compatible with F2003 Fortran / C 
+ interoperability requirements.  In Fortran we are specifically 
+@@ -24,6 +25,8 @@
+ 				const int * const pDsetNameLen,
+ 				void * pData)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   const int myPE = *pMyPE;
+   const io_fileID_t fileID = *pFileID;
+   const int libType = *pLibType;
+@@ -77,4 +80,5 @@
+   } else {
+     Driver_abortC("[io_xfer_mesh_dataset]: Unknown I/O");
+   }
++  DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/pnetcdf/io_ncmpi_create_dimids.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/pnetcdf/io_ncmpi_create_dimids.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/pnetcdf/io_ncmpi_create_dimids.c	2026-07-08 13:14:13.057025000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/pnetcdf/io_ncmpi_create_dimids.c	2026-07-08 14:00:36.241818000 -0700
+@@ -7,6 +7,7 @@
+ #include "Simulation.h"
+ #include "io_flash.h"
+ #include "mangle_names.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef USE_IO_C_INTERFACE
+ #ifdef FTOC
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/pnetcdf/io_ncmpi_define_mode.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/pnetcdf/io_ncmpi_define_mode.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/pnetcdf/io_ncmpi_define_mode.c	2026-07-08 13:14:13.058997000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/pnetcdf/io_ncmpi_define_mode.c	2026-07-08 14:00:36.355881000 -0700
+@@ -1,4 +1,5 @@
+ #include "io_ncmpi_define_mode.h"
++#include <dftracer/dftracer.h>
+ 
+ void FTOC(io_ncmpi_define_mode_enddef)(const int * const pFileID)
+ {
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/pnetcdf/io_ncmpi_nonblocking.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/pnetcdf/io_ncmpi_nonblocking.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/pnetcdf/io_ncmpi_nonblocking.c	2026-07-08 13:14:13.062057000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/pnetcdf/io_ncmpi_nonblocking.c	2026-07-08 14:00:36.484810000 -0700
+@@ -1,4 +1,5 @@
+ #include "io_ncmpi_nonblocking.h"
++#include <dftracer/dftracer.h>
+ 
+ #define MAX_REQUESTS 128
+ FLASH_IO_Request m_requests[MAX_REQUESTS];
+@@ -13,12 +14,15 @@
+ 
+ FLASH_IO_Request * io_ncmpi_nonblocking_get_request()
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   if (m_req_number < MAX_REQUESTS) {
+     m_req_number++;
+     if (debugIO && m_myPE == MASTER_PE) {
+       printf(" [%s]: Returning pointer to request %d\n",
+ 	     __FILE__, m_req_number);
+     }
++    DFTRACER_C_FUNCTION_END();
+     return &(m_requests[m_req_number-1]);
+   } else {
+     if (debugIO && m_myPE == MASTER_PE) {
+@@ -38,7 +42,9 @@
+ void FTOC(io_ncmpi_nonblocking_complete_requests)(int *ncid)
+ {
+   int err;
++  {
+   if (m_req_number == 0) return;
++  }
+   if (debugIO && m_myPE == MASTER_PE) {
+     printf(" [%s]: Waiting on %d non-blocking writes\n",
+ 	   __FILE__, m_req_number);
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/pnetcdf/io_ncmpi_retrieve_dimids.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/pnetcdf/io_ncmpi_retrieve_dimids.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/pnetcdf/io_ncmpi_retrieve_dimids.c	2026-07-08 13:14:13.066013000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/pnetcdf/io_ncmpi_retrieve_dimids.c	2026-07-08 14:00:36.638789000 -0700
+@@ -8,6 +8,7 @@
+ #include "Simulation.h"
+ #include "io_flash.h"
+ #include "mangle_names.h"
++#include <dftracer/dftracer.h>
+ 
+ #ifdef USE_IO_C_INTERFACE
+ #ifdef FTOC
+@@ -25,6 +26,8 @@
+ 				    const int * const pGridStruct,
+ 				    int dimIDs[IO_MESH_DIMS])
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   /* arrays of IO_MESH_DIMS pointers to const char */
+   const char * unk[IO_MESH_DIMS] =
+     {"dim_tot_blocks","dim_nzb","dim_nyb","dim_nxb","dim_nUnkVar"};
+@@ -132,4 +135,5 @@
+       dimIDs[i] = -1;
+     }
+   }
++  DFTRACER_C_FUNCTION_END();
+ }
+diff -ruN --no-dereference '--exclude=*.o' '--exclude=*.mod' '--exclude=*.a' '--exclude=*.so' '--exclude=.git' '--exclude=object' '--exclude=*.pfw' '--exclude=*.pfw.gz' '--exclude=*.h5' '--exclude=*.log' /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/pnetcdf/io_ncmpi_xfer_mesh_dataset.c /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/pnetcdf/io_ncmpi_xfer_mesh_dataset.c
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/source/IO/IOTypes/pnetcdf/io_ncmpi_xfer_mesh_dataset.c	2026-07-08 13:14:13.068005000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/source/IO/IOTypes/pnetcdf/io_ncmpi_xfer_mesh_dataset.c	2026-07-08 14:00:36.774738000 -0700
+@@ -1,4 +1,5 @@
+ #include "io_ncmpi_xfer_mesh_dataset.h"
++#include <dftracer/dftracer.h>
+ 
+ void io_ncmpi_xfer_mesh_dataset(const int myPE,
+ 				const int fileID,
+@@ -13,6 +14,8 @@
+ 				const char datasetName[],
+ 				double * pData)
+ {
++  DFTRACER_C_FUNCTION_START();
++  DFTRACER_C_FUNCTION_UPDATE_STR("comp", "cpu");
+   FLASH_IO_Request *pNCMPI_Request = NULL;
+   MPI_Datatype *pMPI_DataType = NULL;
+   MPI_Offset startDisk[IO_MESH_DIMS], count[IO_MESH_DIMS];
+@@ -33,10 +36,18 @@
+   assert(numDataDims <= IO_MESH_DIMS);
+ 
+   if (debugIO) {
++    {
+     if (fileType == CHECKPOINTFILE) fileTypeText = "checkpoint file";
++    }
++    {
+     if (fileType == PLOTFILE) fileTypeText = "plot file";
++    }
++    {
+     if (xferType == IO_WRITE_XFER) xferTypeText = "write";
++    }
++    {
+     if (xferType == IO_READ_XFER) xferTypeText = "read";
++    }
+     if (myPE == MASTER_PE) {
+       printf(" [%s]: About to %s dataset %s in %s.\n",
+ 	     __FILE__, xferTypeText, datasetName, fileTypeText);
+@@ -92,4 +103,5 @@
+     }
+   }
+   assert(err == NC_NOERR);
++  DFTRACER_C_FUNCTION_END();
+ }

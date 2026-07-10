@@ -36,7 +36,8 @@ The annotation mirrors the pattern used by dlio_benchmark (master branch):
   @dft_ai.checkpoint.restart         # checkpoint load / restore
   @dft_ai.device.transfer            # host↔device transfer
   @_dlp.log_init                     # __init__ methods
-  @_dlp.log_static                   # @staticmethod methods
+  # @staticmethod -> contextual region, never @log_static:
+  #     with DFTracerFn("<cat>", name="f"): ...
   @_dlp.log                          # everything else
 
   # Loop-level iterator wrappers
@@ -67,6 +68,7 @@ from .annotation_python import (
     _extract_functions_from_ast,
     _last_import_idx,
     _find_return_lines,
+    _indent_of,
 )
 
 # ── Language extension map ─────────────────────────────────────────────────────
@@ -367,6 +369,385 @@ def _wrap_for_loops(source: str, lines: List[str]) -> Tuple[List[str], List[dict
     return result, wraps
 
 
+
+# ---------------------------------------------------------------------------
+# Module-level implementation, so orchestrators (ml_pipeline) can drive the
+# same annotation logic without going through the MCP tool wrapper.
+# ---------------------------------------------------------------------------
+
+
+def _ai_context_expr(ai_dec: str, cat: str, name: str) -> str:
+    """Return the `with` context expression for a static method.
+
+    A @staticmethod cannot take the AI decorator (it fights @staticmethod
+    ordering), but the AI API objects are context managers too. So a semantic
+    static method keeps its AI semantics as a region — ``@dft_ai.compute.backward``
+    becomes ``with dft_ai.compute.backward():`` — instead of degrading to a plain
+    DFTracerFn region, which would erase the AI category from the trace.
+    """
+    if ai_dec:
+        expr = ai_dec.lstrip("@")
+        if expr == "dft_ai":                    # bare object decorator
+            return f'DFTracerFn("{cat}", name="{name}")'
+        return f"{expr}()"
+    return f'DFTracerFn("{cat}", name="{name}")'
+
+
+def _ai_summary(filepath, insertions, ai_count, wrap_count, fn_count,
+                regions, skipped_static, skipped_cheap=()) -> str:
+    """Human-readable summary naming EVERY instrumentation form applied.
+
+    Callers (and the validator) need to distinguish decorator-annotated functions
+    from contextual ``with``-region ones, and to see any static method that was
+    deliberately left alone — otherwise a silent skip looks like full coverage.
+    """
+    parts = [
+        f"AI-annotated {filepath}: {len(insertions)} decorator insertion(s)",
+        f"{ai_count} AI/ML region(s)",
+        f"{len(regions)} contextual `with` region(s) for @staticmethod",
+        f"{wrap_count} loop wrap(s)",
+        f"{fn_count} function(s) total",
+    ]
+    if skipped_cheap:
+        parts.append(f"{len(skipped_cheap)} skipped by cost gate")
+    msg = ", ".join(parts) + "."
+    if skipped_static:
+        msg += (f" SKIPPED {len(skipped_static)} static method(s) whose body spans a "
+                f"multi-line string — annotate by hand: {', '.join(skipped_static)}.")
+    return msg
+
+
+def _python_annotate_ai_file_impl(
+    run_id: str,
+    filepath: str,
+    category: str = "",
+    is_entry: bool = False,
+    logfile: str = "None",
+    data_dir: str = "None",
+    process_id: int = -1,
+    annotate_loops: bool = True,
+    annotate_nested: bool = True,
+    annotated_dir: str = "annotated",
+    only_functions: str = "",
+) -> str:
+    """Annotate a Python file with AI/ML-region-aware dftracer decorators.
+
+    Uses the full ``dft_ai`` API from ``dftracer.python`` to insert
+    semantically-correct region decorators based on function name patterns.
+    Matches the annotation style used in dlio_benchmark (master branch).
+
+    **Decorator selection rules** (first match wins):
+
+    +----------------------------------------------+-------------------------------+
+    | Function name matches (case-insensitive)     | Decorator inserted            |
+    +==============================================+===============================+
+    | ``run``, ``main``, ``__call__``              | ``@dft_ai``                   |
+    +----------------------------------------------+-------------------------------+
+    | ``train``, ``training``, ``fit``             | ``@dft_ai.pipeline.train``    |
+    +----------------------------------------------+-------------------------------+
+    | ``eval``, ``evaluate``, ``validate``         | ``@dft_ai.pipeline.evaluate`` |
+    +----------------------------------------------+-------------------------------+
+    | ``test``, ``testing``                        | ``@dft_ai.pipeline.test``     |
+    +----------------------------------------------+-------------------------------+
+    | ``forward``                                  | ``@dft_ai.compute.forward``   |
+    +----------------------------------------------+-------------------------------+
+    | ``backward``                                 | ``@dft_ai.compute.backward``  |
+    +----------------------------------------------+-------------------------------+
+    | ``optimizer_step``, ``optim_step``           | ``@dft_ai.compute.step``      |
+    +----------------------------------------------+-------------------------------+
+    | ``compute``, ``train_step``, ``eval_step``   | ``@dft_ai.compute``           |
+    +----------------------------------------------+-------------------------------+
+    | ``preprocess``, ``transform``, ``augment``,  | ``@dft_ai.data.preprocess``   |
+    | ``collate``                                  |                               |
+    +----------------------------------------------+-------------------------------+
+    | ``__getitem__``, ``read_index``, ``get_item``| ``@dft_ai.data.item``         |
+    +----------------------------------------------+-------------------------------+
+    | ``fetch``, ``load_batch``, ``next``          | ``@dft_ai.dataloader.fetch``  |
+    +----------------------------------------------+-------------------------------+
+    | ``save_checkpoint``, ``save_ckpt``           | ``@dft_ai.checkpoint.capture``|
+    +----------------------------------------------+-------------------------------+
+    | ``load_checkpoint``, ``load_ckpt``, etc.     | ``@dft_ai.checkpoint.restart``|
+    +----------------------------------------------+-------------------------------+
+    | ``to_device``, ``transfer``                  | ``@dft_ai.device.transfer``   |
+    +----------------------------------------------+-------------------------------+
+    | ``__init__``                                 | ``@_dlp.log_init``            |
+    +----------------------------------------------+-------------------------------+
+    | ``@staticmethod`` methods                    | ``with DFTracerFn(...)`` region |
+    +----------------------------------------------+-------------------------------+
+    | *(everything else)*                          | ``@_dlp.log``                 |
+    +----------------------------------------------+-------------------------------+
+
+    **Loop iterator wrapping** (when ``annotate_loops=True``):
+
+    * ``for epoch in <X>:``  →
+      ``for epoch in dft_ai.pipeline.epoch.iter(<X>):``
+    * ``for batch/sample/item in <X>:``  →
+      ``for batch in dft_ai.dataloader.fetch.iter(<X>):``
+
+    The injected import block is::
+
+        from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
+        _dlp     = DFTracerFn("<category>")
+        _dft_log = dftracer.initialize_log(...)   # entry-point files only
+
+    All operations use the bottom-to-top insertion strategy: indices are
+    computed from the original file, sorted highest-first, and applied in
+    one pass before writing.  Loop wrapping is done as in-place line
+    substitution (no index shift).
+
+    Operation is idempotent: if the dftracer import is already present the
+    file is returned unchanged.
+
+    Args:
+        run_id:          Session identifier from ``session_create``.
+        filepath:        Path relative to the ``annotated/`` subfolder.
+        category:        Category string for ``DFTracerFn("<category>")``.
+                         Defaults to the filename stem.
+        is_entry:        ``True`` for the program entry point (adds
+                         ``initialize_log`` and ``finalize()``).
+        logfile:         ``logfile`` arg for ``initialize_log``.
+        data_dir:        ``data_dir`` arg for ``initialize_log``.
+        process_id:      ``process_id`` arg for ``initialize_log``.
+        annotate_loops:  When ``True`` (default), wrap epoch and fetch
+                         for-loop iterators with ``dft_ai.*.iter()``.
+        annotate_nested: When ``True`` (default), annotate nested functions
+                         and class methods.
+
+    Returns:
+        JSON with ``status``, ``message``, ``filepath``, ``insertions``,
+        ``functions``, ``ai_functions``, ``loop_wraps``, ``total_lines``,
+        ``already_annotated``.
+    """
+    ws = _ws(run_id)
+    abs_path = ws / annotated_dir / filepath
+
+    cache_key = (run_id, filepath)
+    if cache_key in _AI_FILE_CACHE:
+        lines = list(_AI_FILE_CACHE[cache_key])
+    elif abs_path.exists():
+        lines = abs_path.read_text(errors="replace").splitlines()
+    else:
+        return _err(f"File not found in annotated/: {filepath}")
+
+    text = "\n".join(lines)
+
+    # Idempotency guard
+    if "from dftracer.python import" in text and "dft_ai" in text:
+        return _ok(
+            f"{filepath} is already AI-annotated — skipped.",
+            filepath=filepath,
+            insertions=0,
+            functions=0,
+            ai_functions=0,
+            loop_wraps=0,
+            total_lines=len(lines),
+            already_annotated=True,
+        )
+
+    cat = category or Path(filepath).stem
+
+    # ── Step 1: parse function map ─────────────────────────────────────
+    all_fns = _extract_functions_from_ast(text)
+    if not annotate_nested:
+        all_fns = [f for f in all_fns if "." not in f["qualname"]]
+
+    # ── Step 2: build import/init block ───────────────────────────────
+    import_idx = _last_import_idx(lines)
+
+    init_lines: List[str] = [
+        _AI_IMPORT,
+        f'_dlp = DFTracerFn("{cat}")',
+    ]
+    if is_entry:
+        init_lines.append(
+            f"_dft_log = dftracer.initialize_log("
+            f"logfile={logfile}, data_dir={data_dir}, process_id={process_id})"
+        )
+
+    # ── Step 3: build per-function decorator insertions ───────────────
+    insertions: List[tuple] = []
+
+    # Insertions are (index, priority, text). At the SAME index, lower priority is
+    # applied first; since each insert pushes previously-inserted text down, the
+    # LAST thing applied ends up topmost. So decorators (prio 0) must be applied
+    # before the init block (prio 1), otherwise a decorator for a function that
+    # starts right after the imports is emitted ABOVE the import it depends on —
+    # producing `@dft_ai` before `from dftracer... import ... as dft_ai`, which is
+    # a SyntaxError.
+    _PRIO_DEC, _PRIO_INIT = 0, 1
+
+    # Init block — reversed so after sort+insert they land in order
+    for ln in reversed(init_lines):
+        insertions.append((import_idx, _PRIO_INIT, ln))
+
+    ai_count = 0
+    decorator_map: List[dict] = []
+
+    # Static methods get a contextual `with` region instead of @log_static: a
+    # decorator has to fight @staticmethod ordering, whereas dft_fn is a context
+    # manager (__enter__/__exit__). Collected here, applied after the insertions.
+    from .annotation_python import _multiline_string_rows
+    regions: List[dict] = []
+    skipped_static: List[str] = []
+    multiline_str_rows = _multiline_string_rows(text)
+
+    # Cost gate. `only_functions` is the allow-list from the AI/ML cost estimator.
+    # Semantic functions (those _detect_ai_decorator recognises: data item,
+    # checkpoint, training step, comm, ...) are ALWAYS annotated regardless — they
+    # are instrumented for what they mean, not what they cost. Everything else is
+    # annotated only when the estimator selected it, so a file does not end up with
+    # a decorator on every getter. An empty allow-list keeps the old behaviour.
+    _wanted = {n.strip() for n in only_functions.split(",") if n.strip()}
+    _names = [f["name"] for f in all_fns]
+
+    def _selected(fn: dict) -> bool:
+        if not _wanted:
+            return True
+        if fn["qualname"] in _wanted:
+            return True
+        # A bare name is honoured only when unambiguous in this file.
+        return fn["name"] in _wanted and _names.count(fn["name"]) == 1
+
+    skipped_cheap: List[str] = []
+
+    for fn in all_fns:
+        dec_idx = fn["decorator_insert_line"] - 1
+        indent  = " " * fn["col_offset"]
+
+        ai_dec_pre = _detect_ai_decorator(fn)
+        is_semantic = bool(ai_dec_pre) or fn["is_entry_point"]
+
+        if not is_semantic and not _selected(fn):
+            skipped_cheap.append(fn["qualname"])
+            continue
+
+        # Determine decorator
+        if fn["is_init"]:
+            dec = f"{indent}@_dlp.log_init"
+            label = "log_init"
+        elif fn["has_staticmethod"]:
+            # Re-indenting a body that spans a multi-line string would rewrite the
+            # literal's contents, so leave those alone and report them instead.
+            if multiline_str_rows.intersection(
+                    range(fn["body_first_line"], fn["end_line"] + 1)):
+                skipped_static.append(fn["qualname"])
+            else:
+                fn = dict(fn)
+                fn["_ctx"] = _ai_context_expr(ai_dec_pre, cat, fn["name"])
+                if ai_dec_pre:
+                    ai_count += 1
+                regions.append(fn)
+            continue
+        else:
+            ai_dec = ai_dec_pre
+            if ai_dec:
+                dec = f"{indent}{ai_dec}"
+                label = ai_dec
+                ai_count += 1
+            else:
+                dec = f"{indent}@_dlp.log"
+                label = "log"
+
+        insertions.append((dec_idx, _PRIO_DEC, dec))
+        decorator_map.append({
+            "function": fn["qualname"],
+            "decorator": label,
+            "line": fn["decorator_insert_line"],
+        })
+
+    # Entry-point finalize
+    if is_entry:
+        main_fn = next((f for f in all_fns if f["is_entry_point"]), None)
+        if main_fn:
+            body_ind  = " " * main_fn.get("body_col_offset", 4)
+            fini_line = f"{body_ind}{_DFT_FINI}"
+            returns   = main_fn.get("return_lines", [])
+            if returns:
+                for ret_line in returns:
+                    ind = _indent_of(lines, ret_line)
+                    insertions.append((ret_line - 1, _PRIO_DEC, f"{ind}{_DFT_FINI}"))
+            else:
+                # end_line is the 1-based LAST line of main(); its 0-based index is
+                # end_line-1. Insert AFTER it (index end_line), otherwise finalize()
+                # lands before the final statement — and for a one-statement main()
+                # it becomes the FIRST statement, finalizing the log before any work.
+                insertions.append((main_fn["end_line"], _PRIO_DEC, fini_line))
+        else:
+            insertions.append((len(lines), _PRIO_DEC, _DFT_FINI))
+
+    # ── Step 4: sort highest-first, apply in one pass ─────────────────
+    insertions.sort(key=lambda x: (-x[0], x[1]))
+    for idx, _prio, txt in insertions:
+        lines.insert(idx, txt)
+
+    # Contextual `with` regions for @staticmethod, computed from a FRESH parse so
+    # the line numbers reflect the decorator insertions above. Bottom-up so
+    # earlier functions keep their positions. The `with` goes AFTER a leading
+    # docstring, otherwise the docstring becomes a dead expression inside it.
+    if regions:
+        want = {f["qualname"] for f in regions}
+        ctx_by_qual = {f["qualname"]: f["_ctx"] for f in regions}
+        try:
+            fresh = _extract_functions_from_ast("\n".join(lines))
+        except Exception:
+            fresh = []
+        for fn in sorted((f for f in fresh if f["qualname"] in want),
+                         key=lambda f: -f["body_first_line"]):
+            b0 = fn["body_first_line"] - 1
+            e0 = fn["end_line"] - 1
+            body_ind = " " * fn["body_col_offset"]
+            doc = lines[b0].strip()
+            if len(doc) > 5 and (
+                (doc.startswith('"""') and doc.endswith('"""'))
+                or (doc.startswith("'''") and doc.endswith("'''"))
+            ):
+                b0 += 1
+            for i in range(b0, min(e0, len(lines) - 1) + 1):
+                if lines[i].strip():
+                    lines[i] = "    " + lines[i]
+            ctx = ctx_by_qual.get(fn["qualname"],
+                                  f'DFTracerFn("{cat}", name="{fn["name"]}")')
+            lines.insert(b0, f"{body_ind}with {ctx}:")
+            decorator_map.append({"function": fn["qualname"],
+                                  "decorator": f"with {ctx}",
+                                  "line": fn["body_first_line"]})
+
+    # ── Step 5: wrap for-loops (in-place substitution, no index shift) ─
+    wrap_count = 0
+    wrap_records: List[dict] = []
+    if annotate_loops:
+        new_text = "\n".join(lines)
+        lines, wrap_records = _wrap_for_loops(new_text, lines)
+        wrap_count = len(wrap_records)
+
+    # ── Step 6: write once ────────────────────────────────────────────
+    _AI_FILE_CACHE[cache_key] = list(lines)
+    abs_path.write_text("\n".join(lines) + "\n")
+
+    fn_count = len(all_fns)
+    total_insertions = len(insertions) + wrap_count
+    return _ok(
+        _ai_summary(filepath, insertions, ai_count, wrap_count, fn_count,
+                    regions, skipped_static, skipped_cheap),
+        filepath=filepath,
+        insertions=len(insertions),
+        functions=fn_count,
+        ai_functions=ai_count,
+        # Every instrumentation form this file produced, so callers can audit
+        # coverage without re-reading the source:
+        decorators=len(decorator_map) - len(regions),
+        with_regions=len(regions),
+        with_region_functions=[f["qualname"] for f in regions],
+        skipped_static=skipped_static,
+        skipped_cheap=skipped_cheap,
+        loop_wraps=wrap_count,
+        loop_wrap_details=wrap_records,
+        decorator_map=decorator_map,
+        total_lines=len(lines),
+        already_annotated=False,
+    )
+
+
 def register_ai_tools(mcp: FastMCP) -> None:
     """Register AI/ML annotation and file-discovery tools on *mcp*."""
 
@@ -484,225 +865,17 @@ def register_ai_tools(mcp: FastMCP) -> None:
         annotate_loops: bool = True,
         annotate_nested: bool = True,
     ) -> str:
-        """Annotate a Python file with AI/ML-region-aware dftracer decorators.
+        """Annotate a Python file with dftracer AI/ML region decorators.
 
-        Uses the full ``dft_ai`` API from ``dftracer.python`` to insert
-        semantically-correct region decorators based on function name patterns.
-        Matches the annotation style used in dlio_benchmark (master branch).
-
-        **Decorator selection rules** (first match wins):
-
-        +----------------------------------------------+-------------------------------+
-        | Function name matches (case-insensitive)     | Decorator inserted            |
-        +==============================================+===============================+
-        | ``run``, ``main``, ``__call__``              | ``@dft_ai``                   |
-        +----------------------------------------------+-------------------------------+
-        | ``train``, ``training``, ``fit``             | ``@dft_ai.pipeline.train``    |
-        +----------------------------------------------+-------------------------------+
-        | ``eval``, ``evaluate``, ``validate``         | ``@dft_ai.pipeline.evaluate`` |
-        +----------------------------------------------+-------------------------------+
-        | ``test``, ``testing``                        | ``@dft_ai.pipeline.test``     |
-        +----------------------------------------------+-------------------------------+
-        | ``forward``                                  | ``@dft_ai.compute.forward``   |
-        +----------------------------------------------+-------------------------------+
-        | ``backward``                                 | ``@dft_ai.compute.backward``  |
-        +----------------------------------------------+-------------------------------+
-        | ``optimizer_step``, ``optim_step``           | ``@dft_ai.compute.step``      |
-        +----------------------------------------------+-------------------------------+
-        | ``compute``, ``train_step``, ``eval_step``   | ``@dft_ai.compute``           |
-        +----------------------------------------------+-------------------------------+
-        | ``preprocess``, ``transform``, ``augment``,  | ``@dft_ai.data.preprocess``   |
-        | ``collate``                                  |                               |
-        +----------------------------------------------+-------------------------------+
-        | ``__getitem__``, ``read_index``, ``get_item``| ``@dft_ai.data.item``         |
-        +----------------------------------------------+-------------------------------+
-        | ``fetch``, ``load_batch``, ``next``          | ``@dft_ai.dataloader.fetch``  |
-        +----------------------------------------------+-------------------------------+
-        | ``save_checkpoint``, ``save_ckpt``           | ``@dft_ai.checkpoint.capture``|
-        +----------------------------------------------+-------------------------------+
-        | ``load_checkpoint``, ``load_ckpt``, etc.     | ``@dft_ai.checkpoint.restart``|
-        +----------------------------------------------+-------------------------------+
-        | ``to_device``, ``transfer``                  | ``@dft_ai.device.transfer``   |
-        +----------------------------------------------+-------------------------------+
-        | ``__init__``                                 | ``@_dlp.log_init``            |
-        +----------------------------------------------+-------------------------------+
-        | ``@staticmethod`` methods                    | ``@_dlp.log_static``          |
-        +----------------------------------------------+-------------------------------+
-        | *(everything else)*                          | ``@_dlp.log``                 |
-        +----------------------------------------------+-------------------------------+
-
-        **Loop iterator wrapping** (when ``annotate_loops=True``):
-
-        * ``for epoch in <X>:``  →
-          ``for epoch in dft_ai.pipeline.epoch.iter(<X>):``
-        * ``for batch/sample/item in <X>:``  →
-          ``for batch in dft_ai.dataloader.fetch.iter(<X>):``
-
-        The injected import block is::
-
-            from dftracer.python import dftracer, dft_fn as DFTracerFn, ai as dft_ai
-            _dlp     = DFTracerFn("<category>")
-            _dft_log = dftracer.initialize_log(...)   # entry-point files only
-
-        All operations use the bottom-to-top insertion strategy: indices are
-        computed from the original file, sorted highest-first, and applied in
-        one pass before writing.  Loop wrapping is done as in-place line
-        substitution (no index shift).
-
-        Operation is idempotent: if the dftracer import is already present the
-        file is returned unchanged.
-
-        Args:
-            run_id:          Session identifier from ``session_create``.
-            filepath:        Path relative to the ``annotated/`` subfolder.
-            category:        Category string for ``DFTracerFn("<category>")``.
-                             Defaults to the filename stem.
-            is_entry:        ``True`` for the program entry point (adds
-                             ``initialize_log`` and ``finalize()``).
-            logfile:         ``logfile`` arg for ``initialize_log``.
-            data_dir:        ``data_dir`` arg for ``initialize_log``.
-            process_id:      ``process_id`` arg for ``initialize_log``.
-            annotate_loops:  When ``True`` (default), wrap epoch and fetch
-                             for-loop iterators with ``dft_ai.*.iter()``.
-            annotate_nested: When ``True`` (default), annotate nested functions
-                             and class methods.
-
-        Returns:
-            JSON with ``status``, ``message``, ``filepath``, ``insertions``,
-            ``functions``, ``ai_functions``, ``loop_wraps``, ``total_lines``,
-            ``already_annotated``.
+        Delegates to :func:`_python_annotate_ai_file_impl`. See that function for
+        the full behaviour (decorator selection, loop wrapping, import injection,
+        idempotency).
         """
-        ws = _ws(run_id)
-        abs_path = ws / "annotated" / filepath
-
-        cache_key = (run_id, filepath)
-        if cache_key in _AI_FILE_CACHE:
-            lines = list(_AI_FILE_CACHE[cache_key])
-        elif abs_path.exists():
-            lines = abs_path.read_text(errors="replace").splitlines()
-        else:
-            return _err(f"File not found in annotated/: {filepath}")
-
-        text = "\n".join(lines)
-
-        # Idempotency guard
-        if "from dftracer.python import" in text and "dft_ai" in text:
-            return _ok(
-                f"{filepath} is already AI-annotated — skipped.",
-                filepath=filepath,
-                insertions=0,
-                functions=0,
-                ai_functions=0,
-                loop_wraps=0,
-                total_lines=len(lines),
-                already_annotated=True,
-            )
-
-        cat = category or Path(filepath).stem
-
-        # ── Step 1: parse function map ─────────────────────────────────────
-        all_fns = _extract_functions_from_ast(text)
-        if not annotate_nested:
-            all_fns = [f for f in all_fns if "." not in f["qualname"]]
-
-        # ── Step 2: build import/init block ───────────────────────────────
-        import_idx = _last_import_idx(lines)
-
-        init_lines: List[str] = [
-            _AI_IMPORT,
-            f'_dlp = DFTracerFn("{cat}")',
-        ]
-        if is_entry:
-            init_lines.append(
-                f"_dft_log = dftracer.initialize_log("
-                f"logfile={logfile}, data_dir={data_dir}, process_id={process_id})"
-            )
-
-        # ── Step 3: build per-function decorator insertions ───────────────
-        insertions: List[tuple] = []
-
-        # Init block — reversed so after sort+insert they land in order
-        for ln in reversed(init_lines):
-            insertions.append((import_idx, ln))
-
-        ai_count = 0
-        decorator_map: List[dict] = []
-
-        for fn in all_fns:
-            dec_idx = fn["decorator_insert_line"] - 1
-            indent  = " " * fn["col_offset"]
-
-            # Determine decorator
-            if fn["is_init"]:
-                dec = f"{indent}@_dlp.log_init"
-                label = "log_init"
-            elif fn["has_staticmethod"]:
-                dec = f"{indent}@_dlp.log_static"
-                label = "log_static"
-            else:
-                ai_dec = _detect_ai_decorator(fn)
-                if ai_dec:
-                    dec = f"{indent}{ai_dec}"
-                    label = ai_dec
-                    ai_count += 1
-                else:
-                    dec = f"{indent}@_dlp.log"
-                    label = "log"
-
-            insertions.append((dec_idx, dec))
-            decorator_map.append({
-                "function": fn["qualname"],
-                "decorator": label,
-                "line": fn["decorator_insert_line"],
-            })
-
-        # Entry-point finalize
-        if is_entry:
-            main_fn = next((f for f in all_fns if f["is_entry_point"]), None)
-            if main_fn:
-                body_ind  = " " * main_fn.get("body_col_offset", 4)
-                fini_line = f"{body_ind}{_DFT_FINI}"
-                returns   = main_fn.get("return_lines", [])
-                if returns:
-                    for ret_line in returns:
-                        insertions.append((ret_line - 1, fini_line))
-                else:
-                    insertions.append((main_fn["end_line"] - 1, fini_line))
-            else:
-                insertions.append((len(lines), _DFT_FINI))
-
-        # ── Step 4: sort highest-first, apply in one pass ─────────────────
-        insertions.sort(key=lambda x: -x[0])
-        for idx, txt in insertions:
-            lines.insert(idx, txt)
-
-        # ── Step 5: wrap for-loops (in-place substitution, no index shift) ─
-        wrap_count = 0
-        wrap_records: List[dict] = []
-        if annotate_loops:
-            new_text = "\n".join(lines)
-            lines, wrap_records = _wrap_for_loops(new_text, lines)
-            wrap_count = len(wrap_records)
-
-        # ── Step 6: write once ────────────────────────────────────────────
-        _AI_FILE_CACHE[cache_key] = list(lines)
-        abs_path.write_text("\n".join(lines) + "\n")
-
-        fn_count = len(all_fns)
-        total_insertions = len(insertions) + wrap_count
-        return _ok(
-            f"AI-annotated {filepath}: {len(insertions)} decorator insertion(s), "
-            f"{ai_count} AI/ML region(s), {wrap_count} loop wrap(s), "
-            f"{fn_count} function(s) total.",
-            filepath=filepath,
-            insertions=len(insertions),
-            functions=fn_count,
-            ai_functions=ai_count,
-            loop_wraps=wrap_count,
-            loop_wrap_details=wrap_records,
-            decorator_map=decorator_map,
-            total_lines=len(lines),
-            already_annotated=False,
+        return _python_annotate_ai_file_impl(
+            run_id=run_id, filepath=filepath, category=category,
+            is_entry=is_entry, logfile=logfile, data_dir=data_dir,
+            process_id=process_id, annotate_loops=annotate_loops,
+            annotate_nested=annotate_nested,
         )
 
     @mcp.tool()
@@ -795,7 +968,7 @@ def register_ai_tools(mcp: FastMCP) -> None:
 
         GENERIC (for expensive non-AI regions via dft_fn):
           @_dlp.log_init            — __init__ methods
-          @_dlp.log_static          — @staticmethod methods
+          with DFTracerFn(...)      — @staticmethod methods (contextual region)
           @_dlp.log                 — any other expensive function
 
         API STYLES:

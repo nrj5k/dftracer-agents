@@ -1,0 +1,12 @@
+# Re-include the knowledge-graph stage: it lives under gitignored workspaces/,
+# but graphify honors .gitignore and would otherwise find "no code files".
+!workspaces/
+!workspaces/_graph/
+!workspaces/_graph/**
+
+# dftracer-agents: re-include the knowledge-graph stage
+# graphify honours .gitignore; the stage lives under a gitignored workspaces/
+# directory and would otherwise report "No code files found".
+!workspaces/
+!workspaces/_graph/
+!workspaces/_graph/**

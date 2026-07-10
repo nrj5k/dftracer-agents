@@ -7,7 +7,7 @@
 This report retells the whole session as the exchange between the **user** and the
 **agent**, with what was done, the measured impact, and pointers to the concrete
 artifacts so every step is traceable. Workspace root (`<WS>`):
-`/usr/WS2/haridev/dftracer-agents/workspaces/scaffold/20260705_175606/`.
+`$PROJECT_ROOT/workspaces/scaffold/20260705_175606/`.
 App data lives on Lustre: `/p/lustre5/$USER/workspaces/scaffold/`.
 
 ---

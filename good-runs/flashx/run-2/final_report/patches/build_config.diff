@@ -1,0 +1,31 @@
+# object/setup_call
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/object/setup_call	2026-07-08 13:25:30.242931000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/object/setup_call	2026-07-08 19:05:27.872417000 -0700
+@@ -1,4 +1,4 @@
+-/usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/bin/setup.py Sedov -auto -3d 
++/usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/bin/setup.py Sedov -auto -3d +parallelIO 
+ 
+ Expanded Command line
+ --with-library=mpi --with-unit=IO --unit=Grid --gridinterpolation=monotonic Sedov --auto --3d
+@@ -12,4 +12,5 @@
+ nxb --> 8 <class 'int'>
+ nyb --> 8 <class 'int'>
+ nzb --> 8 <class 'int'>
++parallelIO --> True <class 'bool'>
+ 
+
+# object/Units
+--- /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/object/Units	2026-07-08 13:25:28.608911000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/object/Units	2026-07-08 19:05:22.515692000 -0700
+@@ -9,7 +9,7 @@
+ INCLUDE Grid/GridMain/AMR/Paramesh4/interpolation/prolong
+ INCLUDE Grid/GridMain/AMR/Paramesh4/levelFlux
+ INCLUDE Grid/localAPI
+-INCLUDE IO/IOMain/hdf5/serial/PM
++INCLUDE IO/IOMain/hdf5/parallel/PM
+ INCLUDE IO/localAPI
+ INCLUDE PhysicalConstants/PhysicalConstantsMain
+ INCLUDE RuntimeParameters/RuntimeParametersMain
+
+# object/Makefile.h
+File /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/baseline/source/object/Makefile.h is a regular file while file /usr/WS2/$USER/dftracer-agents/workspaces/flash_x/20260708_201403/annotated/source/object/Makefile.h is a symbolic link

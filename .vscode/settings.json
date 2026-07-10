@@ -14,5 +14,6 @@
         {
             "file": ".github/copilot-instructions.md"
         }
-    ]
+    ],
+    "dftracer.viewer.serverPath": "/p/lustre5/iopp/rayandrew/dftracer-utils/build/bin/dftracer_server"
 }

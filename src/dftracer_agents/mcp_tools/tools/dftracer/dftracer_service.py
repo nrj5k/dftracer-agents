@@ -43,6 +43,13 @@ from ..session.annotation_clang import register_clang_tools
 from ..session.annotation_python import register_python_tools
 from ..session.annotation_ai import register_ai_tools
 from ..session.lessons_sync import register_lessons_sync_tools
+from ..session.final_report import register_final_report_tools
+from ..session.python_cost import register_python_cost_tools
+from ..session.code_graph import register_graph_tools
+from ..session.privacy_tools import register_privacy_tools
+from ..session.profiling import register_profiling_tools
+from ..session.ml_pipeline import register_ml_pipeline_tools
+from ..session.annotation_validate import register_validation_tools
 from ..session.workspace import _ws, _load_state, _save_state, _ok, _err, _run
 from ..session.install import _find_dftracer_dirs
 from ..annotations import register_annotation_session_tools
@@ -268,10 +275,13 @@ def register_annotation_api_tools(mcp: FastMCP) -> None:
             return _ok(
                 "Python metadata API",
                 language="python",
-                macro=None,
+                macro='_dft_log.log_metadata_event("key", "value")',
                 notes=(
-                    "The Python dftracer bindings do not expose a separate metadata API. "
-                    "Use the dft_fn.log decorator attributes or pass context via function arguments."
+                    "Python DOES expose a metadata API: call log_metadata_event(key, value) "
+                    "on the object returned by dftracer.initialize_log(...) "
+                    "(dftracer/python/common.py::dftracer.log_metadata_event). "
+                    "Call it AFTER initialize_log() so a logger exists. "
+                    "Use annotate_add_app_metadata to emit all app parameters at once."
                 ),
                 doc_url=f"{_PYDOCS_BASE}/api.html",
             )
@@ -688,11 +698,18 @@ class DFTracerSessionService(MCPService):
         register_session_tools(self.session_subservice)
         register_install_session_tools(self.session_subservice)
         register_annotation_filter_tools(self.session_subservice)
+        register_final_report_tools(self.session_subservice)
         register_pipeline_tools(self.pipeline_subservice)
         register_run_tools(self.pipeline_subservice)
         register_daemon_tools(self.daemon_subservice)
         register_clang_tools(self.clang_subservice)
         register_python_tools(self.clang_subservice)
+        register_python_cost_tools(self.clang_subservice)
+        register_graph_tools(self.session_subservice)
+        register_profiling_tools(self.session_subservice)
+        register_privacy_tools(self.session_subservice)
+        register_ml_pipeline_tools(self.clang_subservice)
+        register_validation_tools(self.clang_subservice)
         register_ai_tools(self.clang_subservice)
         register_lessons_sync_tools(self.clang_subservice)
         register_annotation_api_tools(self.annotation_api_subservice)

@@ -1,6 +1,12 @@
 Running the MCP server
 ======================
 
+.. tip::
+
+   To start the MCP server together with the profiling collector and MLflow in
+   one idempotent command, use ``dftracer_agents_stack start``. See
+   :doc:`profiling`. The sections below cover running the MCP server on its own.
+
 Stdio mode
 ----------
 

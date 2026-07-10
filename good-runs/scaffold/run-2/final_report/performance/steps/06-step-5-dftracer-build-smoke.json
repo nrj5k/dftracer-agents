@@ -1,0 +1,43 @@
+{
+  "run_id": "scaffold/20260709_081340",
+  "key": "STEP 5: dftracer-build-smoke",
+  "index": 6,
+  "agent": "dftracer-build-smoke",
+  "notes": "pip install annotated ScaFFold tree into shared venv, bounded single-proc smoke run, verify trace via MCP utils",
+  "status": "failed",
+  "tries": 1,
+  "retries": 0,
+  "failed_attempts": 1,
+  "successful_attempts": 0,
+  "exec_s": 2394.692,
+  "wall_s": 2394.692,
+  "attempts": [
+    {
+      "number": 1,
+      "status": "failed",
+      "duration_s": 2394.692,
+      "error": "dftracer's compiled-in ROCProfiler/HIP interception (librocprofiler-sdk.so.1 linked into dftracer.dftracer.so) breaks torch's HIP/CUDA runtime init (RuntimeError: Error in dlopen: libcaffe2_nvrtc.so) once the native profiler actually loads. Requires STEP 3 dftracer rebuild without ROCProfiler feature.",
+      "start_ns": 1783589525523765130,
+      "end_ns": 1783591920215633412
+    }
+  ],
+  "tokens_input": 0,
+  "tokens_output": 0,
+  "tokens_cache_read": 0,
+  "tokens_cache_creation": 0,
+  "cost_usd": 0.0,
+  "api_calls": 0,
+  "api_errors": 0,
+  "api_duration_ms": 0.0,
+  "tool_calls": 0,
+  "tool_failures": 0,
+  "tool_duration_ms": 0.0,
+  "mcp_tool_calls": 0,
+  "compactions": 0,
+  "prompts": 0,
+  "tools": {},
+  "models": {},
+  "agents": {},
+  "skills": {},
+  "tokens_total": 0
+}

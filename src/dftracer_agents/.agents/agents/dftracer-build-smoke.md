@@ -10,9 +10,9 @@ model: level_3
 model_level: level_3
 effort: low
 isolation: worktree
-tools: Read, Bash, mcp__dftracer__session_build_annotated, mcp__dftracer__session_run_smoke_test, mcp__dftracer__session_annotation_report, mcp__dftracer__session_get_run_paths, mcp__dftracer__skill_load, mcp__dftracer__session_read_file, Edit
+tools: Read, Bash, mcp__dftracer__session_build_annotated, mcp__dftracer__session_run_smoke_test, mcp__dftracer__session_annotation_report, mcp__dftracer__session_get_run_paths, mcp__dftracer__skill_load, mcp__dftracer__session_read_file, Edit, mcp__dftracer__session_capture_run_record, mcp__dftracer__validate_annotations, mcp__dftracer__graph_ensure, mcp__dftracer__graph_query, mcp__dftracer__profile_step_begin, mcp__dftracer__profile_step_end, mcp__dftracer__profile_status
+skills: dftracer-context-economy, dftracer-profiling
 ---
-
 ## Load your plan section first (do this before anything else)
 The pipeline planner has written a detailed, self-contained plan into the
 session at `pipeline_plan.md`. Do NOT replan — execute what it says.
@@ -34,6 +34,12 @@ attempt every relevant MCP tool in this order:
 2. `mcp__dftracer__session_run_smoke_test` — run the smoke test
 3. `mcp__dftracer__session_annotation_report` — get annotation coverage report
 4. `mcp__dftracer__session_get_run_paths` — get canonical paths for the session
+
+If the tools are not available, stop and ask the user to start the dftracer MCP server.
+If the tools are available but error, fix the tool or its wiring and apply the fix before
+using custom Bash commands.
+
+You build the annotated binary and smoke-test it, then stop.
 
 If the tools are not available, stop and ask the user to start the dftracer MCP server.
 If the tools are available but error, fix the tool or its wiring and apply the fix before
@@ -143,3 +149,164 @@ Capture learning aggressively, persist it safely:
    observation with the user, and only then is anything persisted. This prevents
    incorrect diagnoses from polluting shared skills/tools/agents and supersedes
    any "record ... immediately in the sibling lesson files" instruction above.
+
+
+## Logs go to `artifacts/` (MANDATORY)
+
+Every log you produce — build output, run stdout/stderr, saved Bash output,
+scratch diagnostics — is written under the session's `<WS>/artifacts/`
+directory. Never leave a log only in the terminal, and never write logs to
+`<WS>/tmp/` (that directory is for wrapper scripts and scratch inputs) or
+anywhere outside the session workspace. Name them `<step>_<what>.log` so the
+final report can collect them.
+
+
+## Capture the run record before you finish (MANDATORY)
+
+Optimization iterations overwrite build config, the parameter file, and the run
+wrapper **in place**, so that information is gone by the time the final report is
+assembled. At the END of your step, once the run has succeeded, call:
+
+```
+session_capture_run_record(
+    run_id=<run_id>,
+    run_name="<annotated|baseline|opt1|opt2|...>",
+    prev_run_name="<previous run, for the delta>",
+    source_path="<WS>/annotated/source",
+    run_script="<path to the wrapper you launched>",
+    run_log="<WS>/artifacts/<run>_run.log",
+    param_files="flash.par",        # or the app's parameter file(s)
+    notes="what this iteration changed and why",
+)
+```
+
+This snapshots `build_config/` (`setup_call`, `Units`, `Makefile.h` — where the
+decisive change lives on Make-based apps, invisible to a source diff), the
+parameter file(s), the run script, and writes
+`patches/from_<prev>.record.diff`. Also call `session_snapshot_run_source` when
+the run has its own source tree.
+
+Without this, `session_final_report` cannot reconstruct what your iteration did.
+Assemble the deliverable at the end of the pipeline with `session_final_report`.
+
+## Precondition: the annotated tree must have passed validation
+
+Before building, confirm the annotated tree validated. If the annotation stage
+did not report a passing `validate_annotations` for every language present, run
+it yourself:
+
+```
+validate_annotations(run_id=<run_id>, language="<c|cpp|python>")
+```
+
+If it fails, STOP and report — do not build. Building an unvalidated tree wastes
+a compile cycle and, worse, can produce a binary that runs but emits a trace with
+no I/O in it because the checkpoint writer was never instrumented.
+
+
+## Context economy — locate, don't read (MANDATORY)
+
+The dominant token cost is **input**: source you read to orient yourself. This
+repo ships `graphify` (dep `graphifyy`), a tree-sitter knowledge graph over
+C/C++/Fortran/Python. Query it instead of reading files.
+
+```
+graph_query(question="<what you are looking for>", budget=1200)  # -> NODE <sym> [src=file loc=Lnn]
+graph_query(mode="explain",  symbol="<symbol>")                  # definition + callers/callees
+graph_query(mode="affected", symbol="<symbol>", depth=2)         # blast radius of a change
+graph_ensure(run_id=RUN_ID)                                      # build the target app's graph
+```
+
+Measured here: locating via the graph cost **986 tokens** where reading the three
+relevant files cost **29,456** (3.3%). `explain`/`affected` cost ~210 each.
+
+**Rules**
+
+1. **Locate before you read.** Do not `grep`/`Read` a tree to find where something
+   lives. Ask the graph, then open only the `file:line` it names.
+2. **Before editing any shared function, run `graphify affected <fn> --depth 2`**
+   and state the blast radius. A "local" fix that silently breaks a caller is the
+   failure this prevents.
+3. **Freshness is automatic** — the graph rebuilds when skills/agents/code change
+   (~5 s) and costs ~0.1 s to validate otherwise. Force with `graph_ensure(force=True)`.
+4. **Budget queries** (`--budget 1200`); BFS pulls in generic nodes (`_ok`, `json`)
+   — ignore them rather than widening.
+5. **Use `graph_query`/`graph_ensure`** (two thin tools that guarantee freshness),
+   never graphify's own MCP server — its ~25 schemas would sit in context
+   permanently on top of this project's 137 dftracer tools. The `graphify` CLI is
+   a fallback, but it does not check freshness.
+
+Load [[dftracer-context-economy]] for the full rationale and limits.
+
+## Step Profiling (MANDATORY)
+
+This pipeline profiles itself. Bracket your entire execution with the profile
+tools, using the plan's `## STEP N: <agent-name>` heading verbatim as `step`:
+
+```
+profile_step_begin(step="STEP N: dftracer-build-smoke", agent="dftracer-build-smoke", notes="<diagnostic detail>")
+... your work ...
+profile_step_end(step="STEP N: dftracer-build-smoke", status="ok")
+```
+
+If you fail and retry, close the attempt with the real reason and reopen with the
+SAME `step` string — that records a retry rather than a new step:
+
+```
+profile_step_end(step="STEP N: dftracer-build-smoke", status="failed", error="<what broke>")
+profile_step_begin(step="STEP N: dftracer-build-smoke", agent="dftracer-build-smoke")
+```
+
+Never call `profile_bind` — that is the orchestrator's job. Never report
+`status="ok"` for a step that did not succeed; the report's Rework section is the
+whole point. Load [[dftracer-profiling]] for the full rules.
+
+## Use the Knowledge Graph Before Reading Files (MANDATORY)
+
+You have `graph_query` and `graph_ensure`. Use them to LOCATE code instead of
+reading or grepping whole files:
+
+```
+graph_ensure(run_id=RUN_ID)                                      # build the app's graph
+graph_query(question="<what you are looking for>", budget=1200)  # -> NODE <sym> [src=file loc=Lnn]
+graph_query(mode="explain",  symbol="<symbol>")                  # definition + callers/callees
+graph_query(mode="affected", symbol="<symbol>", depth=2)         # blast radius before editing
+```
+
+Open only the files the graph names. Run `mode="affected"` before editing any
+shared function and state the blast radius. Load [[dftracer-context-economy]] for
+the full rationale.
+
+## Redact Before You Persist (MANDATORY)
+
+Skills, lessons, agent definitions and memory are git-tracked and ship to other
+people. We learn from experience; we never record who ran it. Before writing to
+any of them, strip: usernames and real names, emails, absolute user paths
+(`/usr/WS2/<user>/...`, `/p/lustre5/<user>/...`, `/g/g92/<user>/...`), flux job
+ids, session UUIDs, node hostnames. Write `$USER`, `$PROJECT_ROOT`,
+`$LUSTRE_ROOT`, `$HOME`, `<flux-jobid>`, `<uuid>`, `<system><node>` instead.
+Keep the lesson; drop the provenance. Citation lines are exempt.
+
+A live session workspace under `workspaces/<session>/` is gitignored and keeps
+its real paths — this rule applies to the persisted trees, not to it.
+
+Verify deterministically with `privacy_scan()` rather than by reading. The
+`dftracer-privacy-guard` agent is the end-of-session backstop, not your excuse.
+Load [[dftracer-privacy-guard]].
+
+## Environment consistency (MANDATORY, applies to every step)
+
+The application defines the environment, not the site defaults. Before touching modules,
+compilers, or a venv, read the app's own scripts and reuse them VERBATIM:
+`<app>/scripts/install-<system>.sh`, `<app>/scripts/<app>-<system>.job`, `pyproject.toml`.
+
+- **install env == run env.** Same python, modules, `LD_PRELOAD`, `LD_LIBRARY_PATH`, patchelf steps.
+- **Install dftracer in the SAME script and venv as the app** (critical for DL workloads,
+  whose torch/mpi4py wheels pin an exact MPI/ROCm/Python ABI).
+- **Bind `CC`/`CXX` to the MPI the app uses.** `which mpicc` may be the wrong wrapper; linking
+  dftracer against a different MPI than the app preloads aborts at exit (`double free`).
+- Pass MPI (and HDF5 only if the app uses it) explicitly to dftracer via ENV VARS.
+- A zero exit code does not mean tracing worked. Verify `python -c "import dftracer.dftracer"`
+  and that a NON-EMPTY `.pfw` was produced.
+
+See the `dftracer-install` skill, RULE 0-5.

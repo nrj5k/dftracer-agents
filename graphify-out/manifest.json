@@ -1,0 +1,287 @@
+{
+  "scripts/compile.sh": {
+    "mtime": 1783584822.453099,
+    "ast_hash": "e3cfb7adaca4c3a35da56337a8e55c4a",
+    "semantic_hash": ""
+  },
+  "scripts/run.sh": {
+    "mtime": 1783584822.455085,
+    "ast_hash": "e3cfb7adaca4c3a35da56337a8e55c4a",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/__init__.py": {
+    "mtime": 1783584822.062986,
+    "ast_hash": "69e8a1eff8cdd2fce2565b6dc7a3f9d4",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/benchmark.py": {
+    "mtime": 1783584822.064069,
+    "ast_hash": "1b95fba60fbad2e9a7d70de59d60f1bc",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/cli.py": {
+    "mtime": 1783584822.06605,
+    "ast_hash": "6e5b5edfdc371433124dbbb457d0bf45",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/datagen/IteratedFunctionSystem.py": {
+    "mtime": 1783584822.082026,
+    "ast_hash": "3f2ea7cacd3f58dbecd0fe94972be14a",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/datagen/__init__.py": {
+    "mtime": 1783584822.084008,
+    "ast_hash": "69e8a1eff8cdd2fce2565b6dc7a3f9d4",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/datagen/category_search.py": {
+    "mtime": 1783584822.086034,
+    "ast_hash": "536c44e7201ea7c54504f60ca0b987c8",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/datagen/data_visualizer.py": {
+    "mtime": 1783584822.088059,
+    "ast_hash": "05e94d8e7a58580db4b0bd09892ff1b2",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/datagen/generate_fractal_points.py": {
+    "mtime": 1783584822.090987,
+    "ast_hash": "6e1255750a3d9fdd14fe1ed3c8c82767",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/datagen/get_dataset.py": {
+    "mtime": 1783584822.093983,
+    "ast_hash": "0ee9172994644d7024ec2f26a7ae6afb",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/datagen/instance.py": {
+    "mtime": 1783584822.109018,
+    "ast_hash": "1c3dc4ff55add6902149d557cb8daba4",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/datagen/mask_detection.py": {
+    "mtime": 1783584822.111993,
+    "ast_hash": "b4bb9ea77e30675ef89d87a7208fccc6",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/datagen/volumegen.py": {
+    "mtime": 1783584822.114003,
+    "ast_hash": "b1cd95731891d295423b0fc42eb333d7",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/generate_fractals.py": {
+    "mtime": 1783584822.232019,
+    "ast_hash": "dc3db24693380f1d7a13e35a47822c70",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/package_data/__init__.py": {
+    "mtime": 1783584822.238243,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/paths.py": {
+    "mtime": 1783584822.240102,
+    "ast_hash": "85993474ec8a4a87ec69972621412036",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/unet/__init__.py": {
+    "mtime": 1783584822.366056,
+    "ast_hash": "88b0e80b15bf772ff81e96203f9a2089",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/unet/unet_model.py": {
+    "mtime": 1783584822.367965,
+    "ast_hash": "6c59446de763753f066902203609a3a8",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/unet/unet_parts.py": {
+    "mtime": 1783584822.369018,
+    "ast_hash": "f4693c7f64292f2482a24e3690e3eab2",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/utils/__init__.py": {
+    "mtime": 1783584822.373988,
+    "ast_hash": "69e8a1eff8cdd2fce2565b6dc7a3f9d4",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/utils/checkpoint_validators.py": {
+    "mtime": 1783584822.375019,
+    "ast_hash": "684055d7277b7e78238f7e77abe86e5c",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/utils/checkpointing.py": {
+    "mtime": 1783584822.37604,
+    "ast_hash": "3ac1d98ec6eb1bbc41dbec2992038cc9",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/utils/collect_scheduler_info.py": {
+    "mtime": 1783584822.377114,
+    "ast_hash": "1629843c4ad14e2aeaad547831b97a41",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/utils/config_utils.py": {
+    "mtime": 1783584822.378965,
+    "ast_hash": "86a51b331c20479f25258361891158a1",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/utils/create_restart_script.py": {
+    "mtime": 1783584822.380012,
+    "ast_hash": "cf66d18914c48e8155ecefce37e067ec",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/utils/data_loading.py": {
+    "mtime": 1783584822.38105,
+    "ast_hash": "1ba97cb8a0cb764f4cbc77a99fc9341a",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/utils/data_types.py": {
+    "mtime": 1783584822.382114,
+    "ast_hash": "34a5dda5be2b2d5586c6534e555eb361",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/utils/dice_score.py": {
+    "mtime": 1783584822.383962,
+    "ast_hash": "e46eb8c7df278066e28d52b43a3baa1b",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/utils/distributed.py": {
+    "mtime": 1783584822.385014,
+    "ast_hash": "eda66698a771f546c572bbb41ffbcc2b",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/utils/evaluate.py": {
+    "mtime": 1783584822.386104,
+    "ast_hash": "36033de6c6c39302f2d897efb486bfe6",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/utils/losses.py": {
+    "mtime": 1783584822.387992,
+    "ast_hash": "c26125bead7a26b973fb63d7088f98af",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/utils/perf_measure.py": {
+    "mtime": 1783584822.389081,
+    "ast_hash": "e4a826981564bc43d73b029fd2bfb155",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/utils/trainer.py": {
+    "mtime": 1783584822.39099,
+    "ast_hash": "f57b7001341903f67166e86633c9d295",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/utils/utils.py": {
+    "mtime": 1783584822.392017,
+    "ast_hash": "17f18f369ebfcadede6bd89c74f7b94e",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/viz/__init__.py": {
+    "mtime": 1783584822.396041,
+    "ast_hash": "69e8a1eff8cdd2fce2565b6dc7a3f9d4",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/viz/standard_viz.py": {
+    "mtime": 1783584822.397123,
+    "ast_hash": "99633c9c2b4916feb9b49115a16b9ebd",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/worker.py": {
+    "mtime": 1783584822.399996,
+    "ast_hash": "8498070cabf7d93e03cd060638a34ecc",
+    "semantic_hash": ""
+  },
+  "source/pyproject.toml": {
+    "mtime": 1783584822.407978,
+    "ast_hash": "95d34ed29595977acb2c1d959a8ea820",
+    "semantic_hash": ""
+  },
+  "source/scripts/install-matrix.sh": {
+    "mtime": 1783584822.413993,
+    "ast_hash": "26eccfff1be35c63fa698d7fbdd87174",
+    "semantic_hash": ""
+  },
+  "source/scripts/install-tuolumne-torchpypi.sh": {
+    "mtime": 1783584822.415122,
+    "ast_hash": "630e530bf95b0ee9cc1d2d8af7e5c150",
+    "semantic_hash": ""
+  },
+  "source/scripts/install-tuolumne.sh": {
+    "mtime": 1783584822.417044,
+    "ast_hash": "91d896d7d5e44b206e5468eb96f294c8",
+    "semantic_hash": ""
+  },
+  "source/.github/requirements.txt": {
+    "mtime": 1783584822.048022,
+    "ast_hash": "6834272d99e54befaa5a4cc5cf7544e5",
+    "semantic_hash": ""
+  },
+  "source/.github/workflows/style.yml": {
+    "mtime": 1783584822.054278,
+    "ast_hash": "ba13acda9b7c72c566805a2fa2900828",
+    "semantic_hash": ""
+  },
+  "source/CONTRIBUTING.md": {
+    "mtime": 1783584822.054115,
+    "ast_hash": "59e6a5d5d2a65b630a1482a74f30da47",
+    "semantic_hash": ""
+  },
+  "source/README.md": {
+    "mtime": 1783584822.058015,
+    "ast_hash": "0f320e3473dc99dd5781d481abc90f38",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/configs/benchmark_default.yml": {
+    "mtime": 1783584822.072018,
+    "ast_hash": "3a1984d8f482f6447ae4df24a4d59d5c",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/configs/benchmark_testing.yml": {
+    "mtime": 1783584822.074014,
+    "ast_hash": "12c6da6873ee39142ba7ee6ee73a6431",
+    "semantic_hash": ""
+  },
+  "source/docs/scaffold.rst": {
+    "mtime": 1783584822.408268,
+    "ast_hash": "ba74e5ab2e4f391edf37e5810663a713",
+    "semantic_hash": ""
+  },
+  "source/requirements.txt": {
+    "mtime": 1783584822.408982,
+    "ast_hash": "5d3cfb6c3eecd2bd800bd4cb67d512ad",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/readme_figs/IFS_param_weights.png": {
+    "mtime": 1783584822.246118,
+    "ast_hash": "4e2502894db9ead4b25a07b221c8a495",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/readme_figs/IFS_params.png": {
+    "mtime": 1783584822.251026,
+    "ast_hash": "3db443d8ea07596e0359a377ae224fff",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/readme_figs/affine_transformation.png": {
+    "mtime": 1783584822.254082,
+    "ast_hash": "f997721596771e707bf8e9c98fde26df",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/readme_figs/fractal_variations.png": {
+    "mtime": 1783584822.262998,
+    "ast_hash": "bc9db29e3ac61675282253a5cb11cd75",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/readme_figs/fractal_variations2.png": {
+    "mtime": 1783584822.322129,
+    "ast_hash": "bc18276cc5eca9bf9d902de914dad9b2",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/readme_figs/fractal_variations2_cropped.png": {
+    "mtime": 1783584822.350144,
+    "ast_hash": "dcfd48a3588d0aca1fe6f9645b0b1f06",
+    "semantic_hash": ""
+  },
+  "source/ScaFFold/readme_figs/fractal_variations_new.png": {
+    "mtime": 1783584822.362177,
+    "ast_hash": "5178766d78b481a3fb88b3fa5625e8fb",
+    "semantic_hash": ""
+  }
+}

@@ -5,12 +5,12 @@ sites:
    os.type: linux
    directories:
     - type: sharedScratch
-      path: /p/lustre5/haridev/dftracer-pegasus-montage/scratch
+      path: $LUSTRE_ROOT/dftracer-pegasus-montage/scratch
       fileServers:
        - operation: all
-         url: file:///p/lustre5/haridev/dftracer-pegasus-montage/scratch
+         url: file://$LUSTRE_ROOT/dftracer-pegasus-montage/scratch
     - type: localStorage
-      path: /p/lustre5/haridev/dftracer-pegasus-montage/storage
+      path: $LUSTRE_ROOT/dftracer-pegasus-montage/storage
       fileServers:
        - operation: all
-         url: file:///p/lustre5/haridev/dftracer-pegasus-montage/storage
+         url: file://$LUSTRE_ROOT/dftracer-pegasus-montage/storage

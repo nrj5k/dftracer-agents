@@ -96,7 +96,7 @@
 +cfl= 0.8
  
  # Output to Lustre
- basenm          = "/p/lustre5/haridev/flashx/baseline_production/sedov_"
+ basenm          = "/p/lustre5/$USER/flashx/baseline_production/sedov_"
  restart         = .false.
  
  # =============================================================================
@@ -172,6 +172,6 @@
 -# [ ] sim_rInit=0.013671875 (calibrated for NXB=8)
 -# [ ] checkpointFileIntervalTime=0.03 (produces ~16 checkpoints for tmax=0.5)
 -# [ ] tmax=0.5, nend=1000000, wall_clock_time_limit=3600
--# [ ] basenm points to Lustre: /p/lustre5/haridev/flashx/baseline_production/
+-# [ ] basenm points to Lustre: /p/lustre5/$USER/flashx/baseline_production/
 -# [ ] useCollectiveHDF5=.true. (required for scale)
 -# =============================================================================

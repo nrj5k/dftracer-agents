@@ -1,0 +1,51 @@
+{
+  "run_id": "scaffold/20260709_081340",
+  "key": "STEP 7: dftracer-analyzer then dftracer-diagnoser",
+  "index": 8,
+  "agent": "dftracer-analyzer",
+  "notes": "Re-analyze corrected stack baseline (develop dftracer-utils, MPI events now captured); 925,828 events, 64 pids, compact traces already split (3 chunks)",
+  "status": "ok",
+  "tries": 2,
+  "retries": 1,
+  "failed_attempts": 0,
+  "successful_attempts": 2,
+  "exec_s": 346.335,
+  "wall_s": 9763.807,
+  "attempts": [
+    {
+      "number": 1,
+      "status": "ok",
+      "duration_s": 183.882,
+      "error": "",
+      "start_ns": 1783600258922374067,
+      "end_ns": 1783600442804555557
+    },
+    {
+      "number": 2,
+      "status": "ok",
+      "duration_s": 162.453,
+      "error": "",
+      "start_ns": 1783609860276491881,
+      "end_ns": 1783610022729404196
+    }
+  ],
+  "tokens_input": 0,
+  "tokens_output": 0,
+  "tokens_cache_read": 0,
+  "tokens_cache_creation": 0,
+  "cost_usd": 0.0,
+  "api_calls": 0,
+  "api_errors": 0,
+  "api_duration_ms": 0.0,
+  "tool_calls": 0,
+  "tool_failures": 0,
+  "tool_duration_ms": 0.0,
+  "mcp_tool_calls": 0,
+  "compactions": 0,
+  "prompts": 0,
+  "tools": {},
+  "models": {},
+  "agents": {},
+  "skills": {},
+  "tokens_total": 0
+}

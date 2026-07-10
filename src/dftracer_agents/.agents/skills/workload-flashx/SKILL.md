@@ -142,7 +142,7 @@ nend = 100000
 tmax = 0.5                          # longer runtime
 
 # Output to Lustre
-basenm = "/p/lustre5/haridev/flashx/sedov_"
+basenm = "$LUSTRE_ROOT/flashx/sedov_"
 ```
 
 ### Allocation-Aware Run Rules
@@ -171,7 +171,7 @@ cat > production_run.sh << 'EOF'
 set -e
 
 # Environment
-export PATH="/usr/WS2/haridev/dftracer-agents/.venv/bin:$PATH"
+export PATH="$PROJECT_ROOT/.venv/bin:$PATH"
 export LD_LIBRARY_PATH="${WS}/hdf5_1.14/lib:${WS}/install/lib/python3.13/site-packages/dftracer/lib64:/opt/cray/pe/cce/20.0.0/cce/x86_64/lib:$LD_LIBRARY_PATH"
 
 # DFTracer setup
@@ -409,7 +409,7 @@ After every production run, update this skill with:
   a correct link shows `<WS>/hdf5_1.14/lib/libhdf5.so.310`, never `/lib64/libhdf5.so.103`.
 
 
-- 2026-07-08 (dftracer install on Tuolumne): Successfully installed dftracer develop with session-built HDF5 1.14.5 and Cray MPICH 9.0.1 (GNU 11.2 wrappers). HIP disabled (CPU-only workload). All libraries (libdftracer_preload.so, libdftracer_core.so) verified clean with ldd. Session HDF5 1.14.5 and Cray MPI correctly linked. Installation paths resolved: $DFTRACER_LIB_DIR=/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_201403/install/lib/python3.13/site-packages/dftracer/lib64 (see artifacts/01_dftracer_install_verification.log for full details). NOTE: MPI is compatible on tuolumne — MPI-IO tracing should be enabled by passing the MPI version + headers; do not accept "auto-disabled/unsupported" (user-confirmed misdiagnosis).
+- 2026-07-08 (dftracer install on Tuolumne): Successfully installed dftracer develop with session-built HDF5 1.14.5 and Cray MPICH 9.0.1 (GNU 11.2 wrappers). HIP disabled (CPU-only workload). All libraries (libdftracer_preload.so, libdftracer_core.so) verified clean with ldd. Session HDF5 1.14.5 and Cray MPI correctly linked. Installation paths resolved: $DFTRACER_LIB_DIR=$PROJECT_ROOT/workspaces/flash_x/20260708_201403/install/lib/python3.13/site-packages/dftracer/lib64 (see artifacts/01_dftracer_install_verification.log for full details). NOTE: MPI is compatible on tuolumne — MPI-IO tracing should be enabled by passing the MPI version + headers; do not accept "auto-disabled/unsupported" (user-confirmed misdiagnosis).
 
 - 2026-07-08 (setup wipes object/): `bash setup Sedov -auto -3d` REGENERATES the `object/` build dir
   from scratch every time, wiping any hand-added files. → **Fix:** apply Makefile.h edits AND recreate
@@ -422,6 +422,60 @@ After every production run, update this skill with:
   RUN cwd (`object/`), not only at the WS root. Create `ds` in `object/` before running, or you get
   `Fortran runtime error: Cannot open file 'ds/.../sedov.dat'`. (Keep the flash.par 80-column limit in mind —
   use the short `ds` symlink for the output path.)
+
+- 2026-07-08 (**CRITICAL — `-auto` builds SERIAL HDF5; `useCollectiveHDF5` is inert**): `bash setup Sedov
+  -auto -3d` selects `INCLUDE IO/IOMain/hdf5/serial/PM` (verify: `grep IO/IOMain object/Units`, and
+  `readlink -f object/io_h5file_interface.c` → `.../hdf5/serial/...`). With the serial IO unit, ALL ranks
+  gather to rank 0, which writes every checkpoint alone — setting `useCollectiveHDF5 = .true.` in
+  `flash.par` does NOTHING, and ROMIO hints / Lustre striping cannot help because there is only one writer.
+  → **Diagnosis method:** compute per-rank POSIX write BYTES (not write *calls* — every rank writes a few
+  bytes to the log, so "384 ranks issue writes" is misleading). Measured baseline: top-1 rank = 91% of
+  11.84 GB; only 1 rank wrote >10 MB.
+  → **Fix:** rebuild with the `+parallelIO` setup shortcut: `bash setup Sedov -auto -3d +parallelIO`
+  (gives `INCLUDE IO/IOMain/hdf5/parallel/PM`). Remember setup wipes `object/` — re-apply Makefile.h +
+  the dftracer shim after.
+  → **Measured impact** (Sedov 3D, nblockx=9, lrefine_max=2, 384 ranks / 8 nodes, 18 checkpoints, 6.7 GB,
+  identical workload before/after): aggregate POSIX write time 399.0 s → 53.4 s (**7.5×**); critical-path
+  (slowest-rank) write time 11.09 s → 6.80 s (**1.63×**); write syscalls 22,389,835 → 967,613 (**23× fewer**);
+  avg write size 0.5 KB → 7.4 KB; bytes written 11.84 GB → 7.33 GB (serial path had write amplification);
+  top-1 rank write share 91% → 52%.
+  → **Residual headroom after `+parallelIO`:** avg write (7.4 KB) is still far below the 1 MB Lustre stripe
+  and only ~2 ranks act as MPI-IO aggregators, so ROMIO collective-buffering hints (`romio_cb_write=enable`,
+  `cb_nodes=<nnodes>`, `cb_buffer_size`) + HDF5 alignment are the correct NEXT lever — not the first one.
+
+- 2026-07-08 (**mechanism**: serial IO unit hardcodes independent mode): `IO/IOMain/hdf5/serial/io_h5file_interface.c`
+  contains `int HDF5_MODE = 0;  /* For serial HDF5 this should never become COLLECTIVE */`. The parallel unit's
+  `io_h5file_interface.c` instead sets `HDF5_MODE = collectiveHDF5;` at runtime from the `useCollectiveHDF5`
+  runtime parameter. So on an `-auto` (serial) build, `useCollectiveHDF5=.true.` is not merely ineffective —
+  it is explicitly overridden to INDEPENDENT in C. Check with `grep -rn "HDF5_MODE *=" source/IO/`.
+
+- 2026-07-08 (**full I/O optimization ladder — measured, Sedov 3D, 384 ranks / 8 nodes, 18 checkpoints, ~6.7 GB, Lustre**):
+
+  | Run | Config | Critical-path write | Aggregators | Top-1 rank share | Bytes | Write calls |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | baseline | serial HDF5 (`-auto`) | 11.09 s | 0 (no >=1 MB writes) | 91.0% | 11.84 GB | 22,389,835 |
+  | opt1 | `+parallelIO` | 6.80 s | 2 | 52.0% | 7.33 GB | 967,613 |
+  | opt2 | + ROMIO `cb_nodes=8` | 5.53 s | 2 | 52.0% | 7.33 GB | 964,957 |
+  | opt3 | + `cb_nodes=16`, `CRAY_CB_NODES_MULTIPLIER=2`, 16x4 MB stripes | **1.45 s** | **16** | **6.8%** | 7.33 GB | 990,894 |
+
+  **End-to-end 7.6x** on critical-path write time. Key ordering insight: **L1 (`+parallelIO`) is a precondition** —
+  ROMIO hints (L2) and Lustre striping (L3) are near-no-ops while a single rank does all writing. `cb_nodes` alone
+  was accepted-but-ignored by Cray MPICH (see [[software-mpi]]); only `CRAY_CB_NODES_MULTIPLIER` raised the real
+  aggregator count, and the 4 MB stripe let each aggregated write grow 1.05 MB -> 3.76 MB (see [[software-hdf5]]).
+  Beware averages: mean write size stayed ~7.4 KB across opt1-opt3 because ~957k tiny per-timestep log writes
+  dominate the COUNT while contributing only 0.6% of BYTES. Bucket writes by size before drawing conclusions.
+
+- 2026-07-08 (**non-ASCII in `flash.par` silently drops the line**): a line containing a non-ASCII character
+  (e.g. an em-dash in `run_comment = "... — ..."`) makes the Flash-X parser emit
+  `read : skipping the following line due to a syntax error:` and IGNORE that parameter. Keep `flash.par` pure
+  ASCII, and grep the run log for `syntax error` to make sure no parameter you care about was skipped.
+
+- 2026-07-08 (**`flashx` ignores a par-file argument**): the binary ALWAYS reads `flash.par` from the process
+  cwd. Passing a filename (`./flashx flash_production.par`) is silently ignored and the old `flash.par` is
+  used — a 384-rank "production" launch silently re-ran the smoke config (symptom: output landed in the old
+  `basenm` dir, `Grid_init` showed the old `lrefine` levels, 1 initial block instead of 729).
+  → **Fix:** overwrite/symlink `object/flash.par` with the desired config; never pass it as argv. Verify
+  after launch by grepping the run log for the expected `basenm` path and `nblockx`-consistent block count.
 
 - 2026-07-08 (annotated smoke SUCCESS): FUNCTION-mode instrumentation works end-to-end. Annotated flashx
   (66 C IO files + init/fini shim) ran Sedov 3D single-rank and emitted a 6566-event trace:

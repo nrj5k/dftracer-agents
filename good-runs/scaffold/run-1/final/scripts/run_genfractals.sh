@@ -1,6 +1,6 @@
 #!/bin/bash
 set -x
-WS=/usr/WS2/haridev/dftracer-agents/workspaces/scaffold/20260705_175606
+WS=$PROJECT_ROOT/workspaces/scaffold/20260705_175606
 LUSTRE=/p/lustre5/$USER/workspaces/scaffold
 source /usr/share/lmod/lmod/init/bash 2>/dev/null
 deactivate 2>/dev/null

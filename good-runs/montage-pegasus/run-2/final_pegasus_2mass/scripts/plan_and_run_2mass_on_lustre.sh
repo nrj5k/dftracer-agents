@@ -14,7 +14,7 @@
 #      cross-run file contamination skewing trace-based measurements.
 set -e
 
-ALLOC_JOBID="$1"           # e.g. f3JSbA6awcdD
+ALLOC_JOBID="$1"           # e.g. <flux-jobid>
 LUSTRE_WORKDIR="$2"        # e.g. /p/lustre5/$USER/dftracer-pegasus-montage/workflow_run
 MONTAGE_ANN_BIN="$3"       # e.g. .../montage/<run>/install_ann/bin
 PEGASUS_HOME="$4"          # e.g. .../pegasus_montage/pegasus

@@ -47,10 +47,23 @@ PYTHON AI/ML ANNOTATION — FUNCTIONS TO NEVER ANNOTATE:
   The following Python patterns must not receive dftracer decorators.
   Remove any auto-placed decorators from them before running:
 
-  ✗ @staticmethod functions — dftracer's wrapper passes self as the first
-    positional arg via *args, causing "multiple values for argument" errors
-    when the static method has keyword parameters.  Remove @_dlp.log_static
-    from any @staticmethod, leaving the @staticmethod decorator in place.
+  ✗ @staticmethod functions must NEVER carry @_dlp.log_static — dftracer's
+    decorator passes self as the first positional arg via *args, causing
+    "multiple values for argument" errors when the static method has keyword
+    parameters.  Instead instrument the body with a CONTEXTUAL region (dft_fn
+    and the dft_ai objects are context managers):
+
+        @staticmethod
+        def f(...):
+            with DFTracerFn("<cat>", name="f"):      # generic
+                ...
+        @staticmethod
+        def backward(...):
+            with dft_ai.compute.backward():          # semantic: keep the AI API
+                ...
+
+    `python_annotate_file` / `python_annotate_ai_file` now emit this
+    automatically; `validate_annotations` flags any surviving @log_static.
 
   ✗ @numba.njit / @numba.jit / @cuda.jit compiled kernels — numba CPUDispatcher
     objects do not support inspect.getfullargspec; dftracer's log decorator fails
@@ -961,3 +974,125 @@ This skill uses:
 - **Write / Edit:** `workspaces/<session>/*` only (source, annotated copies, traces, cores → Lustre when debugging)
 
 Read the annotation lessons file first. Never `sudo`; never build or run from the project root; never write outside the project root.
+
+---
+
+## Capture a run record after EVERY run (annotated, baseline, opt<n>)
+
+Optimization iterations overwrite the build config, the parameter file, and the
+run wrapper **in place**. By the time the final report is assembled that history
+is gone, so it must be captured as each run finishes — not reconstructed later.
+
+At the end of every run-producing step:
+
+```
+session_capture_run_record(
+    run_id=<run_id>,
+    run_name="<annotated|baseline|opt1|...>",
+    prev_run_name="<previous run>",         # produces the iteration delta
+    source_path="<WS>/annotated/source",
+    run_script="<WS>/tmp/<run>_run.sh",
+    run_log="<WS>/artifacts/<run>_run.log",
+    param_files="flash.par",                 # the app's parameter file(s)
+    notes="what this iteration changed and why",
+)
+```
+
+It snapshots, under `<WS>/<run_name>/record/`:
+
+- `build_config/` — `object/setup_call`, `object/Units`, `object/Makefile.h`.
+  **On Make-based apps the decisive optimization lives here and a source diff
+  cannot see it** (e.g. Flash-X flipping `IO/IOMain/hdf5/serial/PM` →
+  `.../parallel/PM` via `+parallelIO`).
+- `params/` — the parameter file(s). Apps that read a fixed filename from cwd
+  (Flash-X's `flash.par`) lose every earlier config unless snapshotted.
+- `../scripts/run.sh` — the exact wrapper used.
+- `meta.json` + `../patches/from_<prev>.record.diff` — the iteration's delta.
+
+Also call `session_snapshot_run_source` when the run has its own source tree.
+
+## Assemble the deliverable at the end
+
+`session_final_report(run_id, report_md, conversation_md, readme_md)` builds
+`<WS>/final_report/` containing `patches/`, `scripts/` (`install.sh`,
+`run_<case>.sh`, `run_all.sh`), `params/<case>/`, `plan/`, `logs/`, plus
+`REPORT.md`, `CONVERSATION.md`, and `README.md`. The three narrative documents
+are supplied by the agent — the tool never invents findings.
+
+Backfilling records after the fact does **not** work: intermediate build configs
+and parameter files have already been overwritten. Capture as you go.
+
+## All logs go to `artifacts/`
+
+Build output, run stdout/stderr, saved Bash output, scratch diagnostics — all of
+it lives under `<WS>/artifacts/`, named `<step>_<what>.log`. `tmp/` is only for
+wrapper scripts and scratch inputs. See [[dftracer-references]].
+
+
+---
+
+## Mandatory final validation gate (ALWAYS — even after manual fixes)
+
+Annotation is not finished when files are written; it is finished when validation
+passes. Run this LAST on every path — MCP fast path, prose backup path, or a
+hand-edit after a tool failed:
+
+```
+validate_annotations(run_id=RUN_ID, language="python")   # or "c" / "cpp"
+```
+
+then dispatch the matching validator agent (`dftracer-validate-python` /
+`-c` / `-cpp`).
+
+`ml_annotate_project` already runs this internally (`validate=True`) and returns
+`validation.passed`. **That does not excuse the manual path.** The dangerous
+sequence is: MCP tool errors → agent hand-edits the file → nobody re-checks. A
+hand edit is the least-trusted change in the pipeline, and a tool that errored
+may have left a file half-written.
+
+Do not proceed to the build, and do not report success, until validation returns
+`passed: true` with zero findings and zero project issues. Otherwise report the
+findings verbatim (`file:line`, function, the uninstrumented critical call) and
+escalate.
+
+It enforces: every I/O / checkpoint / collective-comm function instrumented;
+init AND finalize present (a missing finalize truncates the trace); app-parameter
+metadata emitted; annotated functions pass the cost gate — with `dft_ai.*`
+AI-API regions exempt; and every file still parses.
+
+
+---
+
+## Context economy: query the graph, don't read the tree
+
+Before any step that would open source files, use the `graphify` knowledge graph
+(project dependency `graphifyy`, CLI `graphify`):
+
+```bash
+graphify query "<target>" --budget 1200   # locate: NODE <sym> [src=file loc=Lnn]
+graphify explain <symbol>                 # definition + callers/callees
+graphify affected <symbol> --depth 2      # blast radius before you change it
+graphify update .                         # refresh after edits (~4s, no LLM)
+```
+
+Measured on this repo: locating cost 986 tokens vs 29,456 to read the three
+relevant files (3.3%). Run `affected` before editing any shared function and
+state the blast radius. Use the CLI, never `graphify-mcp` — its extra tool
+schemas would sit in context permanently. See [[dftracer-context-economy]].
+
+## Environment consistency (MANDATORY, applies to every step)
+
+The application defines the environment, not the site defaults. Before touching modules,
+compilers, or a venv, read the app's own scripts and reuse them VERBATIM:
+`<app>/scripts/install-<system>.sh`, `<app>/scripts/<app>-<system>.job`, `pyproject.toml`.
+
+- **install env == run env.** Same python, modules, `LD_PRELOAD`, `LD_LIBRARY_PATH`, patchelf steps.
+- **Install dftracer in the SAME script and venv as the app** (critical for DL workloads,
+  whose torch/mpi4py wheels pin an exact MPI/ROCm/Python ABI).
+- **Bind `CC`/`CXX` to the MPI the app uses.** `which mpicc` may be the wrong wrapper; linking
+  dftracer against a different MPI than the app preloads aborts at exit (`double free`).
+- Pass MPI (and HDF5 only if the app uses it) explicitly to dftracer via ENV VARS.
+- A zero exit code does not mean tracing worked. Verify `python -c "import dftracer.dftracer"`
+  and that a NON-EMPTY `.pfw` was produced.
+
+See the `dftracer-install` skill, RULE 0-5.

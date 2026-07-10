@@ -37,7 +37,7 @@ rather than hand-patch).
 
 Generated a 102-image (55 nominal + oversized-region padding) 2MASS J-band
 mosaic (`--degrees 1.0`), planned in PMC-only mode, and ran via
-`pegasus-mpi-cluster` under the Flux allocation `f3JSbA6awcdD` — **676 total
+`pegasus-mpi-cluster` under the Flux allocation `<flux-jobid>` — **676 total
 tasks, 667-671/676 succeeded** across three separate runs (baseline, cfitsio
 buffering fix, `DBUFFSIZE` experiment). Every failure across all three runs
 was the same benign `register_local` replica-catalog bookkeeping task
@@ -70,7 +70,7 @@ before running).
 After moving the previous run's `wf-scratch` aside and re-planning from a
 genuinely Lustre-resident CWD, confirmed via the DAG file itself:
 ```
--w /p/lustre5/haridev/dftracer-pegasus-montage/workflow_run/wf-scratch/...
+-w $LUSTRE_ROOT/dftracer-pegasus-montage/workflow_run/wf-scratch/...
 ```
 
 ## 4. Real diagnostics: the actual per-process fread() hotspot

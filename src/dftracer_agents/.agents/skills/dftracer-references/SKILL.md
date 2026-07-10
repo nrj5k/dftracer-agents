@@ -27,6 +27,13 @@ Use these links when implementing DFTracer behavior:
 
 ## Artifact Logging
 
+**HARD RULE — every log goes under `<workspace>/artifacts/`.** That includes logs
+you produce yourself: build output, run stdout/stderr, saved Bash output, and
+scratch diagnostics. Never leave a log only in the terminal. Never write logs to
+`<workspace>/tmp/` (reserved for wrapper scripts and scratch inputs) or anywhere
+outside the session workspace. Name your own logs `<step>_<what>.log` (e.g.
+`opt3_run.log`, `opt1_build.log`) so `session_final_report` can collect them.
+
 Every `session_*` tool call automatically writes a stage log to:
   `<workspace>/artifacts/<NN>_<stage_name>.log`
 

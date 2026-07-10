@@ -173,3 +173,99 @@ Only use bash/CLI to process traces if:
 
 Even then, prefer `dftracer_view` / `dftracer_comparator` CLI binaries over raw
 `gzip.open` + `json.loads` parsing.
+
+---
+
+## ALWAYS split before analyzing (2026-07-08, measured)
+
+`dfanalyzer` / `mcp__dftracer__analyze` **silently truncates a directory of raw
+per-rank `*.pfw.gz` files** — it reported `trace_event_count=1542` and
+`unique_process_count=1` on traces that actually held ~99,666 events across 8
+ranks (identical result whether pointed at the directory or at the single
+largest rank file). The numbers look plausible, so this fails silently.
+
+**Fix — run `dftracer_split` first, then analyze the SPLIT output:**
+
+```bash
+dftracer_split -d <raw_dir> --output <split_dir> \
+  --index-dir <split_dir>/idx --compress --app-name <run>
+dfanalyzer trace_path=<split_dir> analyzer/preset=posix cluster.n_workers=32
+```
+
+After splitting, the same traces analyze correctly (98,695 events / 8 processes
+/ 2 nodes). Verify `Total Processes` matches your rank count — if it shows 1
+process / ~1542 events you are still pointing at raw traces.
+(`mcp__dftracer__analyze` has since been patched to auto-split raw dirs.)
+
+## `dftracer_view` query DSL gotcha
+
+Compound queries with parentheses / `or` **silently match zero events** instead
+of erroring:
+
+```bash
+# WRONG — returns nothing, no error
+dftracer_view -d <dir> --query 'cat == "POSIX" and (name == "write" or name == "pwrite")'
+
+# RIGHT — filter on one predicate, narrow downstream
+dftracer_view -d <dir> --query 'cat == "POSIX"' --stream --no-metadata
+```
+
+Always sanity-check that a query returns a non-zero event count before trusting
+an "empty" result.
+
+## Measure write BYTES per rank, not write CALLS
+
+To detect a serialized / single-writer I/O pattern, aggregate `args.ret` (bytes
+actually written) per `pid` over POSIX `write`/`pwrite` events. Counting
+*distinct pids that issue a write* is misleading — every rank writes a few bytes
+to log files, so a fully serialized run still shows all N ranks "writing"
+(observed: 384/384 pids issued writes while ONE rank held 91% of the bytes).
+Compare the top-1 rank's share of total bytes and the number of ranks writing
+>10 MB. See [[workload-flashx]] for the Flash-X serial-HDF5 case.
+
+
+---
+
+## Context economy: query the graph, don't read the tree
+
+Before any step that would open source files, use the `graphify` knowledge graph
+(project dependency `graphifyy`, CLI `graphify`):
+
+```bash
+graphify query "<target>" --budget 1200   # locate: NODE <sym> [src=file loc=Lnn]
+graphify explain <symbol>                 # definition + callers/callees
+graphify affected <symbol> --depth 2      # blast radius before you change it
+graphify update .                         # refresh after edits (~4s, no LLM)
+```
+
+Measured on this repo: locating cost 986 tokens vs 29,456 to read the three
+relevant files (3.3%). Run `affected` before editing any shared function and
+state the blast radius. Use the CLI, never `graphify-mcp` — its extra tool
+schemas would sit in context permanently. See [[dftracer-context-economy]].
+
+## MCP tool fixes (2026-07-09) — what changed and what to still watch
+
+1. **`session_annotation_report` no longer reports 0/N.** It now resolves the tracer alias
+   via AST: `_dft = dft_fn("x")` + `@_dft.log` is the normal idiom, and the old regex only
+   matched literal `@dft_fn` / `@dft_ai`, so real coverage read as zero. It falls back to
+   the regex scanner only when the file does not parse.
+
+2. **`analyze()` non-determinism fixed.** The auto-split output used to be written to
+   `<input>/.dfa_split`, i.e. *inside* the directory being split, so `dftracer_split -d
+   <input>` could ingest its own partially-written output. Identical calls returned
+   265,294 events / 13 processes vs 606,846 / 37 on a trace with a known 925,828 / 64.
+   Output now goes to a sibling `.dfa_split_<name>`. Delete any stale nested `.dfa_split`.
+
+3. **`session_analyze_traces(query_type=...)` now validates.** `dftracer_info --query`
+   accepts ONLY `summary` or `detailed`; anything else was silently ignored and returned
+   the summary. Invalid values now error instead of pretending to work.
+
+4. **`session_generate_optimization_proposals` accepts an external diagnosis.** It no longer
+   dead-ends with "No optimization iterations found" for runs launched outside
+   `session_optimization_iteration` (e.g. a two-phase `flux batch` job). Pass
+   `bottlenecks_json=...` or write `<ws>/<run>/analysis/diagnosis.json`.
+
+### Still true regardless of tooling
+- Cross-check any `analyze()` summary against `event_count` and the known pid count.
+- An empty `diagnose()` is a tool signal, not "no bottlenecks".
+- Rank bottlenecks by aggregated `dur`, never by event count (STDIO: 166,952 events, 1.5s).

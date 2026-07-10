@@ -6,7 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "dftracer-agents"
 version = "0.1.0"
 description = "DFTracer MCP Services for Dataflow Analysis"
-requires-python = ">=3.9"
+# graphifyy (knowledge graph) requires >=3.10; the pipeline depends on it.
+requires-python = ">=3.10"
 dependencies = [
     "fastmcp>=0.1.0",
     "dftracer-utils @ git+https://github.com/llnl/dftracer-utils.git@develop",
@@ -15,6 +16,13 @@ dependencies = [
     "libclang>=18.1.0",
     "matplotlib",
     "requests",
+    # Codebase knowledge graph (tree-sitter AST extraction for C/C++/Fortran/
+    # Python — every language this pipeline annotates). Agents query the graph to
+    # locate code instead of reading whole files into context.
+    # PyPI name is `graphifyy`; the CLI it ships is `graphify`.
+    # https://github.com/safishamsi/graphify
+    "graphifyy>=0.9.11",
+    "mlflow>=2.9",
 ]
 
 [project.optional-dependencies]
@@ -23,11 +31,13 @@ dev = [
     "black>=24.0.0",
     "flake8>=7.0.0",
 ]
-profile = [
-    "mlflow",
-]
+# Pipeline profiling: MLflow tracking + UI for per-step AI cost, tokens, timing
+# and retries. The OTLP collector itself is stdlib-only, so a session's
+
 
 [project.scripts]
+dftracer_agents_stack   = "dftracer_agents.stack:main"
+dftracer-profile-collector = "dftracer_agents.profiling.collector:main"
 dftracer-mcp-server     = "dftracer_agents.mcp_server:main"
 dftracer-configure-mcp  = "dftracer_agents.mcp_setup:main"
 dftracer-install-skills = "dftracer_agents.skills:main"
@@ -41,12 +51,23 @@ where = ["src"]
 [tool.setuptools.package-data]
 "dftracer_agents" = [
     ".agents/skills/**/*.md",
-    ".agents/agents/*.md",
+    # Agent definitions are YAML templates rendered per harness (docs/harness-agents.md).
+    ".agents/agents/*.yaml",
     ".agents/workspace/**/*.md",
     ".agents/workspace/**/*.json",
     ".agents/workspace/**/*.jsonc",
+    # models.yaml (the model map) and privacy_patterns.yaml (redaction rules the
+    # privacy guard has learned). Without this glob neither ships in a wheel.
+    ".agents/workspace/**/*.yaml",
+    ".agents/skills/**/*.yaml",
     ".agents/workspace/.claude/*.json",
     ".agents/workspace/.opencode/*.jsonc",
     ".agents/workspace/.vscode/*.json",
+    # Claude Code's project MCP config. A leading-dot FILE at the workspace root
+    # is matched by no glob above, so it must be named outright.
+    ".agents/workspace/.mcp.json",
     "*.sh",
+    # The stack launcher is bash but carries no extension: it is invoked as a
+    # command, not sourced as a script. Listed explicitly since "*.sh" misses it.
+    "dftracer_agents_stack",
 ]

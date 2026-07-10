@@ -18,3 +18,4 @@ usage patterns for each supported harness.
    models
    tools
    pipeline
+   profiling

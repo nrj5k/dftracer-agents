@@ -99,6 +99,7 @@ def _create_run(
         <workspaces_root>/<app_name>/<run_id>/
             session.json          ← persistent pipeline state
             artifacts/            ← per-step log files (created on demand)
+            performance/          ← per-step timing, retries, AI cost, report
 
     A ``<workspaces_root>/<app_name>/.current_run`` pointer file is also
     written so that ``pipeline_get_run_id`` can recall the most-recently
@@ -146,6 +147,7 @@ def _create_run(
 
     ws = _ws(rid)
     ws.mkdir(parents=True, exist_ok=True)
+    _perf_dir(rid).mkdir(parents=True, exist_ok=True)
 
     created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     _save_state(rid, {
@@ -217,6 +219,35 @@ def _ws(run_id: str) -> Path:
         Path: Absolute path ``<workspaces_root>/<run_id>``.
     """
     return _workspaces_root() / run_id
+
+
+def _perf_dir(run_id: str) -> Path:
+    """Return ``<workspace>/performance`` — the run's profiling artefacts.
+
+    Distinct from ``artifacts/``, which holds the *application's* build and run
+    logs. ``performance/`` holds the profile of the **agent pipeline that
+    produced them**: per-step execution time, attempt/retry counts, AI token and
+    cost accounting, and the final performance report.
+
+    Layout::
+
+        performance/
+            steps/<index>-<slug>.json   ← one file per pipeline step, live-updated
+            otlp/logs-<date>.jsonl      ← raw Claude Code telemetry events
+            summary.json                ← whole-run profile snapshot
+            performance_report.md       ← the human-readable report
+            mlflow.json                 ← experiment / parent-run / UI pointers
+
+    The directory is created for every new session; callers that may run against
+    an older session should ``mkdir(parents=True, exist_ok=True)`` first.
+
+    Args:
+        run_id: The pipeline run identifier.
+
+    Returns:
+        Path: Absolute path ``<workspace>/performance``.
+    """
+    return _ws(run_id) / "performance"
 
 
 def _state_path(run_id: str) -> Path:

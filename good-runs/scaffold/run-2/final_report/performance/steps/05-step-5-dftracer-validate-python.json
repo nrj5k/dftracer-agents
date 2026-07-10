@@ -1,0 +1,43 @@
+{
+  "run_id": "scaffold/20260709_081340",
+  "key": "STEP 5: dftracer-validate-python",
+  "index": 5,
+  "agent": "dftracer-validate-python",
+  "notes": "Independent validation of STEP 4 annotation (11 files/45 fns) in scaffold/20260709_081340/annotated/source/ScaFFold",
+  "status": "ok",
+  "tries": 1,
+  "retries": 0,
+  "failed_attempts": 0,
+  "successful_attempts": 1,
+  "exec_s": 1401.349,
+  "wall_s": 1401.349,
+  "attempts": [
+    {
+      "number": 1,
+      "status": "ok",
+      "duration_s": 1401.349,
+      "error": "",
+      "start_ns": 1783587997683558918,
+      "end_ns": 1783589399033033424
+    }
+  ],
+  "tokens_input": 0,
+  "tokens_output": 0,
+  "tokens_cache_read": 0,
+  "tokens_cache_creation": 0,
+  "cost_usd": 0.0,
+  "api_calls": 0,
+  "api_errors": 0,
+  "api_duration_ms": 0.0,
+  "tool_calls": 0,
+  "tool_failures": 0,
+  "tool_duration_ms": 0.0,
+  "mcp_tool_calls": 0,
+  "compactions": 0,
+  "prompts": 0,
+  "tools": {},
+  "models": {},
+  "agents": {},
+  "skills": {},
+  "tokens_total": 0
+}

@@ -1,0 +1,29 @@
+# Memory Index
+
+- [Bug: analyze timeout bytes](bug_analyze_timeout_bytes.md) — MCP analyze crashed "can't concat str to bytes" on dask-teardown-hang traces; decode fix in dfanalyzer_service.py
+
+- [Project: IOR Optimization Study](project_ior_optimization.md) — Completed IOR 4.0.0 HDF5 optimization session on Tuolumne; key findings on VAST storage + ROMIO hints
+- [Project: Skills Reorg](project_skills_reorg.md) — .agents/skills canonical; MCP skill_list/search/load tools; prose Permissions sections; .claude/commands merged+removed
+- [Project: FlashX Optimization](project_flashx_optimization.md) — Sedov 3D, source-HDF5, FUNCTION+DATA_DIR=all, 768 ranks/≥30min, Lustre output via 'ds' symlink (flash.par 80-col pitfall), alloc <flux-jobid>
+- [Project: Package Restructure](project_package_restructure.md) — src/dftracer_agents/ real package layout (no hyphens); skills.py installs into .claude/skills/ via ensure_setup() on server startup
+- [Feedback: Working Style](feedback_working_style.md) — Preferred interaction patterns and workflow notes
+- [Feedback: dftracer AI/ML venv](feedback_dftracer_aiml_venv.md) — dftracer and app must share the same venv for AI/ML Python apps; never separate installs
+- [Feedback: flux proxy wrapper](feedback_flux_proxy_wrapper.md) — Always write a bash wrapper script for flux proxy commands; never inline module loads
+- [Feedback: Lustre I/O for AI/ML](feedback_lustre_io.md) — App data (datasets/fractals/checkpoints/runs) → Lustre; dftracer TRACES → workspace/traces/, NOT Lustre
+- [Feedback: optimization pipeline traces](feedback_optimization_pipeline_traces.md) — session_optimization_iteration needs traces in <WS>/traces/, not Lustre; set DFTRACER_LOG_FILE to session workspace
+- [Feedback: torchrun-hpc flags](feedback_torchrun_hpc_flags.md) — -n is procs-per-node; 8 nodes × 4 GPUs = -N 8 -n 4 --gpus-per-proc 1
+- [Feedback: Tuolumne modules](feedback_tuolumne_modules.md) — Inactive module detection; HDF5→source install; MPI/compiler→find compatible combo; never find in /opt/cray
+- [Feedback: mpi4py install Python 3.13](feedback_mpi4py_install.md) — manylinux wheel + manual extract + patchelf libmpi_cray.so + MPI4PY_MPIABI=mpich; never --no-binary on NFS
+- [Feedback: h5py + dftracer HDF5 stack](feedback_hdf5_dftracer_stack.md) — patchelf h5py and dftracer RPATH to session HDF5; NEVER set DFTRACER_DISABLE_IO
+- [Feedback: HPC Python env setup](feedback_hpc_python_env.md) — 6-step canonical env: steps 1-3 (modules+LD\_LIBRARY\_PATH+venv) identical for install and run; CC/CXX; single pip; ldd verify
+- [Feedback: app execution cwd](feedback_app_exec_cwd.md) — App build/run/smoke-test must cwd into workspace session folder, never project root
+- [Feedback: dftracer install ROCm/MPI](feedback_dftracer_install_rocm_mpi.md) — skip ROCProfiler unless app uses ROCm; MPI compatible on tuolumne, just pass MPI version + headers
+- [Feedback: dftracer install env vars](feedback_dftracer_install_env_vars.md) — dftracer setup.py reads ENV VARS not CMAKE_ARGS; HIP off on Tuolumne; patch Cray HDF5 chid_t + module unload
+- [Feedback: analysis parallel workers](feedback_analysis_parallel_workers.md) — dfanalyzer must finish in minutes; use cluster_n_workers=32, never cluster_cores
+- [Feedback: always source HDF5](feedback_always_source_hdf5.md) — Always build HDF5 from source into session workspace; never use Cray/system HDF5 module
+- [Feedback: Confirm before skill updates](feedback_confirm_before_skill_updates.md) — always confirm observation/fix with user BEFORE writing to skills/MCP/agents/lessons; propose, don't auto-persist
+- [Feedback: Pipeline self-learning](feedback_pipeline_selflearning.md) — session-first; planner writes sectioned pipeline_plan.md; all agents record lessons to workload/system/software skills
+- [Project: Claude agent models](project_claude_agent_models.md) — install materializes agents + resolves level_N→haiku/sonnet/opus; live session needs model override or reload
+- [Feedback: Profiling at session create](feedback_profiling_at_session_create.md) — profile_bind right after session_create; OTEL env must live in ~/.vscode-server/server-env-setup — settings.json env DROPS OTEL_*, and ~/.profile is never sourced
+- [Project: ScaFFold optimization](project_scaffold_optimization.md) — LBANN ScaFFold PyTorch 3D U-Net; session scaffold/20260709_064800; ~30 min bounded runs, 8N×4GPU
+- [Feedback: Privacy / anonymous persistence](feedback_privacy_anonymous.md) — memory lives in src/ and is git-tracked; never persist usernames, user paths, job ids; verify with privacy_scan

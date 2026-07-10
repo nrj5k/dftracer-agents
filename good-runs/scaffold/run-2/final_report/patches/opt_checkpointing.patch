@@ -1,0 +1,235 @@
+--- source/ScaFFold/utils/checkpointing.py	2026-07-09 01:13:42.376040000 -0700
++++ annotated/source/ScaFFold/utils/checkpointing.py	2026-07-09 14:53:16.575480000 -0700
+@@ -14,6 +14,7 @@
+ 
+ import math
+ import random
++import os
+ import shutil
+ from concurrent.futures import ThreadPoolExecutor
+ from pathlib import Path
+@@ -22,6 +23,8 @@
+ import numpy as np
+ import torch
+ import torch.distributed as dist
++from dftracer.python import dftracer, dft_fn as DFTracerFn
++_dft = DFTracerFn("checkpointing")
+ 
+ 
+ class CheckpointManager:
+@@ -34,6 +37,7 @@
+                            Requires sufficient CPU RAM to hold a full model copy.
+     """
+ 
++    @_dft.log_init
+     def __init__(
+         self,
+         *,
+@@ -46,6 +50,8 @@
+         world_rank: int = 0,
+         dist_enabled: bool = False,
+         async_save: bool = False,
++        hardlink_best: bool = False,
++        stage_dir: Optional[str] = None,
+     ) -> None:
+         self.model = model
+         self.optimizer = optimizer
+@@ -56,6 +62,11 @@
+         self.world_rank = world_rank
+         self.dist_enabled = dist_enabled
+         self.async_save = async_save
++        self.hardlink_best = hardlink_best
++        # Node-local staging dir for checkpoint writes (rank 0 only). Created lazily.
++        self.stage_dir = Path(stage_dir) if stage_dir else None
++        if self.stage_dir and world_rank == 0:
++            self.stage_dir.mkdir(parents=True, exist_ok=True)
+ 
+         # Paths
+         self.last_ckpt_path = self.base_dir / "checkpoint_last.pth"
+@@ -63,6 +74,9 @@
+ 
+         self.restored_extras: Dict[str, Any] = {}
+ 
++        # Cached best val loss (rank 0). None => not yet read from disk.
++        self._best_loss: Optional[float] = None
++
+         # Async handling
+         self.executor = None
+         self.future = None
+@@ -74,6 +88,7 @@
+         if self.world_rank == 0:
+             self.base_dir.mkdir(parents=True, exist_ok=True)
+ 
++    @_dft.log
+     def cleanup(self, train_from_scratch: bool) -> None:
+         """Clear existing checkpoints if training from scratch."""
+         # Ensure any pending async saves are finished before deleting
+@@ -93,6 +108,7 @@
+                         self._log(f"Failed to remove {p}: {e}")
+         self._barrier()
+ 
++    @_dft.log
+     def wait_for_save(self):
+         """Blocks until the background save (if any) is complete."""
+         if self.future is not None:
+@@ -105,6 +121,7 @@
+                 self._log(f"Background save failed with error: {e}")
+             self.future = None
+ 
++    @_dft.log
+     def snapshot_training_state(self) -> Dict[str, Any]:
+         """Capture mutable in-memory training state without writing a checkpoint."""
+         model_ref = self.model.module if hasattr(self.model, "module") else self.model
+@@ -125,6 +142,7 @@
+             **self._get_rng_snapshot(),
+         }
+ 
++    @_dft.log
+     def restore_training_state(self, snapshot: Dict[str, Any]) -> None:
+         """Restore an in-memory training snapshot."""
+         model_ref = self.model.module if hasattr(self.model, "module") else self.model
+@@ -145,6 +163,7 @@
+         if self.optimizer:
+             self.optimizer.zero_grad(set_to_none=True)
+ 
++    @_dft.log
+     def load_from_checkpoint(self) -> int:
+         """Load the latest checkpoint. Returns start_epoch (default 1)."""
+         self.wait_for_save()  # Safety: don't load while writing
+@@ -212,6 +231,7 @@
+         self._barrier()
+         return start_epoch
+ 
++    @_dft.log
+     def save_checkpoint(
+         self, epoch: int, val_loss_avg: float, extras: Optional[Dict[str, Any]] = None
+     ) -> bool:
+@@ -221,18 +241,23 @@
+         """
+         is_best = False
+         if self.world_rank == 0:
+-            current_best_loss = math.inf
+-            if self.best_ckpt_path.exists():
+-                try:
+-                    prev = torch.load(
+-                        self.best_ckpt_path, map_location="cpu", weights_only=False
+-                    )
+-                    current_best_loss = prev.get("val_loss_avg", math.inf)
+-                except Exception:
+-                    pass
++            # Read the previous best loss from disk at most ONCE. Deserializing the
++            # whole best checkpoint every epoch to recover a single float costs a
++            # full checkpoint read per epoch on the critical path.
++            if self._best_loss is None:
++                self._best_loss = math.inf
++                if self.best_ckpt_path.exists():
++                    try:
++                        prev = torch.load(
++                            self.best_ckpt_path, map_location="cpu", weights_only=False
++                        )
++                        self._best_loss = prev.get("val_loss_avg", math.inf)
++                    except Exception:
++                        pass
+ 
+-            if val_loss_avg < current_best_loss:
++            if val_loss_avg < self._best_loss:
+                 is_best = True
++                self._best_loss = val_loss_avg
+ 
+         if self.world_rank == 0:
+             # 1. Wait for previous async save to prevent OOM or race
+@@ -275,12 +300,15 @@
+                     self.last_ckpt_path,
+                     self.best_ckpt_path,
+                     is_best,
++                    self.hardlink_best,
++                    self.stage_dir,
+                 )
+                 self._log("Async checkpoint offloaded to background thread.")
+             else:
+                 # Synchronous Save
+                 self._write_to_disk(
+-                    state_dict, self.last_ckpt_path, self.best_ckpt_path, is_best
++                    state_dict, self.last_ckpt_path, self.best_ckpt_path, is_best,
++                    self.hardlink_best, self.stage_dir,
+                 )
+ 
+         # Broadcast result (for logging elsewhere)
+@@ -292,25 +320,50 @@
+         return is_best
+ 
+     @staticmethod
+-    def _write_to_disk(state_dict, last_path, best_path, is_best):
+-        """Worker function to perform actual disk I/O."""
+-        # Save 'last'
+-        try:
+-            torch.save(state_dict, last_path)
+-        except Exception as e:
+-            print("Saving checkpoint failed. Continuing...")
+-            print(e)
+-        # Save 'best' (copy logic)
+-        if is_best:
+-            # Copy is often faster than re-serializing
+-            if last_path.exists():
+-                shutil.copyfile(last_path, best_path)
+-            else:
+-                try:
+-                    torch.save(state_dict, best_path)
+-                except Exception as e:
+-                    print("Saving checkpoint failed. Continuing...")
+-                    print(e)
++    def _write_to_disk(state_dict, last_path, best_path, is_best,
++                       hardlink_best=False, stage_dir=None):
++        with DFTracerFn("checkpointing", name="_write_to_disk"):
++            """Worker function to perform actual disk I/O."""
++            # Q2: serialize to node-local flash first, then move to the PFS. A 256 MB
++            # torch.save to Lustre takes ~496 ms (~517 MB/s from one rank) and lands on
++            # the critical path every epoch; local flash is far faster and the move is
++            # a streaming copy off the training thread.
++            target = Path(stage_dir) / last_path.name if stage_dir else last_path
++
++            # Always serialize to a temp path and rename into place. rename() is atomic
++            # and yields a FRESH inode each epoch, which is what makes the 'best'
++            # hardlink below safe: torch.save truncates in place, so a hardlinked best
++            # would otherwise be corrupted by the next epoch's write.
++            tmp = target.with_suffix(target.suffix + ".tmp")
++            try:
++                torch.save(state_dict, tmp)
++                os.replace(tmp, target)
++                if stage_dir:
++                    shutil.move(str(target), str(last_path))
++            except Exception as e:
++                print("Saving checkpoint failed. Continuing...")
++                print(e)
++
++            if is_best:
++                # Q1: hardlink instead of copying 256 MB again. On the epochs where val
++                # loss improves (102/960 in a reference run) shutil.copyfile added a
++                # second full-size write -- 25.5 GB of duplicate I/O per run.
++                if hardlink_best and last_path.exists():
++                    try:
++                        if best_path.exists():
++                            best_path.unlink()
++                        os.link(last_path, best_path)
++                        return
++                    except OSError:
++                        pass  # cross-device or unsupported -> fall back to copy
++                if last_path.exists():
++                    shutil.copyfile(last_path, best_path)
++                else:
++                    try:
++                        torch.save(state_dict, best_path)
++                    except Exception as e:
++                        print("Saving checkpoint failed. Continuing...")
++                        print(e)
+ 
+     def _transfer_dict_to_cpu(self, obj):
+         """Recursively move tensors to CPU."""
+@@ -338,6 +391,7 @@
+         else:
+             return obj
+ 
++    @_dft.log
+     def _barrier(self):
+         if self.dist_enabled:
+             dist.barrier()

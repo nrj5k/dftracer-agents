@@ -4,7 +4,7 @@
 - **Platform**: Tuolumne (LLNL), 8 nodes, 384 MPI ranks (48 cores/node)
 - **Problem**: Sedov blast wave, 3D, tmax=0.5
 - **AMR**: Paramesh, lrefine_max=2, nblockx=y=z=9, NXB=NYB=NZB=8
-- **Allocation**: f3Junw1CTMif (reused for both runs)
+- **Allocation**: <flux-jobid> (reused for both runs)
 
 ## Wall-Clock Runtime
 

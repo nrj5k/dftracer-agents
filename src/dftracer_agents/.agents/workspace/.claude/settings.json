@@ -2,7 +2,8 @@
   "enabledMcpjsonServers": ["dftracer"],
   "env": {
     "REQUESTS_CA_BUNDLE": "/etc/pki/tls/cert.pem",
-    "SSL_CERT_FILE": "/etc/pki/tls/cert.pem"
+    "SSL_CERT_FILE": "/etc/pki/tls/cert.pem",
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1"
   },
   "permissions": {
     "deny": [
@@ -65,6 +66,15 @@
       "mcp__dftracer__find_source_files",
       "mcp__dftracer__gen_dlio_config",
       "mcp__dftracer__gen_fake_trace",
+      "mcp__dftracer__graph_ensure",
+      "mcp__dftracer__graph_query",
+      "mcp__dftracer__privacy_scan",
+      "mcp__dftracer__privacy_redact",
+      "mcp__dftracer__profile_bind",
+      "mcp__dftracer__profile_report",
+      "mcp__dftracer__profile_status",
+      "mcp__dftracer__profile_step_begin",
+      "mcp__dftracer__profile_step_end",
       "mcp__dftracer__get_arxiv_paper",
       "mcp__dftracer__get_author_papers",
       "mcp__dftracer__get_semantic_scholar_paper",

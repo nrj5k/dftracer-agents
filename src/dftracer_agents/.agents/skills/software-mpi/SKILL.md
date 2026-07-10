@@ -240,3 +240,142 @@ Format per entry:
 
 <!-- New failed-config entries are appended below by the optimization loop (Step 8d-iii-FAIL) -->
 
+---
+
+## Cray MPICH: `cb_nodes` is accepted but IGNORED (2026-07-08, measured)
+
+Setting `cb_nodes` via `MPICH_MPIIO_HINTS` (or a `ROMIO_HINTS` file) does **not**
+by itself increase the number of MPI-IO collective-buffering aggregators on Cray
+MPICH. `MPICH_MPIIO_HINTS_DISPLAY=1` will happily echo back `cb_nodes = 8`, while
+the runtime keeps using only **2** aggregators.
+
+**Do not trust the hints display — verify the real aggregator count from traces:**
+count the distinct ranks that issue writes `>= 1 MB` (the collective-buffer
+flushes). Tiny writes happen on every rank (logs), so counting "ranks that write"
+is useless; count ranks doing *large* writes.
+
+```bash
+dftracer_view -d <split_dir> --query 'cat == "POSIX"' --stream --no-metadata \
+  | python3 -c 'import sys,json;p=set()
+for l in sys.stdin:
+  if "\"name\":\"pwrite\"" not in l and "\"name\":\"write\"" not in l: continue
+  e=json.loads(l); r=e.get("args",{}).get("ret",0)
+  if isinstance(r,int) and r>=1048576: p.add(e["pid"])
+print("aggregators:",len(p))'
+```
+
+**What actually raises the aggregator count:** the Cray-specific
+`CRAY_CB_NODES_MULTIPLIER` env var (used together with `cb_nodes`), plus a Lustre
+stripe count wide enough to absorb them.
+
+Measured on Flash-X (384 ranks / 8 nodes, 18 checkpoints, ~6.7 GB, Lustre):
+
+| Config | aggregators | critical-path write | avg large write |
+| --- | --- | --- | --- |
+| parallel HDF5, no hints | 2 | 6.80 s | 1.05 MB |
+| `+ cb_nodes=8` (hint echoed, ignored) | 2 | 5.53 s | 1.05 MB |
+| `+ cb_nodes=16` + `CRAY_CB_NODES_MULTIPLIER=2` + 16×4 MB stripes | **16** | **1.45 s** | **3.76 MB** |
+
+Top-1 rank's share of write bytes fell 52% → 6.8% (balanced parallel I/O).
+
+**Ordering matters:** collective-buffering hints are worthless until the
+application actually performs parallel writes. If one rank holds ~all write
+bytes, fix that first (see [[workload-flashx]] serial-HDF5 case) — hints cannot
+parallelize a single writer.
+
+
+## mpi4py on Cray MPICH (Tuolumne, 2026-07-09)
+
+**Symptom:** mpi4py generic PyPI wheel (`mpi4py>=4.0`) on Tuolumne with cray-mpich fails to import with:
+```
+RuntimeError: cannot load MPI library
+  /..../libmpi.so.12: cannot open shared object file
+```
+
+**Root cause:** mpi4py manylinux wheel expects standard MPICH SONAME `libmpi.so.12`, but Cray PE provides `libmpi_cray.so.12`. Generic wheel built for GNU MPI wrappers; Cray's soname differs.
+
+**Fix (working recipe for Python 3.13 + cray-mpich/9.1.0):**
+
+1. Download and extract wheel manually (pip rename fails on NFS):
+   ```bash
+   pip download mpi4py --python-version 313 --no-deps -d $WS/tmp
+   cd $WS/tmp && unzip -q mpi4py-4.1.2-cp313-cp313-manylinux1_x86_64.manylinux_2_5_x86_64.whl
+   ```
+
+2. Patch extension RPATH to find Cray MPI lib + venv lib for symlink:
+   ```bash
+   CRAY_MPI_LIB="/opt/cray/pe/mpich/9.1.0/ofi/crayclang/20.0/lib"
+   VENV_LIB="$WS/venv/lib"
+   patchelf --set-rpath "$VENV_LIB:$CRAY_MPI_LIB" \
+     mpi4py/MPI.mpich.cpython-313-x86_64-linux-gnu.so
+   ```
+
+3. Create symlink to resolve SONAME mismatch:
+   ```bash
+   ln -sf "$CRAY_MPI_LIB/libmpi_cray.so.12" "$VENV_LIB/libmpi.so.12"
+   ```
+
+4. Re-zip and install with ABI env var:
+   ```bash
+   zip -q -r mpi4py-patched.whl mpi4py/ mpi4py-*.dist-info/
+   export MPI4PY_MPIABI=mpich
+   pip install --force-reinstall --no-deps mpi4py-patched.whl
+   ```
+
+5. Verify import succeeds:
+   ```bash
+   python -c "from mpi4py import MPI; print(MPI.Get_version())"
+   ```
+
+**Environment persistence:**
+Record `MPI4PY_MPIABI=mpich` and updated `LD_LIBRARY_PATH` in the session env script so all downstream steps inherit them:
+```bash
+export MPI4PY_MPIABI=mpich
+export LD_LIBRARY_PATH="$WS/venv/lib:/opt/cray/pe/mpich/9.1.0/ofi/crayclang/20.0/lib:${LD_LIBRARY_PATH}"
+```
+
+**Key caveat:** `--no-binary=mpi4py` does NOT work on Python 3.13 + NFS (build succeeds but pip atomic-rename to NFS fails; manual extraction avoids pip's rename).
+
+
+## MPI_Barrier that "dominates" is usually a load-imbalance SINK, not a cost
+
+**Symptom.** `MPI_Barrier` is ~99% of all MPI time and looks like the top bottleneck.
+
+**Root cause.** In a DL trainer whose checkpoint is already `world_rank == 0`-gated, the
+barrier does not *cost* time — it *absorbs* whatever wait the slowest rank imposes
+(dataloader stragglers, the serialized rank-0 save). It is where imbalance is billed.
+
+**Diagnostic tell.** As you fix the real upstream problem, per-barrier MEAN duration goes
+*up* while wall clock goes *down*. Measured on ScaFFold (32 ranks): mean barrier
+262 ms -> 657 ms across variants while `total_train_time` fell 1.97 s -> 1.64 s.
+
+**Fix.** Attack the upstream imbalance (e.g. `dataloader_num_workers > 0` for prefetch and
+compute/IO overlap). Do not do "barrier surgery," and do not rank by barrier aggregate.
+Rank by wall clock / FOM.
+
+**Anti-pattern: "do-less" levers.** Raising `checkpoint_interval` writes fewer checkpoints,
+so any speedup is partly from doing less work, not from going faster. Verify total bytes /
+data volume is unchanged before crediting a speedup. On ScaFFold it was both inferior to the
+overlap fix AND did not compound with it.
+
+**Tool caveat.** `comparator` reported MPI_Barrier p50 pinned at 167.79 ms across every
+variant — a fixed time-bucket artifact. Use mean/p95/p99 and wall clock, not barrier p50.
+
+### CORRECTION (measured at a realistic run length)
+
+The section above was inferred from a run whose training phase was ~2 seconds. At a fixed
+1200-epoch (~12 min) run on the same 32-rank ScaFFold workload, `MPI_Barrier` aggregate is
+**16.8 s across 32 ranks against 749.9 s of training (~2%)** — it is not the top bottleneck at
+all. The "barrier = 99% of MPI time / ~65% of wall" reading was an artifact: in a 2-second run,
+startup, teardown, and the first-epoch stragglers dominate everything.
+
+What survives, and is the durable lesson:
+
+- **Never rank bottlenecks from a run that is too short.** Fix a time budget (>= ~10 min of
+  training), calibrate the epoch count on the baseline, and hold it constant across variants.
+- A barrier still *absorbs* upstream imbalance, so attack the upstream cause. On this workload
+  the real cost was POSIX I/O time (5666 s -> 801 s, -86%), removed by dataloader prefetch
+  (`dataloader_num_workers > 0`), not by barrier surgery.
+- Barrier mean duration rising while wall time falls remains a valid tell that the barrier is
+  a sink rather than a cost — but confirm the aggregate is actually a meaningful fraction of
+  wall clock before acting on it.

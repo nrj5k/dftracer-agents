@@ -1,0 +1,17 @@
+run,change,epochs,comparison,wall_s,train_s,verdict
+baseline_long,"workers=0, ckpt_interval=1",1200,1200-epoch set,1543.3,749.9,
+opt1_long,workers=4,1200,1200-epoch set,1241.6,497.5,KEEP -33.7% train
+opt2_long,checkpoint_interval=4,1200,1200-epoch set,843.2,576.5,REJECT do-less
+opt3_long,workers=4 + ckpt_interval=4,1200,1200-epoch set,759.4,503.2,REJECT no compounding
+base_960,workers=0,960,budget replicate,1114.7,473.0,
+opt1_960,workers=4,960,budget replicate,1052.9,400.5,KEEP
+p1a_cache,+ best-loss cache,960,chain,1033.3,395.9,KEEP -1.9% wall
+p1b_async,+ async_save=1,960,chain,1006.8,393.6,KEEP -4.4% wall
+p1b_ctrl,"control (new code, no hardlink)",960,PAIRED control,953.9,396.6,
+q1_rep,+ hardlink_best=1,960,PAIRED variant,930.2,393.7,KEEP -2.5% wall
+q1_pair,hardlink,350,PAIRED control,384.3,140.9,
+q2_pair,hardlink + /dev/shm staging,350,PAIRED variant,408.6,141.9,REJECT +6.3% wall
+a_ctrl,launcher defaults,350,PAIRED control,465.3,141.0,
+a_bind,topology binding only,350,PAIRED variant,458.8,141.5,NO EFFECT +0.4% train
+b_ctrl,launcher defaults,350,PAIRED control,431.8,293.5,
+b_omp,OMP_NUM_THREADS=6 only,350,PAIRED variant,,298.6,NO EFFECT +1.8% train

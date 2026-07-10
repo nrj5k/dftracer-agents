@@ -26,7 +26,9 @@ pip install -e .
 
 This installs console scripts including:
 
+- `dftracer_agents_stack` — start the whole stack (MCP server + profiling + MLflow)
 - `dftracer-mcp-server`
+- `dftracer-profile-collector`
 - `dftracer-install-skills`
 - `dftracer-install-agents`
 - `dftracer-bootstrap-workspace`
@@ -34,18 +36,243 @@ This installs console scripts including:
 
 ### Quick setup (pip or uv)
 
+dftracer-agents must be installed **into an environment** — a Python venv or a
+conda env. The stack launcher discovers its daemons from that environment's
+`bin/`, so an unactivated environment is a hard error rather than a silent
+fallback to the system Python.
+
 ```bash
 # Option A: pip
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
-pip install .
+pip install -e '.[profile]'
 
 # Option B: uv
 uv venv
 source .venv/bin/activate
-uv pip install .
+uv pip install -e '.[profile]'
 ```
+
+The `[profile]` extra pulls in MLflow. Without it everything still runs and each
+session still gets its `performance/` report — only the MLflow mirroring is
+skipped.
+
+---
+
+## Running the whole stack
+
+`dftracer_agents_stack` starts the three long-lived processes in one command and
+prints the environment Claude Code needs:
+
+| Service | Default port | What it does |
+| --- | --- | --- |
+| `mlflow` | 5001 | Tracking server + UI, SQLite-backed |
+| `collector` | 4318 | Receives Claude Code OTLP telemetry, attributes it to pipeline steps |
+| `mcp` | 5000 | The dftracer MCP tool surface (auto-reloads on source edits) |
+
+```bash
+# Start (or refresh) everything
+dftracer_agents_stack start
+
+# Launch Claude Code wired into the stack
+eval "$(dftracer_agents_stack env)" && claude
+
+# What is up, what is stale, and what has the current run cost?
+dftracer_agents_stack status
+
+# Delete stale pid files and reap orphaned daemons
+dftracer_agents_stack clean
+dftracer_agents_stack clean --untracked  # also kill daemons the stack didn't start
+
+# Re-point the harness configs at the managed server (start does this for you)
+dftracer_agents_stack client
+
+# Follow a service's log
+dftracer_agents_stack logs collector     # mlflow | collector | mcp | graph
+
+# Stop everything (the collector flushes its profile first)
+dftracer_agents_stack stop
+```
+
+### VSCode extension users: export the env before VSCode starts
+
+`eval "$(dftracer_agents_stack env)" && claude` works because the exporter is
+configured from the environment Claude Code is **launched with**. The VSCode
+extension spawns its own `claude` binary and never runs that `eval`, so telemetry
+silently does not export. The `env` block in `.claude/settings.json` does not
+rescue this: it reaches tool subprocesses, but not the telemetry SDK, which is
+configured at process start.
+
+The symptom is a profile that looks healthy but has no numbers — `profile_bind`
+succeeds, the MLflow parent run appears, steps record their wall time and
+retries, and every token and dollar column reads zero. `profile_status` shows
+`events_seen: 0` and the raw log under `<workspace>/performance/otlp/` stays at
+zero bytes.
+
+The env has to be in the real process environment of the **vscode-server**, which
+every extension host and every `claude` process inherits. Neither `~/.profile`
+nor `~/.bashrc` is reliable here: Remote-SSH launches the server through a
+non-login, non-interactive shell. Remote-SSH does source
+`~/.vscode-server/server-env-setup` before starting the server, so put it there:
+
+```bash
+dftracer_agents_stack env >> "$HOME/.vscode-server/server-env-setup"
+```
+
+Then restart the server — **not** a window reload. Reloading respawns the
+extension host from the server process that is *already running* with the old
+environment, so it changes nothing:
+
+- **Remote SSH:** Command Palette → **"Remote-SSH: Kill VS Code Server on Host"**,
+  pick the host, then reconnect. The server respawns and sources the file.
+- **Fallback, from a terminal on the remote host:** `pkill -u "$USER" -f vscode-server`,
+  then reconnect from VSCode.
+- **Local (non-remote) VSCode:** quit the application entirely — not just the
+  window — and relaunch it from a shell that has the env exported.
+
+Verify the server itself picked it up:
+
+```bash
+tr '\0' '\n' < /proc/$(pgrep -u "$USER" -f server-main.js | head -1)/environ | grep -c '^OTEL_'
+```
+
+Anything less than the full count means the server did not source the file. Then
+call `profile_status` and check that `events_seen` climbs on its own as you work.
+
+> Do not diagnose this by grepping `env` inside a Bash tool call. Claude Code does
+> not re-export `OTEL_*` to child processes, so their absence there is expected
+> and proves nothing — in either the working or the broken state. `events_seen`,
+> and the server's own `/proc/<pid>/environ`, are the only reliable signals.
+
+If `events_seen` is still `0` once the server env is confirmed, check that the
+collector is actually up and reachable (`dftracer_agents_stack logs collector`).
+To separate a dead receiver from a silent sender, POST a synthetic record and
+watch the raw log grow:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:4318/v1/logs \
+  -H 'Content-Type: application/json' \
+  -d '{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"body":{"stringValue":"probe"}}]}]}]}'
+```
+
+A `200` plus a new line in `<workspace>/performance/otlp/events-<date>.jsonl`
+means the receiver and MLflow sink are healthy and the problem is upstream env.
+Delete the probe line afterwards so it does not pollute the profile.
+
+### The stack runs the server; the harnesses connect to it
+
+By default every harness *spawns its own private stdio MCP server* from a
+`command` entry in its config, ignoring anything you started yourself. `start`
+therefore rewrites those entries to point at the managed HTTP server:
+
+| Harness | Config file | Entry written |
+| --- | --- | --- |
+| Claude Code | `.mcp.json` | `mcpServers.dftracer.url` |
+| GitHub Copilot | `.vscode/mcp.json` | `servers.dftracer.url` |
+| OpenCode | `.opencode/opencode.jsonc` | `mcp.dftracer.url` |
+
+`opencode.jsonc` holds your provider and model settings alongside comments that a
+JSON round-trip would delete, so if it has comments the exact snippet to paste is
+printed instead of rewritten.
+
+Restart the harness after the first `start` — a client only reads its MCP config
+at launch. Afterwards `dftracer_agents_stack status` should show no untracked
+`mcp` process; if it does, that harness is still spawning its own.
+
+### Finding stale and orphaned processes
+
+Pid files record what the launcher *believes* is running. `status` reconciles
+them against `/proc` and reports what they miss:
+
+- **stale pid file** — the process died; the file outlived it.
+- **orphan** — a supervisor was killed but the child that binds the port
+  survived, or a daemon of ours is sitting on a port we manage. `clean` reaps it.
+- **untracked** — a daemon this stack did not start: a harness's own stdio
+  server, or a colleague's process on a shared node. Reported, never killed
+  without `--untracked`.
+
+Orphans get `SIGTERM` before `SIGKILL`, so the collector still flushes its
+profile and closes its MLflow run on the way out.
+
+`start` is **idempotent**. Re-running it never launches a second copy: each
+service is left alone if it is healthy and configured identically, and is
+restarted only if it died, stopped answering its port, or its configuration
+changed. So it doubles as a refresh command after editing config or
+reinstalling. If a port is held by a process the stack did not start, it refuses
+to touch it and tells you which one.
+
+Ports and paths are overridable:
+
+```bash
+MCP_PORT=5100 MLFLOW_PORT=5101 COLLECTOR_PORT=4400 dftracer_agents_stack start
+DFTRACER_WORKSPACES=/path/to/workspaces dftracer_agents_stack start
+```
+
+State lives under `workspaces/_stack/` (pid files, logs) and
+`workspaces/_mlflow/` (SQLite DB, artifacts) — never `/tmp`.
+
+The knowledge graph (`graphify`) is warmed at start rather than run as a daemon,
+so the first agent `graph_query` does not pay the build cost. Re-warming is free
+when nothing changed.
+
+> **First run only:** the MCP server asks once, interactively, which harness and
+> models to use. A daemon cannot answer that, so run
+> `dftracer-configure-harness` before the first `dftracer_agents_stack start`.
+
+---
+
+## Pipeline profiling (MLflow)
+
+Every agent step is measured: how long it took, how many times it was tried, how
+many tokens it burned, and what that cost in USD.
+
+**Where the numbers come from.** With the stack's environment exported, Claude
+Code emits OpenTelemetry. Its `claude_code.api_request` event already carries
+`cost_usd`, `duration_ms`, all four token counts and the `agent.name` that
+produced them; `claude_code.tool_result` carries per-tool timings and failures.
+The collector receives those over OTLP/JSON, and attributes each event to
+whichever pipeline step's attempt interval contains its timestamp — not to
+whatever step happens to be open when the event arrives, because Claude Code
+buffers events for up to 5 s and they routinely land a step late.
+
+**How steps are marked.** Agents call the `profile_*` MCP tools:
+
+| Tool | Purpose |
+| --- | --- |
+| `profile_bind` | Attach the profile to a session (once, after `session_create`) |
+| `profile_step_begin` | Open a step. **Same step name again = a retry**, recorded as a second attempt |
+| `profile_step_end` | Close the attempt with an outcome (`ok`, `lint_failed`, …) |
+| `profile_status` | Running totals: cost, tokens, per-step timing, tries, retries |
+| `profile_report` | Flush and return the rendered performance report |
+
+If the collector is not running, these return `profiling: disabled` and succeed.
+Profiling is observability: an agent never abandons a step because the observer
+is down.
+
+**Where the results land.** Each session gets a `performance/` directory:
+
+```text
+workspaces/<app>/<run_id>/performance/
+    performance_report.md     ← summary, per-step table, rework, slowest tools
+    summary.json              ← the whole profile snapshot
+    steps/<n>-<step>.json     ← one file per pipeline step, live-updated
+    otlp/events-<date>.jsonl  ← raw telemetry
+    mlflow.json               ← experiment / parent-run / UI deep link
+```
+
+`session_final_report` folds this into the deliverable as `final_report/PERFORMANCE.md`
+plus `final_report/performance/`.
+
+In MLflow (default `http://localhost:5001`) the same data appears as one parent
+run per session and one **nested run per pipeline step**, with metrics for
+`cost_usd`, `tokens_*`, `exec_s`, `wall_s`, `tries`, `retries`,
+`failed_attempts` and `cost_usd_per_tool_call`. A step that fails and is retried
+shows `FAILED → RUNNING → FINISHED`.
+
+The report also reconciles the sum of per-event costs against the independent
+`claude_code.cost.usage` counter, and says so when they disagree — silent
+under-counting would make the profile worse than none.
 
 Bootstrap the workspace links from source-of-truth files:
 

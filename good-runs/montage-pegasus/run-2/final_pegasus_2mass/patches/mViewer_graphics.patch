@@ -1,5 +1,5 @@
---- /usr/WS2/haridev/dftracer-agents/workspaces/montage/20260706_062459/source/MontageLib/Viewer/mViewer_graphics.c	2026-07-05 23:25:06.411437000 -0700
-+++ /usr/WS2/haridev/dftracer-agents/workspaces/montage/20260706_062459/annotated/MontageLib/Viewer/mViewer_graphics.c	2026-07-06 19:59:30.348966000 -0700
+--- /usr/WS2/$USER/dftracer-agents/workspaces/montage/20260706_062459/source/MontageLib/Viewer/mViewer_graphics.c	2026-07-05 23:25:06.411437000 -0700
++++ /usr/WS2/$USER/dftracer-agents/workspaces/montage/20260706_062459/annotated/MontageLib/Viewer/mViewer_graphics.c	2026-07-06 19:59:30.348966000 -0700
 @@ -2,6 +2,7 @@
  #include <math.h>
  #include <freetype2/ft2build.h>

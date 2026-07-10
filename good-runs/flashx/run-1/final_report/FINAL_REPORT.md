@@ -3,7 +3,7 @@
 **Session**: `flash_x/20260708_063844`  
 **Date**: 2026-07-08  
 **Platform**: Tuolumne (LLNL), 8 nodes, 384 MPI ranks  
-**Allocation**: `f3Junw1CTMif` (reused across runs)
+**Allocation**: `<flux-jobid>` (reused across runs)
 
 ---
 
@@ -95,14 +95,14 @@ Applied L2 optimizations:
 --- run_production_baseline.sh2026-07-08 10:34
 +++ run_optimized.sh2026-07-08 12:28
 @@ -8,6 +8,10 @@
-  export HDF5_PATH=/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844/hdf5_1.14
+  export HDF5_PATH=$PROJECT_ROOT/workspaces/flash_x/20260708_063844/hdf5_1.14
 + 
 + # L2: HDF5 tuning for Lustre
 + export HDF5_USE_FILE_LOCKING=FALSE
 + export HDF5_COLL_METADATA_WRITE=1
 + 
   # L2: Lustre striping (applied before run)
-  # lfs setstripe -c 8 -S 1048576 /p/lustre5/haridev/flashx/baseline_production/
+  # lfs setstripe -c 8 -S 1048576 $LUSTRE_ROOT/flashx/baseline_production/
 ```
 
 ### 3.3 Trace Metrics Diff
@@ -212,23 +212,23 @@ The patch captures:
 
 | Path | Description |
 |------|-------------|
-| `/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844/final_report/FINAL_REPORT.md` | This report |
-| `/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844/final_report/optimization.patch` | Machine-readable diff: baseline → optimized |
-| `/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844/final_report/SESSION_CONVERSATION.md` | Full session timeline and decisions |
-| `/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844/final_report/comparison_report.md` | Side-by-side baseline vs optimized metrics |
-| `/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844/final_report/optimization_report.md` | Baseline analysis with L1/L2/L3 proposals |
-| `/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844/final_report/diagnosis.json` | Structured bottleneck diagnosis (JSON) |
-| `/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844/final_report/flash_production.par` | Baseline parameter file |
-| `/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844/final_report/flash_optimized.par` | Optimized parameter file |
-| `/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844/final_report/run_optimized.sh` | Optimized run script with env vars |
-| `/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844/opt1/artifacts/comparison_report.md` | Baseline vs Optimized comparison |
-| `/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844/artifacts/optimization_report.md` | Baseline analysis & L1/L2/L3 proposals |
-| `/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844/diagnosis.json` | Structured bottleneck diagnosis |
-| `/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844/production_baseline/traces/organized/` | Baseline organized traces |
-| `/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844/opt1/traces/organized/` | Optimized organized traces |
-| `/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844/annotated/source/object/flash_production.par` | Baseline parameter file |
-| `/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844/annotated/source/object/flash_optimized.par` | Optimized parameter file |
-| `/usr/WS2/haridev/dftracer-agents/workspaces/flash_x/20260708_063844/run_optimized.sh` | Optimized run script |
+| `$PROJECT_ROOT/workspaces/flash_x/20260708_063844/final_report/FINAL_REPORT.md` | This report |
+| `$PROJECT_ROOT/workspaces/flash_x/20260708_063844/final_report/optimization.patch` | Machine-readable diff: baseline → optimized |
+| `$PROJECT_ROOT/workspaces/flash_x/20260708_063844/final_report/SESSION_CONVERSATION.md` | Full session timeline and decisions |
+| `$PROJECT_ROOT/workspaces/flash_x/20260708_063844/final_report/comparison_report.md` | Side-by-side baseline vs optimized metrics |
+| `$PROJECT_ROOT/workspaces/flash_x/20260708_063844/final_report/optimization_report.md` | Baseline analysis with L1/L2/L3 proposals |
+| `$PROJECT_ROOT/workspaces/flash_x/20260708_063844/final_report/diagnosis.json` | Structured bottleneck diagnosis (JSON) |
+| `$PROJECT_ROOT/workspaces/flash_x/20260708_063844/final_report/flash_production.par` | Baseline parameter file |
+| `$PROJECT_ROOT/workspaces/flash_x/20260708_063844/final_report/flash_optimized.par` | Optimized parameter file |
+| `$PROJECT_ROOT/workspaces/flash_x/20260708_063844/final_report/run_optimized.sh` | Optimized run script with env vars |
+| `$PROJECT_ROOT/workspaces/flash_x/20260708_063844/opt1/artifacts/comparison_report.md` | Baseline vs Optimized comparison |
+| `$PROJECT_ROOT/workspaces/flash_x/20260708_063844/artifacts/optimization_report.md` | Baseline analysis & L1/L2/L3 proposals |
+| `$PROJECT_ROOT/workspaces/flash_x/20260708_063844/diagnosis.json` | Structured bottleneck diagnosis |
+| `$PROJECT_ROOT/workspaces/flash_x/20260708_063844/production_baseline/traces/organized/` | Baseline organized traces |
+| `$PROJECT_ROOT/workspaces/flash_x/20260708_063844/opt1/traces/organized/` | Optimized organized traces |
+| `$PROJECT_ROOT/workspaces/flash_x/20260708_063844/annotated/source/object/flash_production.par` | Baseline parameter file |
+| `$PROJECT_ROOT/workspaces/flash_x/20260708_063844/annotated/source/object/flash_optimized.par` | Optimized parameter file |
+| `$PROJECT_ROOT/workspaces/flash_x/20260708_063844/run_optimized.sh` | Optimized run script |
 
 ---
 
