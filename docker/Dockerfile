@@ -11,6 +11,14 @@ FROM python:3.12-slim
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1
 
+# .dockerignore excludes .git, so setuptools_scm can't derive a version
+# inside the build — compute it on the host from git and thread it in:
+#   docker build -f docker/Dockerfile \
+#       --build-arg SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DFTRACER_AGENTS=$(python3 -m setuptools_scm) \
+#       -t dftracer/agents-stack .
+ARG SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DFTRACER_AGENTS
+ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DFTRACER_AGENTS=${SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DFTRACER_AGENTS}
+
 # clang: needed by the clang_* annotation MCP tools.
 # git: session_create clones apps. build-essential + cmake: sdist fallbacks
 # (dftracer-utils compiles a bundled RocksDB/zstd from source). zlib1g-dev:
