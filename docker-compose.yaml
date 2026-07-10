@@ -1,0 +1,51 @@
+# dftracer agents stack — MCP server, OTLP collector, and MLflow behind a
+# Caddy reverse proxy that enforces auth. Only Caddy is published; the three
+# services sit on the internal `dftracer-net` network and are unreachable
+# from the host directly.
+#
+#   cp .env.example .env && edit the tokens/password hash, then:
+#   docker compose up -d
+#
+#   MCP:       http://localhost:8443/mcp        Authorization: Bearer $DFTRACER_MCP_TOKEN
+#   Collector: http://localhost:8443/v1/traces  Authorization: Bearer $DFTRACER_COLLECTOR_TOKEN
+#   MLflow UI: http://localhost:8443/mlflow      (basic-auth prompt)
+#
+# Still only bound to 127.0.0.1 on the host — reach a remote instance over an
+# SSH tunnel, never publish this on a public interface even with auth on.
+
+services:
+  dftracer:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: dftracer/agents-stack
+    networks: [dftracer-net]
+    # No `ports:` here — only reachable through the caddy proxy.
+    volumes:
+      - dftracer-workspace:/workspace
+      # Optionally expose a host project so sessions can reference local source:
+      # - ./:/workspace/project:ro
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    depends_on: [dftracer]
+    networks: [dftracer-net]
+    ports:
+      - "127.0.0.1:8443:8443"
+    environment:
+      DFTRACER_MCP_TOKEN: "${DFTRACER_MCP_TOKEN:?set in .env}"
+      DFTRACER_COLLECTOR_TOKEN: "${DFTRACER_COLLECTOR_TOKEN:?set in .env}"
+      MLFLOW_BASIC_AUTH_USER: "${MLFLOW_BASIC_AUTH_USER:?set in .env}"
+      MLFLOW_PASSWORD_HASH: "${MLFLOW_PASSWORD_HASH:?set in .env}"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    restart: unless-stopped
+
+networks:
+  dftracer-net:
+
+volumes:
+  dftracer-workspace:
+  caddy-data:

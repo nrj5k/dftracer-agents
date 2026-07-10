@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=68.0", "setuptools-scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "dftracer-agents"
-version = "0.1.0"
+dynamic = ["version"]
 description = "DFTracer MCP Services for Dataflow Analysis"
 # graphifyy (knowledge graph) requires >=3.10; the pipeline depends on it.
 requires-python = ">=3.10"
@@ -71,3 +71,7 @@ where = ["src"]
     # command, not sourced as a script. Listed explicitly since "*.sh" misses it.
     "dftracer_agents_stack",
 ]
+
+[tool.setuptools_scm]
+local_scheme = "no-local-version"
+write_to = "src/dftracer_agents/_version.py"

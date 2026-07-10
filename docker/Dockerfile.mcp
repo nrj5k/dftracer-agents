@@ -1,0 +1,48 @@
+# Minimal stdio-transport image for the Docker MCP Catalog (hub.docker.com/mcp).
+#
+# Unlike docker/Dockerfile (the full mcp+collector+mlflow stack for the
+# authenticated docker-compose deployment), this image's only job is to speak
+# MCP over stdio the moment it is run — that is what the registry's `task
+# create`/`task build` tooling invokes (`docker run -i <image>`) to verify
+# and list tools.
+#
+#   docker build -f docker/Dockerfile.mcp \
+#       --build-arg SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DFTRACER_AGENTS=$(python3 -m setuptools_scm) \
+#       -t dftracer/agents-mcp .
+#   docker run --rm -i dftracer/agents-mcp
+
+FROM python:3.12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1
+
+# .dockerignore excludes .git (repo history has no place in an image layer),
+# so setuptools_scm can't derive a version inside the build — it's computed
+# on the host from git and threaded in here instead.
+ARG SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DFTRACER_AGENTS
+ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DFTRACER_AGENTS=${SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DFTRACER_AGENTS}
+
+# clang: needed by the clang_* annotation MCP tools.
+# git: session_create clones apps. build-essential + cmake: sdist fallbacks
+# (dftracer-utils compiles a bundled RocksDB/zstd from source). zlib1g-dev:
+# RocksDB's CMake build hard-requires system zlib headers.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        git clang build-essential cmake zlib1g-dev ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -u 1000 dftracer \
+    && mkdir -p /workspace/workspaces \
+    && chown -R dftracer:dftracer /workspace
+
+COPY --chown=dftracer:dftracer . /opt/dftracer-agents
+RUN pip install /opt/dftracer-agents
+
+USER dftracer
+WORKDIR /workspace
+
+# `run` bypasses the daemon-start path so the process stays in the
+# foreground with stdin/stdout free for the MCP JSON-RPC stream; --skip-setup
+# skips the interactive first-run harness/model prompt, which would otherwise
+# hang under a non-interactive `docker run`.
+ENTRYPOINT ["dftracer-mcp-server", "run", "--service", "both", "--transport", "stdio", "--skip-setup"]

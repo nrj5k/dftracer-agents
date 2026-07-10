@@ -222,6 +222,91 @@ when nothing changed.
 
 ---
 
+## Docker: containerized stack with authenticated remote access
+
+For running the stack as a container instead of `dftracer_agents_stack start`
+on bare metal — e.g. so a local Docker Desktop instance or a remote HPC login
+node can be reached from VS Code over a fixed set of authenticated ports. Full
+details, including secret generation and remote-tunnel setup, are in
+[docs/docker.rst](docs/docker.rst); summary below.
+
+```bash
+cp .env.example .env
+# fill in DFTRACER_MCP_TOKEN, DFTRACER_COLLECTOR_TOKEN,
+# MLFLOW_BASIC_AUTH_USER, MLFLOW_PASSWORD_HASH — see docs/docker.rst
+docker compose up -d
+```
+
+This builds [docker/Dockerfile](docker/Dockerfile) (the `dftracer_agents_stack`
+supervising mcp/collector/mlflow inside the container) and fronts it with a
+[docker/Caddyfile](docker/Caddyfile) reverse proxy that is the **only**
+published port:
+
+| Endpoint | URL | Auth |
+| --- | --- | --- |
+| MCP | `http://localhost:8443/mcp` | `Authorization: Bearer $DFTRACER_MCP_TOKEN` |
+| OTLP collector | `http://localhost:8443/v1/traces` (etc.) | `Authorization: Bearer $DFTRACER_COLLECTOR_TOKEN` |
+| MLflow UI | `http://localhost:8443/mlflow` | HTTP basic-auth prompt |
+
+The `mcp`/`collector`/`mlflow` containers themselves sit on an internal-only
+Docker network with no host ports published — they are unreachable except
+through Caddy's auth checks.
+
+### Generating the secrets
+
+```bash
+# Bearer tokens — any random string
+openssl rand -hex 32   # -> DFTRACER_MCP_TOKEN
+openssl rand -hex 32   # -> DFTRACER_COLLECTOR_TOKEN
+
+# MLflow basic-auth password hash (never store the plaintext)
+docker run --rm caddy:2 caddy hash-password --plaintext '<your password>'
+# -> MLFLOW_PASSWORD_HASH (quote it in .env: the leading $2a$ confuses
+#    Compose's .env variable-interpolation if left unquoted)
+MLFLOW_BASIC_AUTH_USER=admin
+```
+
+You type the **plaintext** password into the browser's basic-auth prompt; only
+the bcrypt hash ever lives in `.env`.
+
+### Connecting from VS Code / Claude Code
+
+```json
+{
+  "servers": {
+    "dftracer": {
+      "type": "http",
+      "url": "http://localhost:8443/mcp",
+      "headers": { "Authorization": "Bearer ${env:DFTRACER_MCP_TOKEN}" }
+    }
+  }
+}
+```
+
+```bash
+claude mcp add --transport http dftracer http://localhost:8443/mcp \
+  --header "Authorization: Bearer $DFTRACER_MCP_TOKEN"
+
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:8443
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $DFTRACER_COLLECTOR_TOKEN"
+```
+
+### Reaching a remote instance
+
+The stack (bare-metal or containerized) only ever binds `8443`/`5000`/`4318`/`5001`
+to `127.0.0.1` — never publish it on a public interface, auth or not. Reach a
+remote host over an SSH tunnel and connect to `localhost` exactly as above:
+
+```bash
+ssh -N -L 8443:localhost:8443 <remote-host>
+```
+
+`.env` is gitignored and per-host by design: generate independent tokens and
+passwords for each environment you run this in, so a leak on one machine does
+not compromise another.
+
+---
+
 ## Pipeline profiling (MLflow)
 
 Every agent step is measured: how long it took, how many times it was tried, how
