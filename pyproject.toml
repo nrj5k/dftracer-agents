@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "dftracer-agents"
 dynamic = ["version"]
 description = "DFTracer MCP Services for Dataflow Analysis"
+license = "MIT"
 # graphifyy (knowledge graph) requires >=3.10; the pipeline depends on it.
 requires-python = ">=3.10"
 dependencies = [
