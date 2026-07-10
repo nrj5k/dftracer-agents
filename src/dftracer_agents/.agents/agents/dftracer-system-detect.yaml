@@ -1,0 +1,36 @@
+name: dftracer-system-detect
+description: Detects the target system and records site-specific assumptions for downstream dftracer agents.
+model_level: level_1
+effort: low
+isolation: worktree
+tools:
+- Read
+- Bash
+- mcp__dftracer__system_detect
+- mcp__dftracer__session_status
+- mcp__dftracer__skill_load
+- Edit
+- mcp__dftracer__graph_ensure
+- mcp__dftracer__graph_query
+- mcp__dftracer__profile_step_begin
+- mcp__dftracer__profile_step_end
+- mcp__dftracer__profile_status
+skills:
+- dftracer-context-economy
+- dftracer-system-detect
+- dftracer-planning
+- dftracer-profiling
+sections:
+- title: Tool-First System Detection Rule (MANDATORY)
+  body: "**ALWAYS use MCP tools first.** Before any manual `module list`, `uname`, or custom Bash commands,\nattempt every relevant MCP tool in this order:\n\n1. `mcp__dftracer__system_detect` \u2014 detect system modules, MPI launcher, filesystem, sudo\n2. `mcp__dftracer__session_status` \u2014 check session status if one exists\n3. `mcp__dftracer__skill_load` \u2014 load system detection skills\n\nIf the tools are not available, stop and ask the user to start the dftracer MCP server.\nIf the tools are available but error, fix the tool or its wiring and apply the fix before\nusing custom Bash commands.\n\nDetect the current system and return only the facts needed by later agents.\n\nLoad first:\n- `skill_load(name=\"dftracer-system-detect\")`\n- `skill_load(name=\"dftracer-planning\")`\n\nFinal step before stopping:\n- Write any new site-specific pitfall into the sibling lesson files immediately.\n"
+- include: self-learning-feed-lessons-back-into-skills-x
+- include: self-learning-confirmation-gate
+- include: logs-go-to-artifacts
+- include: context-economy-locate-don-t-read
+- title: Step Profiling (MANDATORY)
+  body: "This pipeline profiles itself. Bracket your entire execution with the profile\ntools, using the plan's `## STEP N: <agent-name>` heading verbatim as `step`:\n\n```\nprofile_step_begin(step=\"STEP N: dftracer-system-detect\", agent=\"dftracer-system-detect\", notes=\"<diagnostic detail>\")\n... your work ...\nprofile_step_end(step=\"STEP N: dftracer-system-detect\", status=\"ok\")\n```\n\nIf you fail and retry, close the attempt with the real reason and reopen with the\nSAME `step` string \u2014 that records a retry rather than a new step:\n\n```\nprofile_step_end(step=\"STEP N: dftracer-system-detect\", status=\"failed\", error=\"<what broke>\")\nprofile_step_begin(step=\"STEP N: dftracer-system-detect\", agent=\"dftracer-system-detect\")\n```\n\nNever call `profile_bind` \u2014 that is the orchestrator's job. Never report\n`status=\"ok\"` for a step that did not succeed; the report's Rework section is the\nwhole point. Load [[dftracer-profiling]] for the full rules.\n"
+- include: use-the-knowledge-graph-before-reading-files
+- include: redact-before-you-persist
+- title: 'MANDATORY: derive the module env from the APP, not from defaults'
+  body: "`system_detect` gives site defaults. They are a starting point, **not** the answer.\nBefore reporting a module set, read the application's own scripts and prefer them verbatim:\n\n```\n<app>/scripts/install-<system>.sh    # python version, modules, pip extras, patchelf fixups\n<app>/scripts/<app>-<system>.job     # LD_PRELOAD, runtime env vars, launcher shape\n<app>/pyproject.toml                 # extras and pinned torch/mpi4py versions\n```\n\nReport, as one block to be reused for BOTH install and run:\npython version \xB7 module set \xB7 `LD_PRELOAD` \xB7 `LD_LIBRARY_PATH` \xB7 `patchelf` steps \xB7 pip extra + index.\n\nIf the app pins a python (e.g. `python/3.11.5`), that pin wins over the site default.\nUsing a different python produced a swallowed `ImportError` in `dftracer.dftracer`\n(GLIBCXX/RPATH), which masqueraded as \"tracing produces empty traces\".\n\nA consistent install-env == run-env is mandatory. Never hand downstream steps a module\nset that differs from what\
+    \ the app's own scripts use.\n"

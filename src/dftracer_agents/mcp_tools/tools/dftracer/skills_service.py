@@ -361,5 +361,185 @@ def _register_skill_tools(mcp: FastMCP) -> None:
                 result["status"] = "not_found"
         return json.dumps(result, indent=2)
 
+    @mcp.tool()
+    def agents_sync(target_root: Optional[str] = None) -> str:
+        """Re-render every harness agent copy from the YAML agent templates.
+
+        The canonical agent definitions are harness-neutral YAML templates
+        under ``src/dftracer_agents/.agents/agents/*.yaml`` (shared prose in
+        ``common-sections.yaml``). The files each harness actually reads —
+        ``.claude/agents/*.md``, ``.opencode/agents/*.md``,
+        ``.github/agents/*.agent.md`` — are generated build artifacts.
+
+        Call this after ANY self-learning edit to a template (or to
+        ``common-sections.yaml``) so all three harnesses pick up the change.
+        It is one-way and lossless: templates are the only source of truth,
+        rendered copies are never merged back.
+
+        Args:
+            target_root: Workspace root to render into (default: the active
+                project root).
+
+        Returns JSON: {status, target, summary, changed: [...], conflicts: [...]}.
+        """
+        from dftracer_agents.agents import sync_agents
+
+        try:
+            result = sync_agents(
+                target_root=Path(target_root) if target_root else None
+            )
+        except Exception as exc:  # surface template errors to the caller
+            return json.dumps({"status": "error", "error": str(exc)})
+        return json.dumps({
+            "status": "ok" if not result["conflicts"] else "partial",
+            "target": result["target"],
+            "summary": result["summary"],
+            "changed": result["changed"],
+            "conflicts": result["conflicts"],
+        }, indent=2)
+
+
+    @mcp.tool()
+    def memory_list() -> str:
+        """List the project's persistent memories (name + one-line description).
+
+        Memory is the git-tracked, cross-session store at
+        ``src/dftracer_agents/.agents/workspace/memory/`` — one markdown file
+        per fact, indexed by ``MEMORY.md``. It works identically in every
+        harness (Claude Code, OpenCode, Copilot): call this at session start
+        to see what past sessions learned, then ``memory_read`` the relevant
+        ones.
+
+        Returns JSON: {status, count, memories: [{name, description, type, file}]}.
+        """
+        from dftracer_agents.bootstrap import bundled_memory_dir
+
+        memories = []
+        for path in sorted(bundled_memory_dir().glob("*.md")):
+            if path.name == "MEMORY.md":
+                continue
+            entry: Dict[str, object] = {"file": path.name}
+            m = re.match(r"^---\n(.*?)\n---\n", path.read_text(), re.DOTALL)
+            if m:
+                for key in ("name", "description"):
+                    km = re.search(rf"(?m)^{key}:\s*(.+)$", m.group(1))
+                    if km:
+                        entry[key] = km.group(1).strip()
+                tm = re.search(r"(?m)^\s*type:\s*(.+)$", m.group(1))
+                if tm:
+                    entry["type"] = tm.group(1).strip()
+            memories.append(entry)
+        return json.dumps({
+            "status": "ok",
+            "count": len(memories),
+            "memories": memories,
+            "usage": "memory_read(name=...) for full text; memory_write(...) to record.",
+        }, indent=2)
+
+    @mcp.tool()
+    def memory_read(name: str) -> str:
+        """Return the full text of one or more memories (comma-separated names).
+
+        ``name`` matches the frontmatter ``name`` or the filename stem.
+
+        Returns JSON: {status, loaded: [{name, content}], missing: [...]}.
+        """
+        from dftracer_agents.bootstrap import bundled_memory_dir
+
+        mem_dir = bundled_memory_dir()
+        by_key: Dict[str, Path] = {}
+        for path in mem_dir.glob("*.md"):
+            if path.name == "MEMORY.md":
+                continue
+            by_key[path.stem.lower()] = path
+            m = re.search(r"(?m)^name:\s*(.+)$", path.read_text()[:500])
+            if m:
+                by_key[m.group(1).strip().lower()] = path
+        loaded, missing = [], []
+        for req in [n.strip() for n in name.split(",") if n.strip()]:
+            hit = by_key.get(req.lower())
+            if hit:
+                loaded.append({"name": req, "content": hit.read_text()})
+            else:
+                missing.append(req)
+        result: Dict[str, object] = {"status": "ok" if loaded else "not_found", "loaded": loaded}
+        if missing:
+            result["missing"] = missing
+            result["available"] = sorted({p.stem for p in mem_dir.glob("*.md")} - {"MEMORY"})
+        return json.dumps(result, indent=2)
+
+    @mcp.tool()
+    def memory_write(
+        name: str,
+        description: str,
+        body: str,
+        type: str = "project",
+    ) -> str:
+        """Create or update a persistent memory, and keep the MEMORY.md index current.
+
+        Use this at the END of every session to record cross-session facts:
+        ongoing work and its state (``type=project``), user guidance on how to
+        work (``type=feedback``), or external pointers (``type=reference``).
+        Works identically in every harness — this tool, not any harness-native
+        memory feature, is the portable write path.
+
+        The content is anonymized deterministically before writing (usernames,
+        absolute user paths, job ids, hostnames -> placeholders) because this
+        store is git-tracked and ships to other people. ``type=user`` is
+        rejected for the same reason. If ``name`` already exists the file is
+        overwritten (update semantics).
+
+        Args:
+            name: kebab-case slug, e.g. "project-harness-agent-templates".
+            description: one-line summary for the MEMORY.md index.
+            body: the fact. For feedback/project include **Why:** and
+                  **How to apply:** lines. Link related memories with [[name]].
+            type: "project" | "feedback" | "reference".
+
+        Returns JSON: {status, file, redacted: [...], index_updated}.
+        """
+        from dftracer_agents.bootstrap import bundled_memory_dir
+        from dftracer_agents.privacy import anonymize, find_identifiers
+
+        if type not in ("project", "feedback", "reference"):
+            return json.dumps({
+                "status": "error",
+                "error": f"type={type!r} not allowed; memory is anonymous and git-tracked "
+                         "(no 'user' profiles). Use project|feedback|reference.",
+            })
+        slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+        if not slug:
+            return json.dumps({"status": "error", "error": "name must contain letters/digits"})
+
+        text = (
+            f"---\nname: {slug}\ndescription: {description}\n"
+            f"metadata:\n  type: {type}\n---\n\n{body.rstrip()}\n"
+        )
+        # Bare usernames outside a path are only caught when passed explicitly.
+        import getpass
+        extra_users = [getpass.getuser()]
+        redacted = find_identifiers(text, extra_users=extra_users)
+        text = anonymize(text, extra_users=extra_users)
+
+        mem_dir = bundled_memory_dir()
+        dest = mem_dir / f"{slug}.md"
+        existed = dest.exists()
+        dest.write_text(text)
+
+        index = mem_dir / "MEMORY.md"
+        line = f"- [{slug}]({slug}.md) — {anonymize(description)}"
+        lines = index.read_text().splitlines() if index.exists() else ["# Memory Index", ""]
+        lines = [l for l in lines if f"]({slug}.md)" not in l]
+        lines.append(line)
+        index.write_text("\n".join(lines) + "\n")
+
+        return json.dumps({
+            "status": "ok",
+            "file": str(dest),
+            "action": "updated" if existed else "created",
+            "redacted": redacted,
+            "index_updated": True,
+        }, indent=2)
+
 
 MCPServiceFactory.register("dftracer-skills", DFTracerSkillsService())

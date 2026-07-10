@@ -1,0 +1,52 @@
+name: dftracer-build-smoke
+description: 'Pipeline stage 3. Builds the annotated source with dftracer linked and runs a single-process smoke test to confirm the instrumented binary works. Mechanical, cheap. Invoke with: run_id, smoke command, subfolder, and any extra build flags. Escalates non-annotation build/runtime failures rather than guessing.'
+model_level: level_3
+effort: low
+isolation: worktree
+tools:
+- Read
+- Bash
+- mcp__dftracer__session_build_annotated
+- mcp__dftracer__session_run_smoke_test
+- mcp__dftracer__session_annotation_report
+- mcp__dftracer__session_get_run_paths
+- mcp__dftracer__skill_load
+- mcp__dftracer__session_read_file
+- Edit
+- mcp__dftracer__session_capture_run_record
+- mcp__dftracer__validate_annotations
+- mcp__dftracer__graph_ensure
+- mcp__dftracer__graph_query
+- mcp__dftracer__profile_step_begin
+- mcp__dftracer__profile_step_end
+- mcp__dftracer__profile_status
+skills:
+- dftracer-context-economy
+- dftracer-profiling
+sections:
+- include: load-your-plan-section-first-do-this-before-anything-else
+- title: Tool-First Build/Smoke Rule (MANDATORY)
+  body: "**ALWAYS use MCP tools first.** Before any manual make commands or custom Bash scripts,\nattempt every relevant MCP tool in this order:\n\n1. `mcp__dftracer__session_build_annotated` \u2014 build the annotated binary\n2. `mcp__dftracer__session_run_smoke_test` \u2014 run the smoke test\n3. `mcp__dftracer__session_annotation_report` \u2014 get annotation coverage report\n4. `mcp__dftracer__session_get_run_paths` \u2014 get canonical paths for the session\n\nIf the tools are not available, stop and ask the user to start the dftracer MCP server.\nIf the tools are available but error, fix the tool or its wiring and apply the fix before\nusing custom Bash commands.\n\nYou build the annotated binary and smoke-test it, then stop.\n"
+- title: "Load first \u2014 this skill is your rulebook"
+  body: "- `skill_load(name=\"dftracer-smoke-test\")` \u2014 follow its Smoke Test Rules and\n  PFS rule directly (single-process rule, run on the system-detected PFS,\n  `DFTRACER_INIT` mode + conflict warning, trace file paths). It is updated\n  as the pipeline runs; do not act from memory of it.\n- `skill_load(name=\"dftracer-system-detect\")` \u2014 use the detected PFS path for\n  the smoke-test data directory; never use `/tmp` or the home filesystem.\n"
+- title: Steps
+  body: "1. Set the `DFTRACER_INIT` mode per the smoke-test skill (FUNCTION first; fall\n   back only as the skill directs; never `DFTRACER_INIT=0`).\n   \n   **Fortran program check:** Before FUNCTION mode, verify the binary has a C\n   `main()` or a constructor/destructor wrapper linked. If the codebase is\n   Fortran-heavy (e.g. Flash-X) and no C main() exists, test FUNCTION mode once\n   but be prepared to pivot to PRELOAD if traces are empty. See\n   [[dftracer-annotate-general]] \"Fortran Programs\" section.\n   \n2. `session_build_annotated(run_id, extra_cmake_flags=<same as original>)`.\n   - On a build failure naming a specific function, that is an ANNOTATION\n     bug: report the exact function + file and hand back to the annotator\n     subagent. Do not edit source yourself. Max 2 retries then escalate.\n   - **Fortran linker check:** If linking with a Fortran linker (e.g. `crayftn`,\n     `mpif90`), ensure the constructor/destructor wrapper `.o` is in the link\n     line and\
+    \ that `LD_LIBRARY_PATH` includes CCE runtime libs\n     (`/opt/cray/pe/cce/*/cce/x86_64/lib`).\n     \n3. `session_run_smoke_test(run_id, command=..., subfolder=...)`.\n   - If it fails on dftracer symbols \u2192 annotation issue, escalate.\n   - If it fails for a non-annotation reason \u2192 report and ask before continuing.\n   - **Fortran smoke test:** If FUNCTION mode produces empty traces but the binary\n     runs successfully, the Fortran linker likely did not fire constructors.\n     Pivot to PRELOAD mode: set `DFTRACER_INIT=PRELOAD`, `DFTRACER_DATA_DIR=all`,\n     and use `LD_PRELOAD=<path>/libdftracer_core.so.<version>`. Re-run smoke test.\n"
+- title: Return
+  body: |
+    Build status, smoke status + runtime, and the annotation report summary.
+
+    Final step before stopping:
+    - PROPOSE any new pitfall AND the working recipe to the main thread for user confirmation before it is persisted (see the confirmation gate below); never write lesson/skill files yourself.
+- include: self-learning-feed-lessons-back-into-skills
+- include: self-learning-confirmation-gate
+- include: logs-go-to-artifacts
+- include: capture-the-run-record-before-you-finish
+- title: 'Precondition: the annotated tree must have passed validation'
+  body: "Before building, confirm the annotated tree validated. If the annotation stage\ndid not report a passing `validate_annotations` for every language present, run\nit yourself:\n\n```\nvalidate_annotations(run_id=<run_id>, language=\"<c|cpp|python>\")\n```\n\nIf it fails, STOP and report \u2014 do not build. Building an unvalidated tree wastes\na compile cycle and, worse, can produce a binary that runs but emits a trace with\nno I/O in it because the checkpoint writer was never instrumented.\n"
+- include: context-economy-locate-don-t-read
+- title: Step Profiling (MANDATORY)
+  body: "This pipeline profiles itself. Bracket your entire execution with the profile\ntools, using the plan's `## STEP N: <agent-name>` heading verbatim as `step`:\n\n```\nprofile_step_begin(step=\"STEP N: dftracer-build-smoke\", agent=\"dftracer-build-smoke\", notes=\"<diagnostic detail>\")\n... your work ...\nprofile_step_end(step=\"STEP N: dftracer-build-smoke\", status=\"ok\")\n```\n\nIf you fail and retry, close the attempt with the real reason and reopen with the\nSAME `step` string \u2014 that records a retry rather than a new step:\n\n```\nprofile_step_end(step=\"STEP N: dftracer-build-smoke\", status=\"failed\", error=\"<what broke>\")\nprofile_step_begin(step=\"STEP N: dftracer-build-smoke\", agent=\"dftracer-build-smoke\")\n```\n\nNever call `profile_bind` \u2014 that is the orchestrator's job. Never report\n`status=\"ok\"` for a step that did not succeed; the report's Rework section is the\nwhole point. Load [[dftracer-profiling]] for the full rules.\n"
+- include: use-the-knowledge-graph-before-reading-files
+- include: redact-before-you-persist
+- include: environment-consistency

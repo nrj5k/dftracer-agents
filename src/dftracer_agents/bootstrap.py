@@ -156,11 +156,14 @@ def ensure_workspace_setup(target_root: Optional[Path] = None, force: bool = Fal
             results["status"] = "partial"
             results["conflicts"].append(str(dest))
 
+    # NOTE: agent directories are NOT symlinked. The canonical agents are YAML
+    # templates (src/dftracer_agents/.agents/agents/*.yaml) that no harness can
+    # read directly; ensure_agents_setup renders them into .claude/agents/,
+    # .opencode/agents/ and .github/agents/ per harness dialect.
     for relative, source in (
         (".agents/skills", skills_dir),
         (".agents/agents", agents_dir),
         (".opencode/skills", skills_dir),
-        (".opencode/agents", agents_dir),
     ):
         dest = root / relative
         if force and dest.exists() and (dest.is_symlink() or dest.is_file()):
