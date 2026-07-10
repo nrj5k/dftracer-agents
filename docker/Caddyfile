@@ -1,0 +1,43 @@
+# Reverse proxy + auth in front of the dftracer stack.
+#
+# MCP and the OTLP collector are machine-to-machine: a bearer token in the
+# Authorization header, matched with Caddy's constant-time strip_prefix
+# comparison (@denied blocks anything that doesn't match before the request
+# reaches the upstream).
+#
+# MLflow is a browser UI: HTTP basic-auth, which is what browsers natively
+# prompt for. The bcrypt hash is generated once with:
+#   docker run --rm caddy:2 caddy hash-password --plaintext '<password>'
+# and stored in MLFLOW_PASSWORD_HASH — never the plaintext.
+
+{
+	auto_https off
+}
+
+:8443 {
+	@mcp path /mcp*
+	handle @mcp {
+		@denied not header Authorization "Bearer {$DFTRACER_MCP_TOKEN}"
+		respond @denied 401
+		reverse_proxy mcp:5000
+	}
+
+	@collector path /v1/traces* /v1/metrics* /v1/logs*
+	handle @collector {
+		@denied not header Authorization "Bearer {$DFTRACER_COLLECTOR_TOKEN}"
+		respond @denied 401
+		reverse_proxy collector:4318
+	}
+
+	handle /mlflow* {
+		basicauth {
+			{$MLFLOW_BASIC_AUTH_USER} {$MLFLOW_PASSWORD_HASH}
+		}
+		uri strip_prefix /mlflow
+		reverse_proxy mlflow:5001
+	}
+
+	handle {
+		respond 404
+	}
+}

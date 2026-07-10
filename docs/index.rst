@@ -14,6 +14,7 @@ usage patterns for each supported harness.
 
    install
    run
+   docker
    harnesses
    models
    tools
