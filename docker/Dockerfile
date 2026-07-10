@@ -12,10 +12,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1
 
 # clang: needed by the clang_* annotation MCP tools.
-# git: session_create clones apps. build-essential: sdist fallbacks.
+# git: session_create clones apps. build-essential + cmake: sdist fallbacks
+# (dftracer-utils compiles a bundled RocksDB/zstd from source). zlib1g-dev:
+# RocksDB's CMake build hard-requires system zlib headers.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        git clang build-essential ca-certificates curl \
+        git clang build-essential cmake zlib1g-dev ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user; /workspace is the project root the stack roots itself at
